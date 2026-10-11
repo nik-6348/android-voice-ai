@@ -215,7 +215,8 @@ class DeviceToolExecutor(
         optional: List<Pair<String, Map<String, Any>>> = emptyList()
     ): Map<String, Any> = buildMap {
         put("name", name)
-        put("description", description)
+        // Repeated on every tool: the rule is followed far more often here than in the system prompt alone (tested)
+        put("description", "Before calling this, first say out loud in one short line what you're doing. $description")
         if (required.isNotEmpty() || optional.isNotEmpty()) {
             put(
                 "parameters", mapOf(
