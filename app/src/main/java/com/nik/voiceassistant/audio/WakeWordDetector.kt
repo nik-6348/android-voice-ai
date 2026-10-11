@@ -38,7 +38,8 @@ class WakeWordDetector(private val context: Context, private val onWake: (prerol
             "hi", "hey", "hello", "okay", "high", "my", "nice", "night", "fine", "friend",
             "is", "here", "there", "how", "are", "you", "the", "name", "[unk]"
         )
-        private val WAKE = Regex("""\b(hi|hey|hello|okay) (nick|neck)\b(?! (hill|kill|name)\b)""")
+        // "my" / "high": how "hi" often comes out through a speaker or from across the room (tested)
+        private val WAKE = Regex("""\b(hi|hey|hello|okay|my|high) (nick|neck)\b(?! (hill|kill|name)\b)""")
     }
 
     private var model: Model? = null

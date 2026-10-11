@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- App icon: a mic with sound waves on each side (inside the 66dp adaptive-icon safe zone) -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- mic capsule -->
+    <path android:pathData="M54,30a8,8 0,0 1,8 8v15a8,8 0,0 1,-16 0v-15a8,8 0,0 1,8 -8z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:type="linear"
+                android:startX="46" android:startY="30"
+                android:endX="62" android:endY="61"
+                android:startColor="#FFFFFFFF"
+                android:endColor="#FFC4F1FF" />
+        </aapt:attr>
+    </path>
+    <!-- mic holder and stand -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="3.2"
+        android:strokeLineCap="round"
+        android:pathData="M42,52a12,12 0,0 0,24 0M54,64v8M47,72h14" />
+    <!-- sound waves: cyan on the left, pink on the right -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#FF22D3EE"
+        android:strokeWidth="3"
+        android:strokeLineCap="round"
+        android:pathData="M35,45v14M28,49v6" />
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#FFF472B6"
+        android:strokeWidth="3"
+        android:strokeLineCap="round"
+        android:pathData="M73,45v14M80,49v6" />
+</vector>

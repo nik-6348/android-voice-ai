@@ -152,7 +152,7 @@ class VoiceAssistantService : Service() {
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle(getString(R.string.app_name))
             .setContentText(statusText)
-            .setSmallIcon(android.R.drawable.ic_btn_speak_now)
+            .setSmallIcon(R.drawable.ic_stat_nik)
             .setContentIntent(open)
             .addAction(0, "Stop", stop)
             .setOngoing(true)
