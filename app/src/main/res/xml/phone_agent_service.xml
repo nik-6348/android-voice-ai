@@ -1,7 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Screen reading and control for the voice assistant (service/PhoneAgentService.kt) -->
+<!-- Screen reading and control for the voice assistant (service/PhoneAgentService.kt).
+     typeViewScrolled / typeViewSelected / typeAnnouncement are requested (and ignored) so Chrome treats
+     this as a "complex" service and exposes complete web pages; with only typeWindowStateChanged it
+     falls back to its reduced "basic" mode and pages come through incomplete
+     (chromium: AccessibilityStateDelegateImpl COMPLEX_USER_INTERACTION_SERVICE_EVENT_TYPE_MASK,
+     WebContentsAccessibilityAndroid::SetBrowserAXMode). -->
 <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
-    android:accessibilityEventTypes="typeWindowStateChanged"
+    android:accessibilityEventTypes="typeWindowStateChanged|typeViewScrolled|typeViewSelected|typeAnnouncement"
     android:accessibilityFeedbackType="feedbackGeneric"
     android:accessibilityFlags="flagRetrieveInteractiveWindows|flagReportViewIds|flagIncludeNotImportantViews"
     android:canPerformGestures="true"

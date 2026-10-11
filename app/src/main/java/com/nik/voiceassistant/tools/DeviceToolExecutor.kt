@@ -184,6 +184,12 @@ class DeviceToolExecutor(
                 "the assistant then sleeps until the user says \"Hi Nik\" again."
         ),
         function(
+            "open_website",
+            "Opens a website or a web search in the browser (not in an app). Give a URL (\"amazon.in\", " +
+                "\"https://…\") or words to search for. Returns the new screen.",
+            required = listOf("url_or_search" to param("string", "A web address, or what to search for"))
+        ),
+        function(
             "toggle_flashlight",
             "Turns the phone's flashlight (torch) on or off.",
             required = listOf("enabled" to param("boolean", "true = on, false = off"))
@@ -295,6 +301,8 @@ class DeviceToolExecutor(
 
                 "launch_intent" -> launchIntent(str("action"), str("uri"), str("package"), str("extras"))
 
+                "open_website" -> openWebsite(str("url_or_search") ?: "")
+
                 "toggle_flashlight" -> {
                     val enabled = bool("enabled") ?: str("state")?.equals("on", ignoreCase = true) ?: true
                     mapOf("success" to toggleFlashlight(enabled), "flashlight_state" to if (enabled) "on" else "off")
@@ -397,6 +405,31 @@ class DeviceToolExecutor(
             put("launched", listOfNotNull(action, uri, pkg).joinToString(" "))
             app?.let { put("opened_in", it) }
         })
+    }
+
+    /** A URL (or a Google search for the words) in the user's browser, never handed to another app. */
+    private fun openWebsite(target: String): Map<String, Any?> {
+        val t = target.trim()
+        if (t.isEmpty()) return mapOf("error" to "Give a web address or something to search for")
+        val looksLikeUrl = !t.contains(' ') && (t.startsWith("http://") || t.startsWith("https://") || Regex("""^[\w-]+(\.[\w-]+)+(/.*)?$""").matches(t))
+        val url = when {
+            !looksLikeUrl -> "https://www.google.com/search?q=" + Uri.encode(t)
+            t.startsWith("http") -> t
+            else -> "https://$t"
+        }
+        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).addCategory(Intent.CATEGORY_BROWSABLE).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        defaultBrowser()?.let { intent.setPackage(it) }
+        if (intent.resolveActivity(packageManager) == null) return mapOf("success" to false, "error" to "No browser found")
+        context.startActivity(intent)
+        return withScreen(mapOf("success" to true, "opened" to url, "browser" to intent.`package`))
+    }
+
+    /** The user's default browser, or any installed one if no default is set. */
+    private fun defaultBrowser(): String? {
+        val probe = Intent(Intent.ACTION_VIEW, Uri.parse("https://example.com")).addCategory(Intent.CATEGORY_BROWSABLE)
+        val chosen = packageManager.resolveActivity(probe, PackageManager.MATCH_DEFAULT_ONLY)?.activityInfo?.packageName
+        // "android" means no default yet (the system would ask); pick the first browser instead
+        return chosen?.takeIf { it != "android" } ?: handlers(probe).firstOrNull()
     }
 
     /** The first non-browser app that handles this web link, or null (then the default browser opens it). */

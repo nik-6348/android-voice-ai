@@ -93,6 +93,11 @@ class VoiceSession private constructor(private val context: Context) {
             whose controls are hidden) or the user asks what's on the screen, call look_at_screen (it takes ~4 s, so first
             say something like 'Ek second, screen dekh raha hoon...'). After an important step, check the screen you got
             back to make sure it really worked before saying it's done.
+            Websites: to open a site or search the web in the browser, use open_website (launch_intent would hand web
+            links to apps). On a web page the list holds the page's links, buttons and fields: tap them by number, type
+            into a field with type_text (submit=true presses Enter; if nothing happens, tap the page's Search / Go button),
+            and scroll to see more of the page. Use the browser's address bar for a new address. If the list looks
+            empty or wrong for a page, call look_at_screen.
             Music and video: media_control pauses / plays / skips / stops whatever is playing, even in the background or
             in a floating player; use it to stop a video instead of hunting for buttons. To get rid of a floating player
             too: media_control pause, then close the app from recents (or tap the player and its Close / X button).
