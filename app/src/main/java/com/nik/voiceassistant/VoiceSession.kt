@@ -8,6 +8,7 @@ import com.nik.voiceassistant.network.LiveAudioWebSocketClient
 import com.nik.voiceassistant.service.PhoneAgentService
 import com.nik.voiceassistant.service.VoiceAssistantService
 import com.nik.voiceassistant.tools.DeviceToolExecutor
+import com.nik.voiceassistant.ui.AssistantOverlay
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -235,8 +236,16 @@ class VoiceSession private constructor(private val context: Context) {
         onAmplitudeChanged = { amp -> _micAmplitude.value = amp }
     )
 
+    // Nik's own screen is showing; the overlay appears over other apps only
+    private val appVisible = MutableStateFlow(false)
+
+    fun setAppVisible(visible: Boolean) {
+        appVisible.value = visible
+    }
+
     init {
         audioTrackManager.startPlaybackWorker(scope)
+        AssistantOverlay(this).bind(scope, appVisible)
     }
 
     val isActive: Boolean

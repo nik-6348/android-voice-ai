@@ -46,6 +46,17 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onStart() {
+        super.onStart()
+        VoiceSession.get(this).setAppVisible(true)
+    }
+
+    override fun onStop() {
+        // Leaving for another app mid-conversation: the overlay panel takes over
+        VoiceSession.get(this).setAppVisible(false)
+        super.onStop()
+    }
+
     override fun onResume() {
         super.onResume()
         // The user may have just switched screen control on in Settings > Accessibility
