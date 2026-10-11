@@ -97,7 +97,21 @@ class PhoneAgentService : AccessibilityService() {
      * The current screen: foreground app, whether the keyboard is up, and one line per element:
      * `[n] Kind "label" (traits)`. Actionable containers take their children's text as label.
      */
+    /**
+     * The current screen; while a page is switching, Android briefly reports no content (it was read as
+     * "the page didn't load" while it had), so an empty read is retried for up to ~2 s.
+     */
     fun readScreen(): Map<String, Any?> {
+        var result = readScreenOnce()
+        var tries = 0
+        while (tries++ < 7 && (result["elements"] as? List<*>).isNullOrEmpty()) {
+            Thread.sleep(300)
+            result = readScreenOnce()
+        }
+        return result
+    }
+
+    private fun readScreenOnce(): Map<String, Any?> {
         val active = rootInActiveWindow
         // Every window the user can see, top-most first: the app, a floating (picture-in-picture)
         // player, split screen, an open notification shade or system dialog. The status/navigation

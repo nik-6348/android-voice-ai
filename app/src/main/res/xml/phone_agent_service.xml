@@ -4,9 +4,11 @@
      this as a "complex" service and exposes complete web pages; with only typeWindowStateChanged it
      falls back to its reduced "basic" mode and pages come through incomplete
      (chromium: AccessibilityStateDelegateImpl COMPLEX_USER_INTERACTION_SERVICE_EVENT_TYPE_MASK,
-     WebContentsAccessibilityAndroid::SetBrowserAXMode). -->
+     WebContentsAccessibilityAndroid::SetBrowserAXMode).
+     typeWindowsChanged / typeWindowContentChanged keep Android's accessibility cache of windows and nodes
+     fresh; without them a newly opened page was sometimes read as empty or stale. -->
 <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
-    android:accessibilityEventTypes="typeWindowStateChanged|typeViewScrolled|typeViewSelected|typeAnnouncement"
+    android:accessibilityEventTypes="typeWindowStateChanged|typeWindowsChanged|typeWindowContentChanged|typeViewScrolled|typeViewSelected|typeAnnouncement"
     android:accessibilityFeedbackType="feedbackGeneric"
     android:accessibilityFlags="flagRetrieveInteractiveWindows|flagReportViewIds|flagIncludeNotImportantViews"
     android:canPerformGestures="true"

@@ -97,6 +97,9 @@ class VoiceSession private constructor(private val context: Context) {
                or go back and take another path. Think aloud while you look, e.g. 'Dialer khol raha hoon... yahan recent
                history nahi dikh rahi, Recents tab pe tap karke dekhta hoon... haan, mil gaya.'
             4. When the user says "this", "here", "yeh" or "screen pe", call read_screen first.
+            5. If a screen comes back empty or looks unchanged right after an action, the page is usually still
+               switching: call wait (or look_at_screen) before deciding it didn't open. Never say "load nahi hua"
+               and redo a step without checking the screen again first.
             Seeing the screen: read_screen lists every visible window, including a floating picture-in-picture player
             and an open notification shade. When that list doesn't tell you enough (videos, photos, games, maps, a player
             whose controls are hidden) or the user asks what's on the screen, call look_at_screen (it takes ~4 s, so first
@@ -361,6 +364,11 @@ class VoiceSession private constructor(private val context: Context) {
     private val BARGE_IN_LEVEL = 0.05
     @Volatile private var bargeInOpenUntil = 0L
 
+    private val audioManager = context.getSystemService(android.media.AudioManager::class.java)
+
+    /** Music / video playing on the phone (our own reply is call audio, so it doesn't count). */
+    private fun otherAudioPlaying(): Boolean = audioManager?.isMusicActive == true
+
     private fun rms(chunk: ByteArray): Double {
         var sum = 0.0
         var i = 0
@@ -374,14 +382,14 @@ class VoiceSession private constructor(private val context: Context) {
 
     private val audioRecordManager = AudioRecordManager(
         onAudioChunkReady = { chunk ->
-            // While the reply plays, the phone's echo canceller (CallAudio) strips it from the mic; what is
-            // left of it is quiet, so only clearly loud sound (the user, close to the phone) goes through,
-            // and then stays open a moment so their words aren't chopped. That lets the user cut in by voice.
+            // Strict listening while the reply plays, a tool runs, or other audio (music, a video) plays:
+            // the echo canceller (CallAudio) strips the reply, and what is left of it, room noise and the
+            // phone's own sound are quieter than the user speaking close to it. So only clearly loud sound
+            // goes through then (and stays open a moment so words aren't chopped); the user can still cut in.
             val now = System.currentTimeMillis()
-            if (audioTrackManager.isAudible() && now >= bargeInOpenUntil) {
-                if (rms(chunk) > BARGE_IN_LEVEL) bargeInOpenUntil = now + 800
-            }
-            val pass = !audioTrackManager.isAudible() || now < bargeInOpenUntil
+            val strict = audioTrackManager.isAudible() || webSocketClient.isToolRunning() || otherAudioPlaying()
+            if (strict && now >= bargeInOpenUntil && rms(chunk) > BARGE_IN_LEVEL) bargeInOpenUntil = now + 800
+            val pass = !strict || now < bargeInOpenUntil
             webSocketClient.sendAudioChunk(if (pass) chunk else ByteArray(chunk.size))
         },
         onAmplitudeChanged = { amp -> _micAmplitude.value = amp }
