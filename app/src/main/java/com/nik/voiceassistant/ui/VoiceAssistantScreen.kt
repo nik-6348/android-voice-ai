@@ -134,6 +134,7 @@ fun VoiceAssistantScreen(viewModel: VoiceAssistantViewModel) {
     val isAgentEnabled by viewModel.isAgentEnabled.collectAsState()
     val isWakeWordEnabled by viewModel.isWakeWordEnabled.collectAsState()
     val choices by viewModel.choices.collectAsState()
+    val assistantName by viewModel.assistantName.collectAsState()
     val context = LocalContext.current
 
     val listState = rememberLazyListState()
@@ -161,7 +162,7 @@ fun VoiceAssistantScreen(viewModel: VoiceAssistantViewModel) {
         speaking -> "Speaking"
         live && micAmp > 0.03f -> "Listening to you"
         live -> "Listening"
-        isWakeWordEnabled -> "Sleeping · say \"Hi Nik\""
+        isWakeWordEnabled -> "Sleeping · say \"Hi $assistantName\""
         else -> "Tap the orb to talk"
     }
     val modelName = when {
@@ -204,7 +205,7 @@ fun VoiceAssistantScreen(viewModel: VoiceAssistantViewModel) {
                 }
                 Spacer(modifier = Modifier.width(10.dp))
                 Column(modifier = Modifier.weight(1f)) {
-                    Text("Nik's voice", color = TextPrimary, fontSize = 19.sp, fontWeight = FontWeight.SemiBold)
+                    Text(assistantName, color = TextPrimary, fontSize = 19.sp, fontWeight = FontWeight.SemiBold)
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         val dot = when (connectionStatus) {
                             ConnectionStatus.CONNECTED -> GreenActive
@@ -483,6 +484,29 @@ fun VoiceAssistantScreen(viewModel: VoiceAssistantViewModel) {
                         .verticalScroll(scrollState),
                     verticalArrangement = Arrangement.spacedBy(16.dp)
                 ) {
+                    // Assistant name: applies right away (not on Save)
+                    Column(modifier = Modifier.fillMaxWidth()) {
+                        Text("Assistant name", color = TextPrimary, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            "What it calls itself and shows at the top. (The offline \"Hi <name>\" wake word works best with simple names; the power button opens it regardless.)",
+                            color = TextSecondary, fontSize = 11.sp, lineHeight = 14.sp
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        OutlinedTextField(
+                            value = assistantName,
+                            onValueChange = { viewModel.setAssistantName(it) },
+                            singleLine = true,
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedTextColor = TextPrimary, unfocusedTextColor = TextPrimary,
+                                focusedBorderColor = CyanAccent, unfocusedBorderColor = SurfaceCard
+                            ),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+
+                    HorizontalDivider(color = SurfaceCard)
+
                     // 1. Model Switching Section
                     Text(
                         text = "GEMINI LIVE MODEL",

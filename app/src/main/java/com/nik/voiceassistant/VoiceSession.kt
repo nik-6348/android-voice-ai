@@ -70,8 +70,9 @@ class VoiceSession private constructor(private val context: Context) {
         fun get(context: Context): VoiceSession =
             instance ?: synchronized(this) { instance ?: VoiceSession(context.applicationContext).also { instance = it } }
 
+        // {NAME} is replaced with the assistant's name from settings (instructionsFor).
         val DEFAULT_INSTRUCTIONS = """
-            You are Nik, a voice assistant that operates the user's Android phone for them, like a person holding it.
+            You are {NAME}, a voice assistant that operates the user's Android phone for them, like a person holding it.
             You can see the screen (read_screen) and act on it: tap, type_text, scroll, navigate (back, home, recents,
             notifications, quick settings), open_app, list_apps and launch_intent for deep links and settings pages.
             NEVER say you are a text model or that you cannot access or control the phone.
@@ -84,8 +85,8 @@ class VoiceSession private constructor(private val context: Context) {
             This applies to every tool, including looking at the screen, and to every step of a longer task: never call
             two tools in a row without saying something in between. If a step takes long, say so ("thoda time lag raha hai").
 
-            The user wakes you by saying "Hi Nik" (or Hey/Hello Nik). If that's all they said, answer with a very short
-            'Haan, boliye?' and listen. If a request follows in the same breath, skip the greeting and just do it.
+            The user may wake you by greeting you ("Hi {NAME}") or just start talking. If they only greeted you, answer
+            with a very short 'Haan, boliye?' and listen. If a request follows in the same breath, skip the greeting and just do it.
 
             How to do a task on the phone:
             1. Pick the most direct start: launch_intent with a deep link or settings action if one fits (if you don't know
@@ -158,11 +159,21 @@ class VoiceSession private constructor(private val context: Context) {
     private val _isSearchEnabled = MutableStateFlow(prefs.getBoolean("search_enabled", true))
     val isSearchEnabled: StateFlow<Boolean> = _isSearchEnabled.asStateFlow()
 
-    // Saved copies of earlier defaults move to the current one: voice.ai.nik6348.in (old Python server,
-    // ignores the setup message) and ai.nik6348.in (Vercel, cut WebSockets after a few minutes)
+    // What the assistant calls itself (settings); shown in the UI and used in the prompt
+    private val _assistantName = MutableStateFlow(prefs.getString("assistant_name", "Shiv")?.ifBlank { "Shiv" } ?: "Shiv")
+    val assistantName: StateFlow<String> = _assistantName.asStateFlow()
+
+    fun setAssistantName(name: String) {
+        val n = name.trim().take(20).ifBlank { "Shiv" }
+        _assistantName.value = n
+        prefs.edit().putString("assistant_name", n).apply()
+    }
+
+    // Saved copies of earlier defaults move to the current one (Vercel): the old Python server
+    // (voice.ai.nik6348.in, ignores setup) and the Cloud Run trial (nik-voice…run.app)
     private val _serverUrl = MutableStateFlow(
         prefs.getString("server_url", null)
-            ?.takeUnless { it.contains("voice.ai.nik6348.in") || it.trimEnd('/') == "wss://ai.nik6348.in/ws/live" }
+            ?.takeUnless { it.contains("voice.ai.nik6348.in") || it.contains(".run.app") }
             ?: BuildConfig.DEFAULT_WS_URL
     )
     val serverUrl: StateFlow<String> = _serverUrl.asStateFlow()
@@ -474,7 +485,7 @@ class VoiceSession private constructor(private val context: Context) {
         if (!_isRecording.value) return
         Log.i(TAG, "Conversation ended")
         shutDown()
-        addTranscript("system", if (_isWakeWordEnabled.value) "Sleeping — say \"Hi Nik\" to wake me" else "Conversation ended")
+        addTranscript("system", if (_isWakeWordEnabled.value) "Sleeping — say \"Hi ${_assistantName.value}\" to wake me" else "Conversation ended")
         onConversationEnded?.invoke()
     }
 
@@ -547,7 +558,7 @@ class VoiceSession private constructor(private val context: Context) {
      * transcript) so a new session still knows what was going on.
      */
     private fun instructionsFor(resuming: Boolean): String {
-        val base = DEFAULT_INSTRUCTIONS + "\n\n" + lockPolicy()
+        val base = DEFAULT_INSTRUCTIONS.replace("{NAME}", _assistantName.value) + "\n\n" + lockPolicy()
         if (resuming) return base
         val recent = _transcripts.value.filter { it.sender == "user" || it.sender == "assistant" }.takeLast(12)
         if (recent.isEmpty()) return base

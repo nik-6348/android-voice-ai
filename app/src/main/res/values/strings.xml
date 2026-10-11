@@ -1,6 +1,6 @@
 <resources>
-    <string name="app_name">Nik\'s voice</string>
+    <string name="app_name">Shiv</string>
     <string name="voice_service_channel_name">Voice Assistant Active</string>
     <string name="voice_service_channel_desc">Background voice recognition and streaming</string>
-    <string name="phone_agent_description">Lets Nik\'s voice read the screen and tap, type, scroll and navigate when you ask it to by voice.</string>
+    <string name="phone_agent_description">Lets Shiv read the screen and tap, type, scroll and navigate when you ask it to by voice.</string>
 </resources>
