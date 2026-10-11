@@ -21,13 +21,17 @@ import com.nik.voiceassistant.service.PhoneAgentService
  * screen and decides what to tap or type, and uses launch_intent with an action / URI it knows
  * or finds with Google Search, so no app needs its own code here.
  */
-class DeviceToolExecutor(private val context: Context) {
+class DeviceToolExecutor(
+    private val context: Context,
+    // end_conversation: the session ends once the goodbye has played
+    private val onEndConversation: () -> Unit = {}
+) {
 
     companion object {
         private const val TAG = "DeviceToolExecutor"
         private const val MAX_APPS = 60
 
-        private const val AGENT_OFF = "Screen control is off. Ask the user to enable 'Nik Jarvis Voice' in " +
+        private const val AGENT_OFF = "Screen control is off. Ask the user to enable \"Nik's voice\" in " +
             "Settings > Accessibility (you can open it with launch_intent action android.settings.ACCESSIBILITY_SETTINGS)."
     }
 
@@ -115,6 +119,11 @@ class DeviceToolExecutor(private val context: Context) {
             )
         ),
         function(
+            "end_conversation",
+            "Ends the conversation when the user is done (bye, bas, thank you, that's all). Say a short goodbye first; " +
+                "the assistant then sleeps until the user says \"Hi Nik\" again."
+        ),
+        function(
             "toggle_flashlight",
             "Turns the phone's flashlight (torch) on or off.",
             required = listOf("enabled" to param("boolean", "true = on, false = off"))
@@ -188,6 +197,11 @@ class DeviceToolExecutor(private val context: Context) {
                 }
 
                 "list_apps" -> mapOf("apps" to listApps(str("query")))
+
+                "end_conversation" -> {
+                    onEndConversation()
+                    mapOf("success" to true, "done" to "conversation will end after your goodbye")
+                }
 
                 "launch_intent" -> launchIntent(str("action"), str("uri"), str("package"), str("extras"))
 
@@ -311,7 +325,7 @@ class DeviceToolExecutor(private val context: Context) {
     private fun findContact(name: String): Map<String, Any?> {
         if (name.isBlank()) return mapOf("error" to "Give a name to look up")
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.READ_CONTACTS) != PackageManager.PERMISSION_GRANTED) {
-            return mapOf("error" to "Contacts permission is off; ask the user to allow Contacts for Nik Jarvis Voice, or search the name inside the app on screen")
+            return mapOf("error" to "Contacts permission is off; ask the user to allow Contacts for Nik's voice, or search the name inside the app on screen")
         }
         val phone = ContactsContract.CommonDataKinds.Phone.CONTENT_URI
         val columns = arrayOf(ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME, ContactsContract.CommonDataKinds.Phone.NUMBER)

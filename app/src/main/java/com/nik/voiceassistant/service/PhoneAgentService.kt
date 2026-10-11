@@ -52,6 +52,8 @@ class PhoneAgentService : AccessibilityService() {
     override fun onServiceConnected() {
         instance = this
         Log.i(TAG, "Phone agent connected")
+        // Bound at boot too: start listening for "Hi Nik" without the app being opened first
+        if (com.nik.voiceassistant.VoiceSession.get(this).isWakeWordEnabled.value) VoiceAssistantService.startListening(this)
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {}

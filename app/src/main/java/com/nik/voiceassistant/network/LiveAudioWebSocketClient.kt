@@ -36,6 +36,7 @@ class LiveAudioWebSocketClient(
         fun onDisconnected(reason: String)
         fun onError(error: Throwable)
         fun onUserTranscript(text: String)
+        fun onUserSpeaking()
         fun onModelTranscript(text: String)
         fun onToolExecuted(toolName: String, resultSummary: String)
     }
@@ -44,6 +45,8 @@ class LiveAudioWebSocketClient(
         private const val TAG = "LiveAudioWebSocket"
         // Tries in a row without getting a session before giving up
         private const val MAX_RECONNECTS = 8
+        // Mic audio kept while (re)connecting, sent once the connection is up: ~8 s of 16 kHz PCM
+        private const val MAX_QUEUED_BYTES = 16000 * 2 * 8
     }
 
     private val gson = Gson()
@@ -68,6 +71,15 @@ class LiveAudioWebSocketClient(
     // Reply audio still in flight after a stop is dropped until then
     @Volatile private var dropAudioUntil = 0L
 
+    // Audio from before the connection was up ("Hi Nik, YouTube kholo" said in one breath)
+    private val queued = ArrayDeque<ByteArray>()
+    private var queuedBytes = 0
+
+    // Tool calls being run; a conversation doesn't time out in the middle of one
+    private val toolsRunning = java.util.concurrent.atomic.AtomicInteger(0)
+
+    fun isToolRunning(): Boolean = toolsRunning.get() > 0
+
     // Pings find a dead connection (phone switched networks, host dropped it) within ~1 min;
     // 15 s was too tight through the host's proxy (a late pong dropped working calls)
     private val okHttpClient = OkHttpClient.Builder()
@@ -89,6 +101,7 @@ class LiveAudioWebSocketClient(
         this.apiKey = apiKey
         this.instructions = instructions
         resumeHandle = null
+        dropAudioUntil = 0L
         attempts = 0
         userClosed = false
         open()
@@ -111,6 +124,15 @@ class LiveAudioWebSocketClient(
                     "instructions" to instructions
                 )
                 webSocket.send(gson.toJson(setup))
+                // The server queues audio until its Gemini session is open
+                // (in ~1 s frames: the server holds at most 200 frames, and mic chunks are 32 ms)
+                synchronized(queued) {
+                    val all = java.io.ByteArrayOutputStream(queuedBytes)
+                    while (queued.isNotEmpty()) all.write(queued.removeFirst())
+                    queuedBytes = 0
+                    val bytes = all.toByteArray()
+                    for (i in bytes.indices step 32000) webSocket.send(bytes.toByteString(i, minOf(32000, bytes.size - i)))
+                }
                 isConnected.set(true)
                 Log.i(TAG, "WebSocket connected successfully: ${response.code}")
                 if (attempts == 0) WakeWordManager.playWakeChime()
@@ -167,9 +189,21 @@ class LiveAudioWebSocketClient(
      * Sends raw 16kHz PCM audio chunk to the server.
      */
     fun sendAudioChunk(chunk: ByteArray) {
-        if (!isConnected.get()) return
+        if (!isConnected.get()) {
+            if (!userClosed) queueAudio(chunk) // still connecting: keep it for when we're up
+            return
+        }
         val byteString = chunk.toByteString(0, chunk.size)
         webSocket?.send(byteString)
+    }
+
+    /** Keeps audio to send as soon as the connection opens (the oldest is dropped past ~8 s). */
+    fun queueAudio(chunk: ByteArray) {
+        synchronized(queued) {
+            queued.addLast(chunk)
+            queuedBytes += chunk.size
+            while (queuedBytes > MAX_QUEUED_BYTES && queued.size > 1) queuedBytes -= queued.removeFirst().size
+        }
     }
 
     /**
@@ -190,6 +224,7 @@ class LiveAudioWebSocketClient(
         Log.i(TAG, "Disconnecting WebSocket")
         userClosed = true
         isConnected.set(false)
+        synchronized(queued) { queued.clear(); queuedBytes = 0 }
         try {
             webSocket?.close(1000, "User disconnected")
         } catch (e: Exception) {
@@ -212,6 +247,8 @@ class LiveAudioWebSocketClient(
                         WakeWordManager.playWakeChime()
                     }
                 }
+
+                "user_transcript_interim" -> listener.onUserSpeaking()
 
                 "model_transcript" -> {
                     val text = jsonObject.get("text")?.asString.orEmpty()
@@ -238,7 +275,10 @@ class LiveAudioWebSocketClient(
 
                 // Gemini's function call, relayed by the server (?tools=device)
                 "tool_call" -> {
-                    toolThread.execute { executeToolCall(jsonObject) }
+                    toolsRunning.incrementAndGet()
+                    toolThread.execute {
+                        try { executeToolCall(jsonObject) } finally { toolsRunning.decrementAndGet() }
+                    }
                 }
 
                 "tool_call_cancelled" -> {

@@ -8,17 +8,23 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
-import android.os.Binder
 import android.os.Build
 import android.os.IBinder
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.nik.voiceassistant.MainActivity
 import com.nik.voiceassistant.R
+import com.nik.voiceassistant.VoiceSession
+import com.nik.voiceassistant.audio.WakeWordDetector
+import com.nik.voiceassistant.audio.WakeWordManager
 
 /**
- * Foreground Service that keeps the Voice Assistant microphone capture and
- * WebSocket connection alive in the background.
+ * Foreground service that owns the microphone in the background, in one of two modes:
+ *  - listening: the on-device detector waits for "Hi Nik" (nothing is sent anywhere)
+ *  - conversation: a VoiceSession is live; when it ends, back to listening
+ *
+ * Android only lets an app use the mic in the background from a foreground service started while
+ * the app was visible, so the app (or the accessibility service at boot) starts it.
  */
 class VoiceAssistantService : Service() {
 
@@ -27,64 +33,97 @@ class VoiceAssistantService : Service() {
         private const val CHANNEL_ID = "voice_assistant_foreground"
         private const val NOTIFICATION_ID = 4201
 
-        const val ACTION_START = "com.nik.voiceassistant.action.START"
-        const val ACTION_STOP = "com.nik.voiceassistant.action.STOP"
+        private const val ACTION_LISTEN = "com.nik.voiceassistant.action.LISTEN"
+        private const val ACTION_CONVERSATION = "com.nik.voiceassistant.action.CONVERSATION"
+        private const val ACTION_STOP = "com.nik.voiceassistant.action.STOP"
 
-        fun start(context: Context) {
-            val intent = Intent(context, VoiceAssistantService::class.java).apply {
-                action = ACTION_START
-            }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                context.startForegroundService(intent)
-            } else {
-                context.startService(intent)
-            }
-        }
+        /** Wait for "Hi Nik" in the background. */
+        fun startListening(context: Context) = send(context, ACTION_LISTEN)
+
+        /** A conversation is starting: keep the mic and process alive for it. */
+        fun startConversation(context: Context) = send(context, ACTION_CONVERSATION)
 
         fun stop(context: Context) {
-            val intent = Intent(context, VoiceAssistantService::class.java).apply {
-                action = ACTION_STOP
+            context.startService(Intent(context, VoiceAssistantService::class.java).setAction(ACTION_STOP))
+        }
+
+        private fun send(context: Context, action: String) {
+            val intent = Intent(context, VoiceAssistantService::class.java).setAction(action)
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) context.startForegroundService(intent) else context.startService(intent)
+            } catch (e: Exception) {
+                // e.g. started from the background on Android 12+: it starts next time the app opens
+                Log.w(TAG, "Could not start the voice service: ${e.message}")
             }
-            context.startService(intent)
         }
     }
 
-    private val binder = LocalBinder()
+    private lateinit var session: VoiceSession
+    private lateinit var detector: WakeWordDetector
 
-    inner class LocalBinder : Binder() {
-        fun getService(): VoiceAssistantService = this@VoiceAssistantService
-    }
-
-    override fun onBind(intent: Intent?): IBinder = binder
+    override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
+        session = VoiceSession.get(this)
+        detector = WakeWordDetector(this) { preroll ->
+            // "Hi Nik": the detector has let go of the mic; the conversation takes over
+            WakeWordManager.playWakeChime()
+            session.start(preroll)
+        }
+        session.onConversationEnded = { listenOrStop() }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_STOP -> {
-                Log.i(TAG, "Stopping foreground service")
+                Log.i(TAG, "Stopping")
+                detector.stop()
+                if (session.isActive) session.stop()
                 stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
                 return START_NOT_STICKY
             }
-            else -> {
-                Log.i(TAG, "Starting foreground service")
-                val notification = buildNotification("Listening to voice in background...")
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    startForeground(
-                        NOTIFICATION_ID,
-                        notification,
-                        ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
-                    )
+            ACTION_CONVERSATION -> {
+                goForeground("Listening… (conversation active)")
+                detector.stop()
+            }
+            else -> { // ACTION_LISTEN, or a restart by the system
+                if (session.isActive) {
+                    goForeground("Listening… (conversation active)")
                 } else {
-                    startForeground(NOTIFICATION_ID, notification)
+                    goForeground("Say \"Hi Nik\" to talk")
+                    detector.start()
                 }
             }
         }
         return START_STICKY
+    }
+
+    private fun listenOrStop() {
+        if (session.isWakeWordEnabled.value) {
+            goForeground("Say \"Hi Nik\" to talk")
+            detector.start()
+        } else {
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+        }
+    }
+
+    override fun onDestroy() {
+        detector.stop()
+        session.onConversationEnded = null
+        super.onDestroy()
+    }
+
+    private fun goForeground(status: String) {
+        val notification = buildNotification(status)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
+        } else {
+            startForeground(NOTIFICATION_ID, notification)
+        }
     }
 
     private fun createNotificationChannel() {
@@ -97,24 +136,25 @@ class VoiceAssistantService : Service() {
                 description = getString(R.string.voice_service_channel_desc)
                 setShowBadge(false)
             }
-            val manager = getSystemService(NotificationManager::class.java)
-            manager?.createNotificationChannel(channel)
+            getSystemService(NotificationManager::class.java)?.createNotificationChannel(channel)
         }
     }
 
     private fun buildNotification(statusText: String): Notification {
-        val pendingIntent = PendingIntent.getActivity(
-            this,
-            0,
-            Intent(this, MainActivity::class.java),
+        val open = PendingIntent.getActivity(
+            this, 0, Intent(this, MainActivity::class.java),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
-
+        val stop = PendingIntent.getService(
+            this, 1, Intent(this, VoiceAssistantService::class.java).setAction(ACTION_STOP),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("Nik Voice Assistant")
+            .setContentTitle(getString(R.string.app_name))
             .setContentText(statusText)
             .setSmallIcon(android.R.drawable.ic_btn_speak_now)
-            .setContentIntent(pendingIntent)
+            .setContentIntent(open)
+            .addAction(0, "Stop", stop)
             .setOngoing(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .build()

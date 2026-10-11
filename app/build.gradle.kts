@@ -77,5 +77,9 @@ dependencies {
     // JSON Parsing
     implementation(libs.gson)
 
+    // Offline "Hi Nik" wake word (Vosk speech recognition; model in assets/model-en-in)
+    implementation(libs.vosk.android)
+    implementation(libs.jna) { artifact { type = "aar" } }
+
     debugImplementation(libs.androidx.ui.tooling)
 }

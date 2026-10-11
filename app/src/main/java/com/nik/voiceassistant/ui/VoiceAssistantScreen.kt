@@ -104,6 +104,7 @@ fun VoiceAssistantScreen(viewModel: VoiceAssistantViewModel) {
     val currentServerUrl by viewModel.serverUrl.collectAsState()
     val currentApiKey by viewModel.apiKey.collectAsState()
     val isAgentEnabled by viewModel.isAgentEnabled.collectAsState()
+    val isWakeWordEnabled by viewModel.isWakeWordEnabled.collectAsState()
     val context = LocalContext.current
 
     val listState = rememberLazyListState()
@@ -137,7 +138,7 @@ fun VoiceAssistantScreen(viewModel: VoiceAssistantViewModel) {
             ) {
                 Column {
                     Text(
-                        text = "NIK JARVIS",
+                        text = "NIK'S VOICE",
                         color = TextPrimary,
                         fontSize = 22.sp,
                         fontWeight = FontWeight.ExtraBold,
@@ -261,7 +262,7 @@ fun VoiceAssistantScreen(viewModel: VoiceAssistantViewModel) {
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        text = "Screen control is off. Tap → Accessibility → Nik Jarvis Voice → On, so I can tap, type and navigate for you.",
+                        text = "Screen control is off. Tap → Accessibility → Nik's voice → On, so I can tap, type and navigate for you.",
                         color = TextPrimary,
                         fontSize = 12.sp,
                         modifier = Modifier.weight(1f)
@@ -293,7 +294,7 @@ fun VoiceAssistantScreen(viewModel: VoiceAssistantViewModel) {
                         aiAmp > 0.05f -> "AI Speaking..."
                         isRecording && micAmp > 0.05f -> "Listening to you..."
                         isRecording -> "Listening for voice..."
-                        else -> "Tap Microphone to Start"
+                        else -> "Say \"Hi Nik\" or tap the mic"
                     },
                     color = TextSecondary.copy(alpha = 0.8f),
                     fontSize = 13.sp,
@@ -641,6 +642,42 @@ fun VoiceAssistantScreen(viewModel: VoiceAssistantViewModel) {
                                 )
                             )
                         }
+                    }
+
+                    // "Hi Nik" wake word: applies right away (not on Save)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "\"Hi Nik\" wake word",
+                                color = TextPrimary,
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Spacer(modifier = Modifier.height(2.dp))
+                            Text(
+                                text = if (isWakeWordEnabled)
+                                    "ON: listens on the phone (offline) for \"Hi Nik\" even when the app is closed; sleeps after each conversation."
+                                else
+                                    "OFF: open the app and tap the mic to talk.",
+                                color = TextSecondary,
+                                fontSize = 11.sp,
+                                lineHeight = 14.sp
+                            )
+                        }
+                        Switch(
+                            checked = isWakeWordEnabled,
+                            onCheckedChange = { viewModel.setWakeWordEnabled(it) },
+                            colors = SwitchDefaults.colors(
+                                checkedThumbColor = BgDark,
+                                checkedTrackColor = GreenActive,
+                                uncheckedThumbColor = TextMuted,
+                                uncheckedTrackColor = SurfaceCard
+                            )
+                        )
                     }
 
                     HorizontalDivider(color = SurfaceCard)
