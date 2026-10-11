@@ -105,5 +105,8 @@ dependencies {
     implementation(libs.vosk.android)
     implementation(libs.jna) { artifact { type = "aar" } }
 
+    // Encrypted storage for the device PIN (kept on the phone only)
+    implementation(libs.androidx.security.crypto)
+
     debugImplementation(libs.androidx.ui.tooling)
 }

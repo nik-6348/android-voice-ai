@@ -689,6 +689,77 @@ fun VoiceAssistantScreen(viewModel: VoiceAssistantViewModel) {
                         )
                     }
 
+                    HorizontalDivider(color = SurfaceCard)
+
+                    // Device PIN for unlocking: saved encrypted on the phone, applied right away (not on Save)
+                    var pinInput by remember { mutableStateOf("") }
+                    var pinSaved by remember { mutableStateOf(viewModel.hasPin()) }
+                    var autoUnlock by remember { mutableStateOf(viewModel.isAutoUnlockEnabled()) }
+                    Column(modifier = Modifier.fillMaxWidth()) {
+                        Text("Unlock PIN", color = TextPrimary, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            text = "Saved encrypted on this phone only — never sent to the server or the AI. Lets Nik unlock the phone to do things while it's locked.",
+                            color = TextSecondary, fontSize = 11.sp, lineHeight = 14.sp
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            OutlinedTextField(
+                                value = pinInput,
+                                onValueChange = { pinInput = it.filter { c -> c.isDigit() }.take(16) },
+                                label = { Text(if (pinSaved) "PIN saved — type to change" else "Numeric PIN", color = TextSecondary, fontSize = 12.sp) },
+                                visualTransformation = PasswordVisualTransformation(),
+                                keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = androidx.compose.ui.text.input.KeyboardType.NumberPassword),
+                                colors = OutlinedTextFieldDefaults.colors(
+                                    focusedTextColor = TextPrimary, unfocusedTextColor = TextPrimary,
+                                    focusedBorderColor = CyanAccent, unfocusedBorderColor = SurfaceCard
+                                ),
+                                singleLine = true,
+                                modifier = Modifier.weight(1f)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            TextButton(
+                                onClick = {
+                                    if (pinInput.isNotBlank()) { viewModel.savePin(pinInput); pinSaved = true; pinInput = "" }
+                                },
+                                enabled = pinInput.isNotBlank()
+                            ) { Text("Save", color = if (pinInput.isNotBlank()) CyanAccent else TextMuted, fontSize = 13.sp) }
+                            if (pinSaved) {
+                                TextButton(onClick = {
+                                    viewModel.savePin(""); pinSaved = false; autoUnlock = false; viewModel.setAutoUnlock(false)
+                                }) { Text("Remove", color = RedStop, fontSize = 13.sp) }
+                            }
+                        }
+                    }
+
+                    // Auto-unlock: unlock directly vs ask first
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Unlock without asking", color = TextPrimary, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                            Spacer(modifier = Modifier.height(2.dp))
+                            Text(
+                                text = if (autoUnlock)
+                                    "ON: when locked, Nik unlocks straight away using the saved PIN."
+                                else
+                                    "OFF: when locked, Nik asks 'unlock kar doon?' first.",
+                                color = TextSecondary, fontSize = 11.sp, lineHeight = 14.sp
+                            )
+                        }
+                        Switch(
+                            checked = autoUnlock,
+                            enabled = pinSaved,
+                            onCheckedChange = { autoUnlock = it; viewModel.setAutoUnlock(it) },
+                            colors = SwitchDefaults.colors(
+                                checkedThumbColor = BgDark, checkedTrackColor = GreenActive,
+                                uncheckedThumbColor = TextMuted, uncheckedTrackColor = SurfaceCard
+                            )
+                        )
+                    }
+
                     // Assistant gesture: Nik as the phone's digital assistant app (long-press power / corner swipe)
                     val isAssistant = remember {
                         android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q &&

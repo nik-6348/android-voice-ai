@@ -349,6 +349,86 @@ class PhoneAgentService : AccessibilityService() {
         return false
     }
 
+    /** Whether the phone is locked right now (screen may be on or off). */
+    fun isLocked(): Boolean {
+        val km = getSystemService(android.app.KeyguardManager::class.java) ?: return false
+        return km.isKeyguardLocked
+    }
+
+    /**
+     * Unlocks the phone with the user's saved PIN (SecurePrefs), entirely on the device: the PIN is
+     * read here, never sent anywhere. Wakes the screen, swipes up to the PIN pad, taps the digits and
+     * confirms. Only works for a numeric PIN; pattern / password / fingerprint can't be entered this way.
+     * Returns null on success, or a short reason to tell the user.
+     */
+    fun unlockWithSavedPin(onetimePin: String? = null): String? {
+        val km = getSystemService(android.app.KeyguardManager::class.java) ?: return "No keyguard service"
+        if (!km.isKeyguardLocked) return null // already unlocked
+        val pin = onetimePin?.filter { it.isDigit() }?.takeIf { it.isNotEmpty() }
+            ?: com.nik.voiceassistant.SecurePrefs.pin(this)
+            ?: return "No PIN is saved. Ask the user for their PIN, then call unlock_phone with it."
+        if (!pin.all { it.isDigit() }) return "Only a numeric PIN can be entered automatically."
+
+        wakeScreen()
+        Thread.sleep(600)
+        // Reveal the PIN pad: swipe up from the bottom (the lock screen shows the clock first)
+        val m = resources.displayMetrics
+        gesture(m.widthPixels / 2f, m.heightPixels * 0.85f, m.widthPixels / 2f, m.heightPixels * 0.2f, 250)
+        Thread.sleep(700)
+
+        for (digit in pin) {
+            if (!tapKeypadDigit(digit)) return "Couldn't find the PIN keypad on screen."
+            Thread.sleep(180)
+        }
+        // Many PINs auto-submit at the right length; otherwise press enter/done
+        Thread.sleep(500)
+        if (km.isKeyguardLocked) {
+            tapKeypadEnter()
+            Thread.sleep(800)
+        }
+        return if (km.isKeyguardLocked) "The PIN didn't unlock the phone (it may be wrong)." else null
+    }
+
+    @Suppress("DEPRECATION")
+    private fun wakeScreen() {
+        val pm = getSystemService(android.os.PowerManager::class.java) ?: return
+        if (pm.isInteractive) return
+        pm.newWakeLock(
+            android.os.PowerManager.FULL_WAKE_LOCK or android.os.PowerManager.ACQUIRE_CAUSES_WAKEUP or android.os.PowerManager.ON_AFTER_RELEASE,
+            "niksvoice:unlock"
+        ).apply { acquire(5000); try { release() } catch (_: Exception) {} }
+    }
+
+    /** Taps a digit on the lock-screen keypad, found by its text or content description. */
+    private fun tapKeypadDigit(digit: Char): Boolean {
+        val root = rootInActiveWindow ?: return false
+        val candidates = root.findAccessibilityNodeInfosByText(digit.toString()).orEmpty()
+            .filter { it.isVisibleToUser && (it.isClickable || it.className?.contains("Button") == true || it.className?.contains("View") == true) }
+        // Prefer a node whose label is exactly the digit (not "12" etc.)
+        val node = candidates.firstOrNull { ownLabel(it) == digit.toString() || it.contentDescription?.toString() == digit.toString() }
+            ?: candidates.firstOrNull()
+            ?: findByDesc(root, digit.toString())
+            ?: return false
+        var target: AccessibilityNodeInfo? = node
+        while (target != null && !target.isClickable) target = target.parent
+        if (target?.performAction(AccessibilityNodeInfo.ACTION_CLICK) == true) return true
+        val r = Rect().also { node.getBoundsInScreen(it) }
+        return gesture(r.exactCenterX(), r.exactCenterY(), r.exactCenterX(), r.exactCenterY(), 50)
+    }
+
+    private fun tapKeypadEnter() {
+        val root = rootInActiveWindow ?: return
+        for (word in listOf("Enter", "Done", "OK", "Confirm", "Unlock")) {
+            val n = root.findAccessibilityNodeInfosByText(word).orEmpty().firstOrNull { it.isVisibleToUser } ?: continue
+            var t: AccessibilityNodeInfo? = n
+            while (t != null && !t.isClickable) t = t.parent
+            if (t?.performAction(AccessibilityNodeInfo.ACTION_CLICK) == true) return
+        }
+    }
+
+    private fun findByDesc(root: AccessibilityNodeInfo?, text: String): AccessibilityNodeInfo? =
+        firstMatching(root) { it.isVisibleToUser && it.contentDescription?.toString() == text }
+
     fun navigate(action: String): Map<String, Any?> {
         val global = when (action.lowercase()) {
             "back" -> GLOBAL_ACTION_BACK

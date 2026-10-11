@@ -66,6 +66,13 @@ class DeviceToolExecutor(
                 "like [3] Button \"Send\" (tap). Call it before acting on the screen or when the user refers to what is on it."
         ),
         function(
+            "unlock_phone",
+            "Unlocks the phone when the screen is locked. Normally call it with no arguments: it uses the PIN the user " +
+                "saved in Settings, on the device (you never see that PIN). Only if it reports that no PIN is saved, ask the " +
+                "user to tell you their PIN once and call it again with that pin; a one-time pin is used and not stored.",
+            optional = listOf("pin" to param("string", "Only a one-time PIN the user just told you because none is saved"))
+        ),
+        function(
             "look_at_screen",
             "Looks at a screenshot of the screen and describes what is visible: videos and whether they play, images, " +
                 "games, a floating mini player, anything the read_screen list misses. Slower (~4 s): use it when read_screen " +
@@ -243,6 +250,12 @@ class DeviceToolExecutor(
         return try {
             when (toolName) {
                 "read_screen" -> agent?.readScreen() ?: mapOf("error" to AGENT_OFF)
+
+                "unlock_phone" -> if (agent == null) mapOf("error" to AGENT_OFF) else {
+                    val err = agent.unlockWithSavedPin(str("pin"))
+                    if (err == null) withScreen(mapOf("success" to true, "done" to "phone unlocked"))
+                    else mapOf("success" to false, "error" to err)
+                }
 
                 "look_at_screen" -> if (agent == null) mapOf("error" to AGENT_OFF) else lookAtScreen(agent, str("question"))
 

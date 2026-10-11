@@ -83,6 +83,12 @@ class VoiceAssistantViewModel(application: Application) : AndroidViewModel(appli
 
     fun setWakeWordEnabled(enabled: Boolean) = session.setWakeWordEnabled(enabled)
 
+    // Device PIN for auto-unlock: saved encrypted on the phone, never sent anywhere
+    fun hasPin(): Boolean = SecurePrefs.hasPin(getApplication())
+    fun savePin(pin: String): Boolean = SecurePrefs.setPin(getApplication(), pin)
+    fun isAutoUnlockEnabled(): Boolean = SecurePrefs.isAutoUnlockEnabled(getApplication())
+    fun setAutoUnlock(enabled: Boolean) = SecurePrefs.setAutoUnlock(getApplication(), enabled)
+
     fun saveSettings(model: String, voice: String, searchEnabled: Boolean, url: String, key: String) =
         session.saveSettings(model, voice, searchEnabled, url, key)
 }

@@ -547,11 +547,23 @@ class VoiceSession private constructor(private val context: Context) {
      * transcript) so a new session still knows what was going on.
      */
     private fun instructionsFor(resuming: Boolean): String {
-        if (resuming) return DEFAULT_INSTRUCTIONS
+        val base = DEFAULT_INSTRUCTIONS + "\n\n" + lockPolicy()
+        if (resuming) return base
         val recent = _transcripts.value.filter { it.sender == "user" || it.sender == "assistant" }.takeLast(12)
-        if (recent.isEmpty()) return DEFAULT_INSTRUCTIONS
+        if (recent.isEmpty()) return base
         val lines = recent.joinToString("\n") { (if (it.sender == "user") "User: " else "You: ") + it.text.take(300) }
-        return "$DEFAULT_INSTRUCTIONS\n\nEarlier in this conversation (continue from here; don't repeat it back):\n$lines"
+        return "$base\n\nEarlier in this conversation (continue from here; don't repeat it back):\n$lines"
+    }
+
+    /** How to handle a locked phone, from the user's settings (never includes the PIN itself). */
+    private fun lockPolicy(): String {
+        val hasPin = SecurePrefs.hasPin(context)
+        val auto = SecurePrefs.isAutoUnlockEnabled(context)
+        return "Locked phone: if the screen is locked and you need to act on it, " + when {
+            hasPin && auto -> "call unlock_phone (it uses the saved PIN) right away, saying one short line like 'unlock kar raha hoon'."
+            hasPin && !auto -> "first ask the user 'unlock kar doon?' and, only after they say yes, call unlock_phone (it uses the saved PIN). Don't ask for the PIN; it is already saved."
+            else -> "ask the user to say their PIN, then call unlock_phone with that pin (used once, not saved). You may suggest they save it in Settings to skip this next time."
+        }
     }
 
     fun setWakeWordEnabled(enabled: Boolean) {
