@@ -111,9 +111,12 @@ class VoiceSession private constructor(private val context: Context) {
     private val _isSearchEnabled = MutableStateFlow(prefs.getBoolean("search_enabled", true))
     val isSearchEnabled: StateFlow<Boolean> = _isSearchEnabled.asStateFlow()
 
-    // voice.ai.nik6348.in (old Python server) ignores the setup message, so saved copies move to the default
+    // Saved copies of earlier defaults move to the current one: voice.ai.nik6348.in (old Python server,
+    // ignores the setup message) and ai.nik6348.in (Vercel, cut WebSockets after a few minutes)
     private val _serverUrl = MutableStateFlow(
-        prefs.getString("server_url", null)?.takeUnless { it.contains("voice.ai.nik6348.in") } ?: BuildConfig.DEFAULT_WS_URL
+        prefs.getString("server_url", null)
+            ?.takeUnless { it.contains("voice.ai.nik6348.in") || it.trimEnd('/') == "wss://ai.nik6348.in/ws/live" }
+            ?: BuildConfig.DEFAULT_WS_URL
     )
     val serverUrl: StateFlow<String> = _serverUrl.asStateFlow()
 

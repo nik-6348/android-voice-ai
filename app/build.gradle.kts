@@ -23,7 +23,8 @@ android {
             abiFilters += listOf("arm64-v8a")
         }
 
-        buildConfigField("String", "DEFAULT_WS_URL", "\"wss://ai.nik6348.in/ws/live\"")
+        // Cloud Run (asia-south1): WebSockets up to 60 min; Vercel cut them after 5-13 min
+        buildConfigField("String", "DEFAULT_WS_URL", "\"wss://nik-voice-536937000866.asia-south1.run.app/ws/live\"")
         buildConfigField("String", "DEFAULT_API_KEY", "\"Shiv+Shakti=Love@143\"")
     }
 
