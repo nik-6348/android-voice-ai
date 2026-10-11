@@ -18,6 +18,10 @@ android {
         vectorDrawables {
             useSupportLibrary = true
         }
+        // Vosk / JNA ship native libraries for every CPU; phones (and the arm emulator) only need 64-bit ARM
+        ndk {
+            abiFilters += listOf("arm64-v8a")
+        }
 
         buildConfigField("String", "DEFAULT_WS_URL", "\"wss://ai.nik6348.in/ws/live\"")
         buildConfigField("String", "DEFAULT_API_KEY", "\"Shiv+Shakti=Love@143\"")

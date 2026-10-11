@@ -1,6 +1,11 @@
 package com.nik.voiceassistant
 
 import android.Manifest
+import android.annotation.SuppressLint
+import android.content.Intent
+import android.net.Uri
+import android.os.PowerManager
+import android.provider.Settings
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
@@ -32,6 +37,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
 
         checkAndRequestPermissions()
+        askToSkipBatteryOptimization()
 
         setContent {
             NikVoiceTheme {
@@ -44,6 +50,18 @@ class MainActivity : ComponentActivity() {
         super.onResume()
         // The user may have just switched screen control on in Settings > Accessibility
         viewModel.refreshAgentStatus()
+    }
+
+    /** Listening for "Hi Nik" in the background only lasts if the phone doesn't put the app to sleep. */
+    @SuppressLint("BatteryLife")
+    private fun askToSkipBatteryOptimization() {
+        val power = getSystemService(PowerManager::class.java) ?: return
+        if (power.isIgnoringBatteryOptimizations(packageName)) return
+        try {
+            startActivity(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:$packageName")))
+        } catch (e: Exception) {
+            // Some phones don't offer the dialog; the app still works while it's open
+        }
     }
 
     private fun checkAndRequestPermissions() {

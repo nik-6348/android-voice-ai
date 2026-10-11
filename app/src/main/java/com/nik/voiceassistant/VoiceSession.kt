@@ -272,9 +272,13 @@ class VoiceSession private constructor(private val context: Context) {
         }
     }
 
-    /** Stops the conversation (mic button, settings change). */
+    /** Stops the conversation (mic button, notification): the service goes back to waiting for "Hi Nik". */
     fun stop() {
-        scope.launch { shutDown() }
+        scope.launch {
+            if (!_isRecording.value) return@launch
+            shutDown()
+            onConversationEnded?.invoke()
+        }
     }
 
     private fun shutDown() {
