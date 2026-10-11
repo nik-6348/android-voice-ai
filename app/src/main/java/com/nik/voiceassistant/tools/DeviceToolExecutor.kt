@@ -7,11 +7,13 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
+import android.media.AudioManager
 import android.net.Uri
 import android.os.Build
 import android.provider.ContactsContract
 import android.provider.Settings
 import android.util.Log
+import android.view.KeyEvent
 import androidx.core.content.ContextCompat
 import com.google.gson.JsonParser
 import com.nik.voiceassistant.service.PhoneAgentService
@@ -24,12 +26,27 @@ import com.nik.voiceassistant.service.PhoneAgentService
 class DeviceToolExecutor(
     private val context: Context,
     // end_conversation: the session ends once the goodbye has played
-    private val onEndConversation: () -> Unit = {}
+    private val onEndConversation: () -> Unit = {},
+    // look_at_screen: (screenshot JPEG, prompt) -> what a vision model sees, or null on failure
+    private val describeImage: ((ByteArray, String) -> String?)? = null,
+    // show_choices: (question, options) shown as a tappable list in the app and the overlay
+    private val onShowChoices: (String, List<String>) -> Unit = { _, _ -> },
+    // Whether the user said yes after the last list was shown (one use); gates send / pay / delete taps
+    private val takeConfirmation: () -> Boolean = { false }
 ) {
 
     companion object {
         private const val TAG = "DeviceToolExecutor"
         private const val MAX_APPS = 60
+
+        // Buttons that act on the user's behalf for others to see, or can't be undone (Share / Reply only open
+        // the next screen, so they don't count)
+        private val NEEDS_YES = Regex(
+            """(?i)\b(send|post|publish|submit|pay|buy|purchase|order|delete|remove|transfer)\b|भेज|पोस्ट|भुगतान|डिलीट"""
+        )
+        private const val ASK_FIRST = "Not pressed: this sends / pays / deletes, and the user hasn't confirmed yet. Say who it goes to " +
+            "and the exact text (or what will happen), call show_choices with \"Haan, bhej do\", \"Nahi\" and \"Badalna hai\", " +
+            "and wait for their answer before tapping it again."
 
         private const val AGENT_OFF = "Screen control is off. Ask the user to enable \"Nik's voice\" in " +
             "Settings > Accessibility (you can open it with launch_intent action android.settings.ACCESSIBILITY_SETTINGS)."
@@ -47,6 +64,13 @@ class DeviceToolExecutor(
             "read_screen",
             "Reads what is on the phone screen now: the foreground app and a numbered list of elements " +
                 "like [3] Button \"Send\" (tap). Call it before acting on the screen or when the user refers to what is on it."
+        ),
+        function(
+            "look_at_screen",
+            "Looks at a screenshot of the screen and describes what is visible: videos and whether they play, images, " +
+                "games, a floating mini player, anything the read_screen list misses. Slower (~4 s): use it when read_screen " +
+                "isn't enough, when the user asks what's on the screen, or to check that something worked.",
+            optional = listOf("question" to param("string", "What you want to know, e.g. \"is the video playing?\""))
         ),
         function(
             "tap",
@@ -94,6 +118,42 @@ class DeviceToolExecutor(
                     enum = listOf("back", "home", "recents", "notifications", "quick_settings", "lock_screen", "screenshot", "power_dialog")
                 )
             )
+        ),
+        function(
+            "show_choices",
+            "Shows the user a list to pick from by tapping (in the app and over other apps), e.g. when several contacts " +
+                "match a name. Also read the options out briefly; the user answers by tapping or by saying one. " +
+                "Their pick comes back as what they said.",
+            required = listOf(
+                "question" to param("string", "Short heading, e.g. \"Kaun sa Nikhil?\""),
+                "options" to mapOf("type" to "array", "items" to mapOf("type" to "string"), "description" to "2-8 options, e.g. \"Nikhil Rajput · +91 98765 43210\"")
+            )
+        ),
+        function(
+            "make_call",
+            "Calls a phone number right away (not just dialing), on speaker unless told otherwise. For a name, " +
+                "find_contact first. After it starts, say one short line and call end_conversation so you don't talk over the call.",
+            required = listOf("number" to param("string", "Phone number, e.g. +919876543210")),
+            optional = listOf("speaker" to param("boolean", "Put the call on speaker (default true)"))
+        ),
+        function(
+            "media_control",
+            "Controls whatever is playing (YouTube, Spotify, any player), even in the background or a floating player: " +
+                "pause / play / next / previous / stop. Use it to stop or pause music and videos.",
+            required = listOf("action" to param("string", "What to do", enum = listOf("pause", "play", "play_pause", "next", "previous", "stop")))
+        ),
+        function(
+            "set_volume",
+            "Sets the media volume (music, videos, and also your own voice). Give a level, or a change.",
+            optional = listOf(
+                "level" to param("integer", "0-100 percent"),
+                "change" to param("string", "Relative change", enum = listOf("up", "down", "mute", "unmute"))
+            )
+        ),
+        function(
+            "wait",
+            "Waits for the screen to settle (an app or page still loading), then returns the new screen.",
+            optional = listOf("seconds" to param("integer", "1-8, default 2"))
         ),
         function(
             "open_app",
@@ -177,7 +237,37 @@ class DeviceToolExecutor(
             when (toolName) {
                 "read_screen" -> agent?.readScreen() ?: mapOf("error" to AGENT_OFF)
 
-                "tap" -> agent?.tap(int("element_id"), str("text"), bool("long_press") == true) ?: mapOf("error" to AGENT_OFF)
+                "look_at_screen" -> if (agent == null) mapOf("error" to AGENT_OFF) else lookAtScreen(agent, str("question"))
+
+                "media_control" -> mediaControl(str("action") ?: "play_pause")
+
+                "make_call" -> makeCall(str("number"), bool("speaker") != false)
+
+                "show_choices" -> {
+                    // Arrays arrive as JSON text (see LiveAudioWebSocketClient.executeToolCall)
+                    val options = runCatching { JsonParser.parseString(str("options") ?: "[]").asJsonArray.map { it.asString } }
+                        .getOrDefault(emptyList()).filter { it.isNotBlank() }.take(8)
+                    if (options.isEmpty()) mapOf("error" to "Give at least one option")
+                    else {
+                        onShowChoices(str("question") ?: "Choose one", options)
+                        mapOf("shown" to true, "next" to "Read the options out briefly and wait for the user's pick")
+                    }
+                }
+
+                "set_volume" -> setVolume(int("level"), str("change"))
+
+                "wait" -> {
+                    Thread.sleep((int("seconds") ?: 2).coerceIn(1, 8) * 1000L)
+                    agent?.readScreen() ?: mapOf("done" to "waited")
+                }
+
+                "tap" -> when {
+                    agent == null -> mapOf("error" to AGENT_OFF)
+                    // Confirmation is enforced here, not left to the model: it once asked and sent without waiting
+                    agent.targetLabel(int("element_id"), str("text"))?.let { NEEDS_YES.containsMatchIn(it) } == true && !takeConfirmation() ->
+                        mapOf("error" to ASK_FIRST)
+                    else -> agent.tap(int("element_id"), str("text"), bool("long_press") == true)
+                }
 
                 "type_text" -> agent?.typeText(str("text") ?: "", int("element_id"), bool("submit") == true) ?: mapOf("error" to AGENT_OFF)
 
@@ -285,7 +375,12 @@ class DeviceToolExecutor(
                 val p = value.takeIf { it.isJsonPrimitive }?.asJsonPrimitive ?: continue
                 when {
                     p.isBoolean -> intent.putExtra(key, p.asBoolean)
-                    p.isNumber -> p.asNumber.toString().let { n -> n.toLongOrNull()?.let { intent.putExtra(key, it) } ?: intent.putExtra(key, n.toDouble()) }
+                    // Most extras are ints (e.g. android.intent.extra.alarm.HOUR); a Long would be ignored
+                    p.isNumber -> p.asNumber.toString().let { n ->
+                        n.toIntOrNull()?.let { intent.putExtra(key, it) }
+                            ?: n.toLongOrNull()?.let { intent.putExtra(key, it) }
+                            ?: intent.putExtra(key, n.toDouble())
+                    }
                     else -> intent.putExtra(key, p.asString)
                 }
             }
@@ -318,6 +413,93 @@ class DeviceToolExecutor(
             packageManager.queryIntentActivities(intent, PackageManager.MATCH_ALL)
         }
         return found.map { it.activityInfo.packageName }.distinct()
+    }
+
+    // ---- Seeing the screen ----
+
+    private fun lookAtScreen(agent: PhoneAgentService, question: String?): Map<String, Any?> {
+        val screen = agent.readScreen()
+        val jpeg = agent.screenshotJpeg()
+            ?: return mapOf("error" to "Couldn't take a screenshot (the app may block them); use the elements list", "screen" to screen)
+        val describe = describeImage ?: return mapOf("error" to "Screen description isn't available", "screen" to screen)
+        @Suppress("UNCHECKED_CAST")
+        val list = (screen["elements"] as? List<String>).orEmpty().joinToString("\n").take(6000)
+        val prompt = "This is a screenshot of an Android phone. " +
+            (question?.let { "Question about it: $it\n" } ?: "") +
+            "Describe what is on the screen for someone who can't see it: the app, what is shown or playing " +
+            "(video playing or paused, a floating mini player), dialogs, and the important buttons and where they are. " +
+            "At most 6 short sentences, no markdown. When you mention something that is in this list of on-screen " +
+            "elements, give its [number]:\n$list"
+        val seen = describe(jpeg, prompt)
+            ?: return mapOf("error" to "Couldn't get a description of the screen right now", "screen" to screen)
+        return mapOf("description" to seen, "screen" to screen)
+    }
+
+    // ---- Calls ----
+
+    private fun makeCall(number: String?, speaker: Boolean): Map<String, Any?> {
+        if (number.isNullOrBlank()) return mapOf("error" to "Give a phone number (use find_contact for a name)")
+        val tel = Uri.fromParts("tel", number.replace(Regex("[\\s()-]"), ""), null)
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.CALL_PHONE) != PackageManager.PERMISSION_GRANTED) {
+            // Without the permission the dialer can only be opened with the number filled in
+            context.startActivity(Intent(Intent.ACTION_DIAL, tel).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            return withScreen(mapOf(
+                "success" to false,
+                "error" to "Phone call permission is off, so only the dialer opened; tap its Call button, and tell the user to allow Phone calls for Nik's voice"
+            ))
+        }
+        context.startActivity(Intent(Intent.ACTION_CALL, tel).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        var onSpeaker = false
+        if (speaker) {
+            Thread.sleep(2500) // let the call screen come up
+            // The in-call screen's own Speaker button is what the dialer respects; the audio route is the fallback
+            onSpeaker = PhoneAgentService.instance?.switchOn(listOf("Speaker", "Speakerphone", "स्पीकर")) == true
+            if (!onSpeaker) {
+                val audio = context.getSystemService(AudioManager::class.java)
+                @Suppress("DEPRECATION")
+                runCatching { audio?.isSpeakerphoneOn = true; onSpeaker = audio?.isSpeakerphoneOn == true }
+            }
+        }
+        return withScreen(mapOf(
+            "success" to true,
+            "calling" to number,
+            "speaker" to onSpeaker,
+            "next" to "The call is on (a SIM choice may be showing: pick one if so). Say one short line, then call end_conversation."
+        ))
+    }
+
+    // ---- Media ----
+
+    private fun mediaControl(action: String): Map<String, Any?> {
+        val audio = context.getSystemService(AudioManager::class.java) ?: return mapOf("error" to "No audio service")
+        val key = when (action) {
+            "play" -> KeyEvent.KEYCODE_MEDIA_PLAY
+            "pause" -> KeyEvent.KEYCODE_MEDIA_PAUSE
+            "next" -> KeyEvent.KEYCODE_MEDIA_NEXT
+            "previous" -> KeyEvent.KEYCODE_MEDIA_PREVIOUS
+            "stop" -> KeyEvent.KEYCODE_MEDIA_STOP
+            else -> KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE
+        }
+        // Goes to the app with the active media session, like a headset button
+        audio.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, key))
+        audio.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_UP, key))
+        Thread.sleep(400)
+        return mapOf("success" to true, "done" to action, "something_playing" to audio.isMusicActive)
+    }
+
+    private fun setVolume(level: Int?, change: String?): Map<String, Any?> {
+        val audio = context.getSystemService(AudioManager::class.java) ?: return mapOf("error" to "No audio service")
+        val stream = AudioManager.STREAM_MUSIC
+        val max = audio.getStreamMaxVolume(stream)
+        when {
+            level != null -> audio.setStreamVolume(stream, (level.coerceIn(0, 100) * max + 50) / 100, AudioManager.FLAG_SHOW_UI)
+            change == "up" -> audio.adjustStreamVolume(stream, AudioManager.ADJUST_RAISE, AudioManager.FLAG_SHOW_UI)
+            change == "down" -> audio.adjustStreamVolume(stream, AudioManager.ADJUST_LOWER, AudioManager.FLAG_SHOW_UI)
+            change == "mute" -> audio.adjustStreamVolume(stream, AudioManager.ADJUST_MUTE, AudioManager.FLAG_SHOW_UI)
+            change == "unmute" -> audio.adjustStreamVolume(stream, AudioManager.ADJUST_UNMUTE, AudioManager.FLAG_SHOW_UI)
+            else -> return mapOf("error" to "Give a level (0-100) or a change (up, down, mute, unmute)")
+        }
+        return mapOf("success" to true, "volume_percent" to audio.getStreamVolume(stream) * 100 / max)
     }
 
     // ---- Contacts ----

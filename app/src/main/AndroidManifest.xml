@@ -27,6 +27,9 @@
     <!-- Always listening for "Hi Nik": ask to be left out of battery optimization (Moto kills it otherwise) -->
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
+    <!-- "Call X": place the call directly (make_call tool), not just open the dialer -->
+    <uses-permission android:name="android.permission.CALL_PHONE" />
+
     <!-- Contacts lookup for "call / message <name>" (find_contact tool) -->
     <uses-permission android:name="android.permission.READ_CONTACTS" />
 
@@ -52,6 +55,21 @@
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- Assistant gesture (long-press power, corner swipe) when Nik's voice is the default digital assistant app -->
+        <activity
+            android:name=".AssistActivity"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:launchMode="singleInstance"
+            android:noHistory="true"
+            android:taskAffinity=""
+            android:theme="@style/Theme.NikVoiceAssistant.Assist">
+            <intent-filter>
+                <action android:name="android.intent.action.ASSIST" />
+                <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
         </activity>
 

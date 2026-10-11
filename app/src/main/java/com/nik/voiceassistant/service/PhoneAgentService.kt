@@ -5,6 +5,7 @@ import android.accessibilityservice.GestureDescription
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
 import android.graphics.Path
 import android.graphics.Rect
 import android.os.Build
@@ -13,7 +14,9 @@ import android.provider.Settings
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
+import android.view.Display
 import android.view.accessibility.AccessibilityWindowInfo
+import java.io.ByteArrayOutputStream
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
@@ -77,17 +80,70 @@ class PhoneAgentService : AccessibilityService() {
      * `[n] Kind "label" (traits)`. Actionable containers take their children's text as label.
      */
     fun readScreen(): Map<String, Any?> {
-        val root = rootInActiveWindow ?: return mapOf("error" to "The screen can't be read right now; try again")
+        val active = rootInActiveWindow
+        // Every window the user can see, top-most first: the app, a floating (picture-in-picture)
+        // player, split screen, an open notification shade or system dialog. The status/navigation
+        // bars, the keyboard and our own overlay are left out.
+        val shown = windows.filter { w ->
+            when (w.type) {
+                AccessibilityWindowInfo.TYPE_APPLICATION -> true
+                AccessibilityWindowInfo.TYPE_SYSTEM -> w.isActive || w.isFocused
+                else -> false
+            }
+        }.sortedByDescending { it.layer }
+        if (shown.isEmpty() && active == null) return mapOf("error" to "The screen can't be read right now; try again")
+
         val found = mutableListOf<AccessibilityNodeInfo>()
         val lines = mutableListOf<String>()
-        collect(root, found, lines, null)
+        if (shown.isEmpty()) {
+            collect(active, found, lines, null)
+        } else {
+            for (w in shown) {
+                val root = w.root ?: continue
+                val tags = buildList {
+                    if (w.isInPictureInPictureMode) add("floating picture-in-picture player")
+                    if (w.type == AccessibilityWindowInfo.TYPE_SYSTEM) add("system")
+                    if (w.isActive) add("active")
+                }
+                val title = clean(w.title) ?: root.packageName?.toString()
+                lines += "== Window: $title (${root.packageName}${if (tags.isEmpty()) "" else ", " + tags.joinToString(", ")}) =="
+                collect(root, found, lines, null)
+            }
+        }
         elements = found
         return mapOf(
-            "app" to root.packageName?.toString(),
+            "app" to active?.packageName?.toString(),
             "keyboard_open" to windows.any { it.type == AccessibilityWindowInfo.TYPE_INPUT_METHOD },
             "elements" to lines,
             "truncated" to (found.size >= MAX_ELEMENTS)
         )
+    }
+
+    /**
+     * The screen as a JPEG about 720 px wide, or null: Android 10 and older, an app that blocks
+     * screenshots (banking, DRM video shows black), or the system refusing (too soon after the last).
+     */
+    fun screenshotJpeg(): ByteArray? {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return null
+        val latch = CountDownLatch(1)
+        var shot: Bitmap? = null
+        takeScreenshot(Display.DEFAULT_DISPLAY, mainExecutor, object : TakeScreenshotCallback {
+            override fun onSuccess(result: ScreenshotResult) {
+                shot = Bitmap.wrapHardwareBuffer(result.hardwareBuffer, result.colorSpace)?.copy(Bitmap.Config.ARGB_8888, false)
+                result.hardwareBuffer.close()
+                latch.countDown()
+            }
+
+            override fun onFailure(errorCode: Int) {
+                Log.w(TAG, "Screenshot failed: $errorCode")
+                latch.countDown()
+            }
+        })
+        latch.await(3, TimeUnit.SECONDS)
+        val full = shot ?: return null
+        val width = minOf(720, full.width)
+        val scaled = Bitmap.createScaledBitmap(full, width, full.height * width / full.width, true)
+        return ByteArrayOutputStream().also { scaled.compress(Bitmap.CompressFormat.JPEG, 70, it) }.toByteArray()
     }
 
     private fun collect(node: AccessibilityNodeInfo?, found: MutableList<AccessibilityNodeInfo>, lines: MutableList<String>, covered: String?) {
@@ -162,6 +218,15 @@ class PhoneAgentService : AccessibilityService() {
         return mapOf("success" to ok, "done" to done, "screen" to readScreen())
     }
 
+    /** The label of what a tap on this element would press (its own text, or the clickable parent's). */
+    fun targetLabel(elementId: Int?, text: String?): String? {
+        val node = find(elementId, text) ?: return text
+        var target: AccessibilityNodeInfo? = node
+        while (target != null && !target.isClickable) target = target.parent
+        return listOfNotNull(ownLabel(node), target?.let { ownLabel(it) }, target?.viewIdResourceName?.substringAfterLast('/'))
+            .joinToString(" ").ifBlank { null }
+    }
+
     fun tap(elementId: Int?, text: String?, longPress: Boolean): Map<String, Any?> {
         val node = find(elementId, text) ?: return notFound(elementId, text)
         val action = if (longPress) AccessibilityNodeInfo.ACTION_LONG_CLICK else AccessibilityNodeInfo.ACTION_CLICK
@@ -234,6 +299,22 @@ class PhoneAgentService : AccessibilityService() {
         }
         val ok = gesture(x, y, (x + dx).coerceIn(1f, w - 1), (y + dy).coerceIn(1f, h - 1), 200)
         return after("swiped $direction", ok)
+    }
+
+    /**
+     * Turns on a switch-like button found by its label (e.g. the in-call "Speaker" button), without
+     * turning it off if it is already on. Returns whether it is on now.
+     */
+    fun switchOn(labels: List<String>): Boolean {
+        for (label in labels) {
+            val node = find(null, label) ?: continue
+            var target: AccessibilityNodeInfo? = node
+            while (target != null && !target.isClickable) target = target.parent
+            target ?: continue
+            if (target.isCheckable && target.isChecked) return true
+            if (target.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return true
+        }
+        return false
     }
 
     fun navigate(action: String): Map<String, Any?> {

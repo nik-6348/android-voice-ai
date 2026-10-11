@@ -79,7 +79,8 @@ class MainActivity : ComponentActivity() {
         val permissionsToRequest = mutableListOf(
             Manifest.permission.RECORD_AUDIO,
             Manifest.permission.CAMERA,
-            Manifest.permission.READ_CONTACTS
+            Manifest.permission.READ_CONTACTS,
+            Manifest.permission.CALL_PHONE
         )
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {

@@ -75,6 +75,12 @@ class VoiceAssistantViewModel(application: Application) : AndroidViewModel(appli
 
     fun clearTranscripts() = session.clearTranscripts()
 
+    fun sendText(text: String) = session.sendText(text)
+
+    val choices: StateFlow<Choices?> = session.choices
+
+    fun pickChoice(option: String) = session.pickChoice(option)
+
     fun setWakeWordEnabled(enabled: Boolean) = session.setWakeWordEnabled(enabled)
 
     fun saveSettings(model: String, voice: String, searchEnabled: Boolean, url: String, key: String) =

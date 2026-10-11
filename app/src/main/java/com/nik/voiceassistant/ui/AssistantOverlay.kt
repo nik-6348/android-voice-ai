@@ -12,6 +12,7 @@ import android.view.View
 import android.view.WindowManager
 import android.widget.LinearLayout
 import android.widget.TextView
+import com.nik.voiceassistant.Choices
 import com.nik.voiceassistant.TranscriptItem
 import com.nik.voiceassistant.VoiceSession
 import com.nik.voiceassistant.service.PhoneAgentService
@@ -44,6 +45,7 @@ class AssistantOverlay(private val session: VoiceSession) {
     private var pill: View? = null
     private var dot: View? = null
     private var label: TextView? = null
+    private var choiceList: LinearLayout? = null
 
     // The line showing when the user tucked the pill away; a newer line brings it back
     private var tuckedAtLine: String? = null
@@ -59,6 +61,13 @@ class AssistantOverlay(private val session: VoiceSession) {
                 label?.text = latestLine(items)
                 // Tucked away, and someone has said something new since: show it again
                 if (pill == null && glow != null && latestItem(items)?.id != tuckedAtLine) showPill()
+            }
+        }
+        scope.launch {
+            session.choices.collect { open ->
+                // A list to pick from brings the pill back even if it was tucked away
+                if (open != null && pill == null && glow != null) showPill()
+                renderChoices(open)
             }
         }
         scope.launch {
@@ -138,17 +147,24 @@ class AssistantOverlay(private val session: VoiceSession) {
             maxWidth = (agent.resources.displayMetrics.widthPixels * 0.72f).toInt()
             setPadding((10 * dp).toInt(), 0, 0, 0)
         }
-        val box = LinearLayout(agent).apply {
+        val row = LinearLayout(agent).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
+            addView(pulse, LinearLayout.LayoutParams((10 * dp).toInt(), (10 * dp).toInt()))
+            addView(text)
+        }
+        // Options to tap when the assistant asks the user to pick (show_choices)
+        val options = LinearLayout(agent).apply { orientation = LinearLayout.VERTICAL }
+        val box = LinearLayout(agent).apply {
+            orientation = LinearLayout.VERTICAL
             background = GradientDrawable().apply {
                 setColor(Color.parseColor("#E60F1424"))
                 cornerRadius = 22 * dp
                 setStroke((1 * dp).toInt(), Color.parseColor("#4422D3EE"))
             }
             setPadding((14 * dp).toInt(), (10 * dp).toInt(), (16 * dp).toInt(), (10 * dp).toInt())
-            addView(pulse, LinearLayout.LayoutParams((10 * dp).toInt(), (10 * dp).toInt()))
-            addView(text)
+            addView(row)
+            addView(options)
             alpha = 0f
             translationY = 40 * dp
         }
@@ -174,6 +190,8 @@ class AssistantOverlay(private val session: VoiceSession) {
         pill = box
         dot = pulse
         label = text
+        choiceList = options
+        renderChoices(session.choices.value)
         box.animate().alpha(1f).translationY(0f).setDuration(220).start()
     }
 
@@ -185,6 +203,33 @@ class AssistantOverlay(private val session: VoiceSession) {
             MotionEvent.ACTION_UP -> tuckPill()
         }
         false
+    }
+
+    /** Fills the pill's option list (or empties it); each option is sent as the user's pick when tapped. */
+    private fun renderChoices(open: Choices?) {
+        val list = choiceList ?: return
+        list.removeAllViews()
+        open ?: return
+        val ctx = list.context
+        val dp = ctx.resources.displayMetrics.density
+        open.options.forEachIndexed { i, option ->
+            list.addView(TextView(ctx).apply {
+                text = "${i + 1}.  $option"
+                setTextColor(Color.WHITE)
+                textSize = 14f
+                maxLines = 2
+                ellipsize = TextUtils.TruncateAt.END
+                maxWidth = (ctx.resources.displayMetrics.widthPixels * 0.78f).toInt()
+                background = GradientDrawable().apply {
+                    setColor(Color.parseColor("#1AFFFFFF"))
+                    cornerRadius = 14 * dp
+                }
+                setPadding((12 * dp).toInt(), (9 * dp).toInt(), (12 * dp).toInt(), (9 * dp).toInt())
+                setOnClickListener { session.pickChoice(option) }
+            }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+                topMargin = (8 * dp).toInt()
+            })
+        }
     }
 
     /** The user touched the screen: hide the pill until someone says something new. */
@@ -199,6 +244,7 @@ class AssistantOverlay(private val session: VoiceSession) {
         pill = null
         dot = null
         label = null
+        choiceList = null
         box.animate().alpha(0f).translationY(box.height.toFloat()).setDuration(160).withEndAction {
             runCatching { windowManager()?.removeView(box) }
         }.start()

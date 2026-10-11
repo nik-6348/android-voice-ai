@@ -5,4 +5,10 @@
         <item name="android:navigationBarColor">#090D16</item>
         <item name="android:windowBackground">#090D16</item>
     </style>
+
+    <!-- Assistant gesture entry (AssistActivity): no window of its own, the app underneath stays visible -->
+    <style name="Theme.NikVoiceAssistant.Assist" parent="android:Theme.Translucent.NoTitleBar">
+        <item name="android:windowAnimationStyle">@null</item>
+        <item name="android:backgroundDimEnabled">false</item>
+    </style>
 </resources>

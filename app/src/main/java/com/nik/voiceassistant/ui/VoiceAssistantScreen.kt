@@ -4,6 +4,33 @@ import android.content.Intent
 import android.provider.Settings
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.systemBarsPadding
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.material.icons.filled.Bolt
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.GraphicEq
+import androidx.compose.material.icons.filled.Keyboard
+import androidx.compose.material.icons.filled.Send
+import androidx.compose.material.icons.filled.TouchApp
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
+import com.nik.voiceassistant.ui.components.VoiceOrb
+import com.nik.voiceassistant.ui.theme.BrandCyan
+import com.nik.voiceassistant.ui.theme.BrandPink
+import com.nik.voiceassistant.ui.theme.BrandViolet
+import com.nik.voiceassistant.ui.theme.Glass
+import com.nik.voiceassistant.ui.theme.GlassBorder
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
@@ -69,6 +96,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -105,10 +133,12 @@ fun VoiceAssistantScreen(viewModel: VoiceAssistantViewModel) {
     val currentApiKey by viewModel.apiKey.collectAsState()
     val isAgentEnabled by viewModel.isAgentEnabled.collectAsState()
     val isWakeWordEnabled by viewModel.isWakeWordEnabled.collectAsState()
+    val choices by viewModel.choices.collectAsState()
     val context = LocalContext.current
 
     val listState = rememberLazyListState()
-    var showSettingsDialog by remember { mutableStateOf(false) }
+    // First launch (no API key yet): open Settings straight away
+    var showSettingsDialog by remember { mutableStateOf(currentApiKey.isBlank()) }
 
     // Auto-scroll on new transcript
     LaunchedEffect(transcripts.size) {
@@ -118,321 +148,300 @@ fun VoiceAssistantScreen(viewModel: VoiceAssistantViewModel) {
     }
 
     val displayAmp = maxOf(micAmp, aiAmp)
+    val live = isRecording
+    val speaking = aiAmp > 0.03f
+    var typing by remember { mutableStateOf(false) }
+    var draft by remember { mutableStateOf("") }
+    val conversationStarted = transcripts.any { it.sender == "user" || it.sender == "assistant" }
+    val orbSize by animateDpAsState(if (conversationStarted) 132.dp else 230.dp, tween(450), label = "orbSize")
 
-    Surface(
-        modifier = Modifier.fillMaxSize(),
-        color = BgDark
+    val statusLine = when {
+        connectionStatus == ConnectionStatus.CONNECTING -> "Connecting…"
+        connectionStatus == ConnectionStatus.ERROR -> "Couldn't connect"
+        speaking -> "Speaking"
+        live && micAmp > 0.03f -> "Listening to you"
+        live -> "Listening"
+        isWakeWordEnabled -> "Sleeping · say \"Hi Nik\""
+        else -> "Tap the orb to talk"
+    }
+    val modelName = when {
+        currentModel.contains("2.5") -> "2.5 Flash"
+        currentModel.contains("3.1") -> "3.1 Flash"
+        currentModel.contains("3.8") -> "3.8 Live"
+        else -> currentModel.take(12)
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(BgDark)
+            // Two soft colour washes behind everything
+            .background(Brush.radialGradient(listOf(BrandViolet.copy(alpha = 0.18f), Color.Transparent), center = Offset(0f, 0f), radius = 1100f))
+            .background(Brush.radialGradient(listOf(BrandCyan.copy(alpha = 0.10f), Color.Transparent), center = Offset(1400f, 2600f), radius = 1300f))
     ) {
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(horizontal = 20.dp, vertical = 20.dp)
+                .systemBarsPadding()
+                .imePadding()
+                .padding(horizontal = 18.dp)
         ) {
-            // Top Bar
+            // ---- Top bar ----
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(top = 12.dp, bottom = 8.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
+                    .padding(top = 10.dp, bottom = 6.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Column {
-                    Text(
-                        text = "NIK'S VOICE",
-                        color = TextPrimary,
-                        fontSize = 22.sp,
-                        fontWeight = FontWeight.ExtraBold,
-                        letterSpacing = 2.sp
-                    )
-
-                    // Active Status & Model Badges Row
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.padding(top = 4.dp),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        val statusColor = when (connectionStatus) {
+                Box(
+                    modifier = Modifier
+                        .size(34.dp)
+                        .clip(CircleShape)
+                        .background(Brush.linearGradient(listOf(BrandCyan, BrandViolet, BrandPink))),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(Icons.Default.Mic, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
+                }
+                Spacer(modifier = Modifier.width(10.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Nik's voice", color = TextPrimary, fontSize = 19.sp, fontWeight = FontWeight.SemiBold)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        val dot = when (connectionStatus) {
                             ConnectionStatus.CONNECTED -> GreenActive
-                            ConnectionStatus.CONNECTING -> CyanAccent
-                            ConnectionStatus.DISCONNECTED -> TextMuted
+                            ConnectionStatus.CONNECTING -> BrandCyan
                             ConnectionStatus.ERROR -> RedStop
+                            ConnectionStatus.DISCONNECTED -> TextMuted
                         }
-
-                        // Connection Status Dot
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Box(
-                                modifier = Modifier
-                                    .size(7.dp)
-                                    .clip(CircleShape)
-                                    .background(statusColor)
-                            )
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text(
-                                text = when (connectionStatus) {
-                                    ConnectionStatus.CONNECTED -> "Live"
-                                    ConnectionStatus.CONNECTING -> "Connecting"
-                                    ConnectionStatus.DISCONNECTED -> "Offline"
-                                    ConnectionStatus.ERROR -> "Failed"
-                                },
-                                color = statusColor,
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.Medium
-                            )
-                        }
-
-                        // Model Chip Badge
-                        val shortModel = when {
-                            currentModel.contains("2.5") -> "⚡ 2.5 Flash"
-                            currentModel.contains("3.1") -> "✨ 3.1 Flash"
-                            currentModel.contains("3.8") -> "🔥 3.8 Live"
-                            else -> currentModel.take(12)
-                        }
-                        Box(
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(6.dp))
-                                .background(SurfaceDark)
-                                .border(1.dp, SurfaceCard, RoundedCornerShape(6.dp))
-                                .padding(horizontal = 6.dp, vertical = 2.dp)
-                        ) {
-                            Text(
-                                text = "$shortModel ($currentVoice)",
-                                color = CyanAccent,
-                                fontSize = 10.sp,
-                                fontFamily = FontFamily.Monospace,
-                                fontWeight = FontWeight.SemiBold
-                            )
-                        }
-
-                        // Search Grounding Badge
-                        Box(
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(6.dp))
-                                .background(if (isSearchEnabled) GreenActive.copy(alpha = 0.15f) else SurfaceDark)
-                                .border(
-                                    1.dp,
-                                    if (isSearchEnabled) GreenActive.copy(alpha = 0.5f) else SurfaceCard,
-                                    RoundedCornerShape(6.dp)
-                                )
-                                .padding(horizontal = 6.dp, vertical = 2.dp)
-                        ) {
-                            Text(
-                                text = if (isSearchEnabled) "🌐 Search ON" else "⚡ Fast",
-                                color = if (isSearchEnabled) GreenActive else TextMuted,
-                                fontSize = 10.sp,
-                                fontFamily = FontFamily.Monospace,
-                                fontWeight = FontWeight.SemiBold
-                            )
-                        }
-                    }
-                }
-
-                Row {
-                    IconButton(onClick = { viewModel.clearTranscripts() }) {
-                        Icon(
-                            imageVector = Icons.Default.DeleteOutline,
-                            contentDescription = "Clear History",
-                            tint = TextSecondary
-                        )
-                    }
-                    IconButton(onClick = { showSettingsDialog = true }) {
-                        Icon(
-                            imageVector = Icons.Default.Settings,
-                            contentDescription = "Settings",
-                            tint = CyanAccent
+                        Box(modifier = Modifier.size(6.dp).clip(CircleShape).background(dot))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            "$statusLine · $modelName · $currentVoice${if (isSearchEnabled) " · Web" else ""}",
+                            color = TextSecondary, fontSize = 11.5.sp, maxLines = 1
                         )
                     }
                 }
+                RoundIconButton(Icons.Default.DeleteOutline, "Clear conversation") { viewModel.clearTranscripts() }
+                Spacer(modifier = Modifier.width(8.dp))
+                RoundIconButton(Icons.Default.Settings, "Settings") { showSettingsDialog = true }
             }
 
-            // Screen control is off: the assistant can't read or tap the screen until it's enabled
-            if (!isAgentEnabled) {
+            // ---- Screen control off ----
+            AnimatedVisibility(visible = !isAgentEnabled) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(top = 6.dp)
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(PurpleAccent.copy(alpha = 0.12f))
-                        .border(1.dp, PurpleAccent.copy(alpha = 0.4f), RoundedCornerShape(12.dp))
+                        .padding(top = 8.dp)
+                        .clip(RoundedCornerShape(16.dp))
+                        .background(Brush.horizontalGradient(listOf(BrandViolet.copy(alpha = 0.22f), BrandPink.copy(alpha = 0.14f))))
+                        .border(1.dp, BrandViolet.copy(alpha = 0.35f), RoundedCornerShape(16.dp))
                         .clickable {
-                            context.startActivity(
-                                Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                            )
+                            context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
                         }
-                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                        .padding(horizontal = 14.dp, vertical = 12.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text(
-                        text = "Screen control is off. Tap → Accessibility → Nik's voice → On, so I can tap, type and navigate for you.",
-                        color = TextPrimary,
-                        fontSize = 12.sp,
-                        modifier = Modifier.weight(1f)
-                    )
+                    Icon(Icons.Default.TouchApp, contentDescription = null, tint = BrandPink, modifier = Modifier.size(20.dp))
+                    Spacer(modifier = Modifier.width(10.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Turn on screen control", color = TextPrimary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                        Text("So I can tap, type and open things for you", color = TextSecondary, fontSize = 11.5.sp)
+                    }
+                    Text("Enable", color = BrandCyan, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
                 }
             }
 
-            Spacer(modifier = Modifier.height(6.dp))
-
-            // Siri Waveform Visualizer
-            Box(
+            // ---- Orb ----
+            Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(175.dp)
-                    .clip(RoundedCornerShape(24.dp))
-                    .background(SurfaceDark.copy(alpha = 0.6f))
-                    .border(1.dp, SurfaceCard, RoundedCornerShape(24.dp))
-                    .padding(12.dp),
-                contentAlignment = Alignment.Center
+                    .padding(top = if (conversationStarted) 4.dp else 28.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                SiriWaveVisualizer(
-                    amplitude = displayAmp,
-                    activeColor1 = if (aiAmp > 0.05f) PurpleAccent else CyanAccent,
-                    activeColor2 = if (aiAmp > 0.05f) CyanAccent else PurpleAccent
-                )
-
-                Text(
-                    text = when {
-                        aiAmp > 0.05f -> "AI Speaking..."
-                        isRecording && micAmp > 0.05f -> "Listening to you..."
-                        isRecording -> "Listening for voice..."
-                        else -> "Say \"Hi Nik\" or tap the mic"
-                    },
-                    color = TextSecondary.copy(alpha = 0.8f),
-                    fontSize = 13.sp,
-                    fontFamily = FontFamily.Monospace,
+                VoiceOrb(
+                    level = displayAmp,
+                    live = live,
+                    speaking = speaking,
                     modifier = Modifier
-                        .align(Alignment.BottomCenter)
-                        .padding(bottom = 8.dp)
+                        .size(orbSize)
+                        .clip(CircleShape)
+                        .clickable { viewModel.toggleSession() }
                 )
+                AnimatedContent(targetState = statusLine, transitionSpec = { fadeIn(tween(250)) togetherWith fadeOut(tween(150)) }, label = "status") { text ->
+                    Text(text, color = TextSecondary, fontSize = 13.sp, letterSpacing = 0.3.sp)
+                }
             }
 
-            Spacer(modifier = Modifier.height(14.dp))
-
-            // Transcript & Logs Stream
-            Text(
-                text = "CONVERSATION & HARDWARE ACTIONS",
-                color = TextMuted,
-                fontSize = 11.sp,
-                fontWeight = FontWeight.Bold,
-                letterSpacing = 1.2.sp,
-                modifier = Modifier.padding(start = 4.dp, bottom = 6.dp)
-            )
-
-            LazyColumn(
-                state = listState,
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(16.dp))
-                    .background(SurfaceDark.copy(alpha = 0.4f))
-                    .padding(12.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                if (transcripts.isEmpty()) {
-                    item {
+            // ---- Conversation, or a welcome with suggestions ----
+            Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                if (!conversationStarted) {
+                    Column(
+                        modifier = Modifier.fillMaxSize().padding(top = 18.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Text("Namaste 👋", color = TextPrimary, fontSize = 26.sp, fontWeight = FontWeight.SemiBold)
+                        Spacer(modifier = Modifier.height(6.dp))
                         Text(
-                            text = "Say 'Hi Nik' or tap mic to speak.\nYou can say: 'WiFi settings kholo', 'YouTube pe lo-fi songs chalao', 'Is screen pe kya hai?', or ask current news.",
-                            color = TextMuted,
-                            fontSize = 13.sp,
-                            textAlign = TextAlign.Center,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(vertical = 36.dp)
+                            "Bolo ya likho — main phone chala sakta hoon,\napps khol sakta hoon, aur sawaalon ke jawab de sakta hoon.",
+                            color = TextSecondary, fontSize = 13.5.sp, textAlign = TextAlign.Center, lineHeight = 19.sp
                         )
+                        Spacer(modifier = Modifier.height(18.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            listOf("🎵 Mahakal bhajan chalao", "📶 WiFi band karo", "👀 Screen pe kya hai?", "🔊 Volume 50 karo", "🌦 Aaj ka mausam?", "💬 WhatsApp kholo")
+                                .forEach { chip ->
+                                    SuggestionChip(chip) { viewModel.sendText(chip.substringAfter(' ')) }
+                                }
+                        }
+                        // Other transcript lines (e.g. "Connected", "Add your API key") before anyone has spoken
+                        transcripts.lastOrNull { it.sender == "system" }?.let {
+                            Spacer(modifier = Modifier.height(16.dp))
+                            Text(it.text, color = TextMuted, fontSize = 11.5.sp, textAlign = TextAlign.Center)
+                        }
+                    }
+                } else {
+                    LazyColumn(
+                        state = listState,
+                        modifier = Modifier.fillMaxSize(),
+                        contentPadding = androidx.compose.foundation.layout.PaddingValues(vertical = 12.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        items(transcripts, key = { it.id }) { item -> TranscriptBubble(item) }
                     }
                 }
-                items(transcripts, key = { it.id }) { item ->
-                    TranscriptBubble(item)
+            }
+
+            // ---- A list to pick from (show_choices): tap one, or say it ----
+            AnimatedVisibility(visible = choices != null) {
+                val open = choices ?: return@AnimatedVisibility
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 10.dp)
+                        .clip(RoundedCornerShape(22.dp))
+                        .background(SurfaceDark.copy(alpha = 0.95f))
+                        .border(1.dp, BrandViolet.copy(alpha = 0.35f), RoundedCornerShape(22.dp))
+                        .padding(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(open.question, color = TextPrimary, fontSize = 15.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+                        Text("tap or say it", color = TextMuted, fontSize = 11.sp)
+                    }
+                    open.options.forEachIndexed { i, option ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(14.dp))
+                                .background(Glass)
+                                .border(1.dp, GlassBorder, RoundedCornerShape(14.dp))
+                                .clickable { viewModel.pickChoice(option) }
+                                .padding(horizontal = 12.dp, vertical = 11.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(24.dp)
+                                    .clip(CircleShape)
+                                    .background(Brush.linearGradient(listOf(BrandCyan, BrandViolet))),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text("${i + 1}", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                            }
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Text(option, color = TextPrimary, fontSize = 14.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                        }
+                    }
                 }
             }
 
-            Spacer(modifier = Modifier.height(16.dp))
+            // ---- Typing ----
+            AnimatedVisibility(visible = typing) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 10.dp)
+                        .clip(RoundedCornerShape(26.dp))
+                        .background(Glass)
+                        .border(1.dp, GlassBorder, RoundedCornerShape(26.dp))
+                        .padding(start = 18.dp, end = 6.dp, top = 4.dp, bottom = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    BasicTextField(
+                        value = draft,
+                        onValueChange = { draft = it },
+                        singleLine = true,
+                        textStyle = TextStyle(color = TextPrimary, fontSize = 15.sp),
+                        cursorBrush = SolidColor(BrandCyan),
+                        modifier = Modifier.weight(1f).padding(vertical = 12.dp),
+                        decorationBox = { field ->
+                            if (draft.isEmpty()) Text("Type a request…", color = TextMuted, fontSize = 15.sp)
+                            field()
+                        }
+                    )
+                    IconButton(
+                        onClick = { viewModel.sendText(draft); draft = "" },
+                        enabled = draft.isNotBlank(),
+                        modifier = Modifier
+                            .size(42.dp)
+                            .clip(CircleShape)
+                            .background(if (draft.isNotBlank()) Brush.linearGradient(listOf(BrandCyan, BrandViolet)) else Brush.linearGradient(listOf(SurfaceCard, SurfaceCard)))
+                    ) {
+                        Icon(Icons.Default.Send, contentDescription = "Send", tint = Color.White, modifier = Modifier.size(19.dp))
+                    }
+                }
+            }
 
-            // Bottom Actions & Large Mic Button
+            // ---- Bottom controls ----
             Row(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 14.dp, top = 4.dp),
                 horizontalArrangement = Arrangement.SpaceEvenly,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                // Stop/Interrupt Button
-                IconButton(
-                    onClick = { viewModel.interruptAssistant() },
-                    modifier = Modifier
-                        .size(54.dp)
-                        .clip(CircleShape)
-                        .background(SurfaceDark)
-                        .border(1.dp, SurfaceCard, CircleShape)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.StopCircle,
-                        contentDescription = "Interrupt AI",
-                        tint = if (aiAmp > 0.05f) RedStop else TextMuted,
-                        modifier = Modifier.size(28.dp)
-                    )
-                }
+                RoundIconButton(if (typing) Icons.Default.Close else Icons.Default.Keyboard, "Type", size = 52.dp) { typing = !typing }
 
-                // Main Mic Toggle Button
-                val infiniteTransition = rememberInfiniteTransition(label = "pulse")
-                val pulseScale by infiniteTransition.animateFloat(
-                    initialValue = 1f,
-                    targetValue = if (isRecording) 1.08f else 1f,
-                    animationSpec = infiniteRepeatable(
-                        animation = tween(800),
-                        repeatMode = RepeatMode.Reverse
-                    ),
-                    label = "pulseScale"
-                )
-
-                Box(
-                    modifier = Modifier
-                        .scale(pulseScale)
-                        .size(80.dp)
-                        .clip(CircleShape)
-                        .background(
-                            Brush.radialGradient(
-                                colors = if (isRecording) listOf(
-                                    CyanAccent,
-                                    PurpleAccent
-                                ) else listOf(SurfaceCard, SurfaceDark)
+                // Big mic: gradient while live, with a pulsing ring
+                val pulse = rememberInfiniteTransition(label = "mic")
+                val ring by pulse.animateFloat(1f, 1.35f, infiniteRepeatable(tween(1400), RepeatMode.Restart), label = "ring")
+                Box(contentAlignment = Alignment.Center, modifier = Modifier.size(96.dp)) {
+                    if (live) {
+                        Box(
+                            modifier = Modifier
+                                .size(74.dp)
+                                .scale(ring)
+                                .clip(CircleShape)
+                                .background(BrandCyan.copy(alpha = (1.35f - ring) * 0.5f))
+                        )
+                    }
+                    Box(
+                        modifier = Modifier
+                            .size(74.dp)
+                            .shadow(if (live) 18.dp else 4.dp, CircleShape, ambientColor = BrandViolet, spotColor = BrandCyan)
+                            .clip(CircleShape)
+                            .background(
+                                if (live) Brush.linearGradient(listOf(BrandCyan, BrandViolet, BrandPink))
+                                else Brush.linearGradient(listOf(SurfaceCard, SurfaceDark))
                             )
+                            .border(1.dp, if (live) Color.White.copy(alpha = 0.25f) else GlassBorder, CircleShape)
+                            .clickable { viewModel.toggleSession() },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            if (live) Icons.Default.GraphicEq else Icons.Default.Mic,
+                            contentDescription = if (live) "End conversation" else "Start talking",
+                            tint = Color.White,
+                            modifier = Modifier.size(32.dp)
                         )
-                        .border(
-                            width = 2.dp,
-                            color = if (isRecording) CyanAccent else TextMuted,
-                            shape = CircleShape
-                        )
-                        .shadow(
-                            elevation = if (isRecording) 16.dp else 0.dp,
-                            shape = CircleShape,
-                            ambientColor = CyanAccent,
-                            spotColor = PurpleAccent
-                        )
-                        .clickable { viewModel.toggleSession() },
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        imageVector = if (isRecording) Icons.Default.Mic else Icons.Default.MicOff,
-                        contentDescription = "Toggle Mic",
-                        tint = if (isRecording) BgDark else TextPrimary,
-                        modifier = Modifier.size(38.dp)
-                    )
+                    }
                 }
 
-                // Settings Shortcut Button
-                IconButton(
-                    onClick = { showSettingsDialog = true },
-                    modifier = Modifier
-                        .size(54.dp)
-                        .clip(CircleShape)
-                        .background(SurfaceDark)
-                        .border(1.dp, SurfaceCard, CircleShape)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Settings,
-                        contentDescription = "Settings",
-                        tint = TextSecondary,
-                        modifier = Modifier.size(26.dp)
-                    )
-                }
+                RoundIconButton(
+                    Icons.Default.StopCircle, "Stop speaking", size = 52.dp,
+                    tint = if (speaking) RedStop else TextSecondary
+                ) { viewModel.interruptAssistant() }
             }
         }
     }
@@ -662,7 +671,7 @@ fun VoiceAssistantScreen(viewModel: VoiceAssistantViewModel) {
                                 text = if (isWakeWordEnabled)
                                     "ON: listens on the phone (offline) for \"Hi Nik\" even when the app is closed; sleeps after each conversation."
                                 else
-                                    "OFF: open the app and tap the mic to talk.",
+                                    "OFF (mic stays closed): use the assistant gesture below, or open the app and tap the mic.",
                                 color = TextSecondary,
                                 fontSize = 11.sp,
                                 lineHeight = 14.sp
@@ -678,6 +687,38 @@ fun VoiceAssistantScreen(viewModel: VoiceAssistantViewModel) {
                                 uncheckedTrackColor = SurfaceCard
                             )
                         )
+                    }
+
+                    // Assistant gesture: Nik as the phone's digital assistant app (long-press power / corner swipe)
+                    val isAssistant = remember {
+                        android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q &&
+                            context.getSystemService(android.app.role.RoleManager::class.java)
+                                ?.isRoleHeld(android.app.role.RoleManager.ROLE_ASSISTANT) == true
+                    }
+                    Column(modifier = Modifier.fillMaxWidth()) {
+                        Text(
+                            text = "Phone assistant (like Google Assistant)",
+                            color = TextPrimary,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            text = if (isAssistant)
+                                "✓ Nik's voice is your assistant: long-press the power button (or swipe up from a bottom corner) to talk."
+                            else
+                                "Make Nik's voice the digital assistant app, then long-press the power button (or swipe up from a bottom corner) to talk. The mic opens only then.",
+                            color = TextSecondary,
+                            fontSize = 11.sp,
+                            lineHeight = 14.sp
+                        )
+                        if (!isAssistant) {
+                            TextButton(onClick = {
+                                context.startActivity(Intent(Settings.ACTION_VOICE_INPUT_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                            }) {
+                                Text("Choose Nik's voice as assistant →", color = CyanAccent, fontSize = 12.sp)
+                            }
+                        }
                     }
 
                     HorizontalDivider(color = SurfaceCard)
@@ -709,6 +750,8 @@ fun VoiceAssistantScreen(viewModel: VoiceAssistantViewModel) {
                         value = editKey,
                         onValueChange = { editKey = it },
                         label = { Text("API Key (X-API-Key)", color = TextSecondary, fontSize = 12.sp) },
+                        // Hidden like a password; it stays on this phone only
+                        visualTransformation = PasswordVisualTransformation(),
                         colors = OutlinedTextFieldDefaults.colors(
                             focusedTextColor = TextPrimary,
                             unfocusedTextColor = TextPrimary,
@@ -749,103 +792,109 @@ fun VoiceAssistantScreen(viewModel: VoiceAssistantViewModel) {
 @Composable
 fun TranscriptBubble(item: TranscriptItem) {
     when (item.sender) {
-        "user" -> {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.End
-            ) {
-                Box(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(16.dp, 16.dp, 2.dp, 16.dp))
-                        .background(CyanGlow)
-                        .border(
-                            1.dp,
-                            CyanAccent.copy(alpha = 0.5f),
-                            RoundedCornerShape(16.dp, 16.dp, 2.dp, 16.dp)
-                        )
-                        .padding(horizontal = 14.dp, vertical = 10.dp)
-                ) {
-                    Column {
-                        Text(
-                            text = item.text,
-                            color = TextPrimary,
-                            fontSize = 14.sp
-                        )
-                        Text(
-                            text = item.timeFormatted,
-                            color = TextMuted,
-                            fontSize = 10.sp,
-                            modifier = Modifier
-                                .align(Alignment.End)
-                                .padding(top = 2.dp)
-                        )
-                    }
-                }
-            }
-        }
-
-        "assistant" -> {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.Start
-            ) {
-                Box(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(16.dp, 16.dp, 16.dp, 2.dp))
-                        .background(PurpleGlow)
-                        .border(
-                            1.dp,
-                            PurpleAccent.copy(alpha = 0.5f),
-                            RoundedCornerShape(16.dp, 16.dp, 16.dp, 2.dp)
-                        )
-                        .padding(horizontal = 14.dp, vertical = 10.dp)
-                ) {
-                    Column {
-                        Text(
-                            text = item.text,
-                            color = TextPrimary,
-                            fontSize = 14.sp
-                        )
-                        Text(
-                            text = item.timeFormatted,
-                            color = TextMuted,
-                            fontSize = 10.sp,
-                            modifier = Modifier
-                                .align(Alignment.End)
-                                .padding(top = 2.dp)
-                        )
-                    }
-                }
-            }
-        }
-
-        "tool" -> {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(8.dp))
-                    .background(Color(0xFF003829))
-                    .border(1.dp, GreenActive.copy(alpha = 0.6f), RoundedCornerShape(8.dp))
-                    .padding(horizontal = 12.dp, vertical = 8.dp)
-            ) {
-                Text(
-                    text = "⚙️ ${item.text}",
-                    color = GreenActive,
-                    fontSize = 12.sp,
-                    fontFamily = FontFamily.Monospace
-                )
-            }
-        }
-
-        else -> {
+        "user" -> Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
             Text(
-                text = "• ${item.text}",
-                color = TextMuted,
-                fontSize = 11.sp,
-                fontFamily = FontFamily.Monospace,
-                modifier = Modifier.fillMaxWidth(),
-                textAlign = TextAlign.Center
+                text = item.text,
+                color = TextPrimary,
+                fontSize = 15.sp,
+                lineHeight = 21.sp,
+                modifier = Modifier
+                    .widthIn(max = 300.dp)
+                    .clip(RoundedCornerShape(20.dp, 20.dp, 6.dp, 20.dp))
+                    .background(Brush.linearGradient(listOf(BrandCyan.copy(alpha = 0.22f), BrandViolet.copy(alpha = 0.22f))))
+                    .border(1.dp, GlassBorder, RoundedCornerShape(20.dp, 20.dp, 6.dp, 20.dp))
+                    .padding(horizontal = 14.dp, vertical = 10.dp)
             )
         }
+
+        "assistant" -> Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
+            Box(
+                modifier = Modifier
+                    .padding(top = 4.dp)
+                    .size(22.dp)
+                    .clip(CircleShape)
+                    .background(Brush.linearGradient(listOf(BrandCyan, BrandViolet, BrandPink)))
+            )
+            Spacer(modifier = Modifier.width(10.dp))
+            Text(
+                text = item.text,
+                color = TextPrimary.copy(alpha = 0.92f),
+                fontSize = 15.sp,
+                lineHeight = 22.sp,
+                modifier = Modifier
+                    .widthIn(max = 310.dp)
+                    .clip(RoundedCornerShape(6.dp, 20.dp, 20.dp, 20.dp))
+                    .background(Glass)
+                    .border(1.dp, GlassBorder, RoundedCornerShape(6.dp, 20.dp, 20.dp, 20.dp))
+                    .padding(horizontal = 14.dp, vertical = 10.dp)
+            )
+        }
+
+        // "Executed open_app {app_name=youtube}: com.google.android.youtube" -> ⚡ Open app · com.google…
+        "tool" -> {
+            val body = item.text.removePrefix("Executed ")
+            val name = body.substringBefore(' ').substringBefore(':').replace('_', ' ').replaceFirstChar { it.uppercase() }
+            val detail = body.substringAfter(": ", "").take(80)
+            Row(
+                modifier = Modifier
+                    .padding(start = 32.dp)
+                    .clip(RoundedCornerShape(50))
+                    .background(BrandViolet.copy(alpha = 0.10f))
+                    .border(1.dp, BrandViolet.copy(alpha = 0.25f), RoundedCornerShape(50))
+                    .padding(horizontal = 10.dp, vertical = 5.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(Icons.Default.Bolt, contentDescription = null, tint = BrandPink, modifier = Modifier.size(14.dp))
+                Spacer(modifier = Modifier.width(5.dp))
+                Text(name, color = TextPrimary, fontSize = 12.sp, fontWeight = FontWeight.Medium)
+                if (detail.isNotBlank()) {
+                    Text(" · $detail", color = TextSecondary, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+            }
+        }
+
+        else -> Text(
+            text = item.text,
+            color = TextMuted,
+            fontSize = 11.5.sp,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp)
+        )
     }
+}
+
+@Composable
+private fun RoundIconButton(
+    icon: ImageVector,
+    description: String,
+    size: Dp = 40.dp,
+    tint: Color = TextSecondary,
+    onClick: () -> Unit
+) {
+    Box(
+        modifier = Modifier
+            .size(size)
+            .clip(CircleShape)
+            .background(Glass)
+            .border(1.dp, GlassBorder, CircleShape)
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        Icon(icon, contentDescription = description, tint = tint, modifier = Modifier.size(size * 0.46f))
+    }
+}
+
+@Composable
+private fun SuggestionChip(text: String, onClick: () -> Unit) {
+    Text(
+        text = text,
+        color = TextPrimary,
+        fontSize = 13.sp,
+        modifier = Modifier
+            .clip(RoundedCornerShape(50))
+            .background(Glass)
+            .border(1.dp, GlassBorder, RoundedCornerShape(50))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 14.dp, vertical = 9.dp)
+    )
 }

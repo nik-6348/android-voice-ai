@@ -14,3 +14,11 @@ val RedStop = Color(0xFFFF5252)
 val TextPrimary = Color(0xFFFFFFFF)
 val TextSecondary = Color(0xFF8E9BAE)
 val TextMuted = Color(0xFF53627A)
+
+// Brand gradient (same as the app icon)
+val BrandCyan = Color(0xFF22D3EE)
+val BrandViolet = Color(0xFFA855F7)
+val BrandPink = Color(0xFFF472B6)
+// Frosted-glass surfaces over the dark background
+val Glass = Color(0x14FFFFFF)
+val GlassBorder = Color(0x1FFFFFFF)
