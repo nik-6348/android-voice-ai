@@ -65,14 +65,13 @@ class LiveAudioWebSocketClient(
     @Volatile private var userClosed = true
     @Volatile private var attempts = 0
 
-    /** The server keeps the reply's echo from the model (transcriber + word barge-in); otherwise mute the mic while it plays. */
-    @Volatile
-    var serverFiltersEcho = false
-        private set
+    // Reply audio still in flight after a stop is dropped until then
+    @Volatile private var dropAudioUntil = 0L
 
-    // Pings find a dead connection (phone switched networks, host dropped it) within ~30 s
+    // Pings find a dead connection (phone switched networks, host dropped it) within ~1 min;
+    // 15 s was too tight through the host's proxy (a late pong dropped working calls)
     private val okHttpClient = OkHttpClient.Builder()
-        .pingInterval(15, TimeUnit.SECONDS)
+        .pingInterval(30, TimeUnit.SECONDS)
         .readTimeout(0, TimeUnit.MILLISECONDS)
         .connectTimeout(15, TimeUnit.SECONDS)
         .build()
@@ -120,6 +119,7 @@ class LiveAudioWebSocketClient(
 
             override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
                 // Incoming binary frame is 24kHz 16-bit PCM Audio from Gemini Live
+                if (System.currentTimeMillis() < dropAudioUntil) return
                 audioTrackManager.enqueueAudioChunk(bytes.toByteArray())
             }
 
@@ -180,6 +180,12 @@ class LiveAudioWebSocketClient(
         webSocket?.send(jsonString)
     }
 
+    /** Stops the current reply on the server; audio already on its way is dropped. */
+    fun interrupt() {
+        dropAudioUntil = System.currentTimeMillis() + 1000
+        sendJson("""{"type":"interrupt"}""")
+    }
+
     fun disconnect() {
         Log.i(TAG, "Disconnecting WebSocket")
         userClosed = true
@@ -213,10 +219,8 @@ class LiveAudioWebSocketClient(
                 }
 
                 "session", "listening" -> {
-                    val transcriber = jsonObject.get("transcriber")?.asBoolean == true
-                    serverFiltersEcho = transcriber && jsonObject.get("barge_in")?.asString == "words"
                     if (type == "session") attempts = 0 // a working session: reset the retry count
-                    Log.i(TAG, "Listening: transcriber=$transcriber, server echo filter=$serverFiltersEcho")
+                    Log.i(TAG, "Listening: transcriber=${jsonObject.get("transcriber")}")
                 }
 
                 "resume_handle" -> {

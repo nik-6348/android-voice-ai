@@ -276,11 +276,34 @@ class DeviceToolExecutor(private val context: Context) {
                 }
             }
         }
+        // A web link an installed app handles (wa.me, youtube.com, maps…) opens in that app, not the browser
+        val app = if (pkg == null && intent.data?.scheme in setOf("http", "https")) appForWebLink(intent) else null
+        app?.let { intent.setPackage(it) }
         if (intent.resolveActivity(packageManager) == null) {
             return mapOf("success" to false, "error" to "No app on this phone handles that intent; try another action/URI or open the app and use the screen")
         }
         context.startActivity(intent)
-        return withScreen(mapOf("success" to true, "launched" to listOfNotNull(action, uri, pkg).joinToString(" ")))
+        return withScreen(buildMap {
+            put("success", true)
+            put("launched", listOfNotNull(action, uri, pkg).joinToString(" "))
+            app?.let { put("opened_in", it) }
+        })
+    }
+
+    /** The first non-browser app that handles this web link, or null (then the default browser opens it). */
+    private fun appForWebLink(intent: Intent): String? {
+        val browsers = handlers(Intent(Intent.ACTION_VIEW, Uri.parse("https://example.com"))).toSet()
+        return handlers(intent).firstOrNull { it !in browsers }
+    }
+
+    private fun handlers(intent: Intent): List<String> {
+        @Suppress("DEPRECATION")
+        val found = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            packageManager.queryIntentActivities(intent, PackageManager.ResolveInfoFlags.of(PackageManager.MATCH_ALL.toLong()))
+        } else {
+            packageManager.queryIntentActivities(intent, PackageManager.MATCH_ALL)
+        }
+        return found.map { it.activityInfo.packageName }.distinct()
     }
 
     // ---- Contacts ----

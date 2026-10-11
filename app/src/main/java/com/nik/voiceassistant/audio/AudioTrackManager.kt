@@ -22,7 +22,7 @@ import kotlin.math.sqrt
 class AudioTrackManager(
     private val onPlaybackAmplitudeChanged: ((Float) -> Unit)? = null,
     // true when reply audio starts coming out of the speaker, false once all of it has played
-    // (the server holds mic audio back meanwhile, so the assistant doesn't hear itself)
+    // (plus a short tail); the mic is sent as silence meanwhile so the assistant doesn't hear itself
     private val onPlaybackStateChanged: ((Boolean) -> Unit)? = null
 ) {
     companion object {
@@ -33,7 +33,7 @@ class AudioTrackManager(
 
         // After the last sample has played, the room still echoes and the speaker lags a little;
         // a gap this short between network chunks also shouldn't count as the reply ending
-        private const val TAIL_MS = 400L
+        private const val TAIL_MS = 600L
     }
 
     private var audioTrack: AudioTrack? = null
