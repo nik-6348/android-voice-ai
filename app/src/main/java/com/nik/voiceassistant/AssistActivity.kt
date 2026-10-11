@@ -16,8 +16,22 @@ import com.nik.voiceassistant.audio.WakeWordManager
  */
 class AssistActivity : Activity() {
 
+    companion object {
+        /**
+         * Opened (invisibly) by the accessibility service when "Hi Nik" must start from the background
+         * (after a reboot, an update, or Android stopping the app): the mic is only granted to a
+         * foreground service started while something of the app is on screen.
+         */
+        const val ACTION_KEEP_LISTENING = "com.nik.voiceassistant.action.KEEP_LISTENING"
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (intent?.action == ACTION_KEEP_LISTENING) {
+            com.nik.voiceassistant.service.VoiceAssistantService.refreshListening(this)
+            Handler(Looper.getMainLooper()).postDelayed({ finish() }, 500)
+            return
+        }
         val session = VoiceSession.get(this)
         if (!session.isActive) {
             WakeWordManager.playWakeChime()

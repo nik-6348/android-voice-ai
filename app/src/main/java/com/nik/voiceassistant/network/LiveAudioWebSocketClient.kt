@@ -39,6 +39,8 @@ class LiveAudioWebSocketClient(
         fun onUserSpeaking()
         fun onModelTranscript(text: String)
         fun onToolExecuted(toolName: String, resultSummary: String)
+        /** The latest handle to continue this conversation later (kept across conversations). */
+        fun onResumeHandle(handle: String?)
     }
 
     companion object {
@@ -63,7 +65,8 @@ class LiveAudioWebSocketClient(
     // the same conversation, so the call just carries on
     private var wsUrl = ""
     private var apiKey = ""
-    private var instructions = ""
+    // (resuming) -> system instructions; a fresh session (no handle) also gets the recent conversation
+    private var instructions: (Boolean) -> String = { "" }
     @Volatile private var resumeHandle: String? = null
     @Volatile private var userClosed = true
     @Volatile private var attempts = 0
@@ -92,7 +95,7 @@ class LiveAudioWebSocketClient(
      * Connect with ?setup=true in wsUrl: the setup message below (tools + instructions) goes first,
      * and the server opens the Gemini session with it.
      */
-    fun connect(wsUrl: String, apiKey: String, instructions: String) {
+    fun connect(wsUrl: String, apiKey: String, instructions: (resuming: Boolean) -> String, resume: String? = null) {
         if (isConnected.get()) {
             Log.w(TAG, "Already connected or connecting")
             return
@@ -100,7 +103,8 @@ class LiveAudioWebSocketClient(
         this.wsUrl = wsUrl
         this.apiKey = apiKey
         this.instructions = instructions
-        resumeHandle = null
+        // Continue the last conversation (Gemini keeps it for a while) instead of starting from nothing
+        resumeHandle = resume
         dropAudioUntil = 0L
         attempts = 0
         userClosed = false
@@ -121,7 +125,7 @@ class LiveAudioWebSocketClient(
                 val setup = mapOf(
                     "type" to "setup",
                     "tools" to (toolExecutor?.declarations ?: emptyList()),
-                    "instructions" to instructions
+                    "instructions" to instructions(resumeHandle != null)
                 )
                 webSocket.send(gson.toJson(setup))
                 // The server queues audio until its Gemini session is open
@@ -178,7 +182,11 @@ class LiveAudioWebSocketClient(
             return
         }
         // A resume that keeps failing (e.g. an expired handle): start a fresh conversation instead
-        if (attempts > 2) resumeHandle = null
+        // (it still gets the recent conversation through the instructions)
+        if (attempts > 3 && resumeHandle != null) {
+            resumeHandle = null
+            listener.onResumeHandle(null)
+        }
         val delayMs = minOf(300L shl (attempts - 1), 8000L)
         Log.i(TAG, "Reconnecting in $delayMs ms (attempt $attempts): $reason")
         listener.onReconnecting(attempts, reason)
@@ -262,6 +270,7 @@ class LiveAudioWebSocketClient(
 
                 "resume_handle" -> {
                     resumeHandle = jsonObject.get("handle")?.asString
+                    listener.onResumeHandle(resumeHandle)
                 }
 
                 "go_away" -> {

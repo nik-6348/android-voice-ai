@@ -23,7 +23,12 @@ import java.util.concurrent.atomic.AtomicBoolean
  * On a match it hands over the last few seconds of audio, so a request said in the same breath
  * ("Hi Nik, YouTube kholo") reaches the assistant too.
  */
-class WakeWordDetector(private val context: Context, private val onWake: (preroll: ByteArray) -> Unit) {
+class WakeWordDetector(
+    private val context: Context,
+    // Called once listening has started: true if Android gave a silenced (muted) mic
+    private val onListening: (silenced: Boolean) -> Unit = {},
+    private val onWake: (preroll: ByteArray) -> Unit
+) {
 
     companion object {
         private const val TAG = "WakeWordDetector"
@@ -97,6 +102,15 @@ class WakeWordDetector(private val context: Context, private val onWake: (prerol
             val buf = ByteArray(CHUNK_BYTES)
             record.startRecording()
             Log.i(TAG, "Listening for \"Hi Nik\"")
+            // A background-started service gets a silenced mic (all zeros): report it so the app can fix it
+            val sessionId = record.audioSessionId
+            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                val audio = context.getSystemService(android.media.AudioManager::class.java)
+                val silenced = android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q &&
+                    audio?.activeRecordingConfigurations?.any { it.clientAudioSessionId == sessionId && it.isClientSilenced } == true
+                if (silenced) Log.w(TAG, "Mic is silenced (started from the background)")
+                if (running.get()) onListening(silenced)
+            }, 1500)
             try {
                 while (running.get()) {
                     val n = record.read(buf, 0, buf.size)

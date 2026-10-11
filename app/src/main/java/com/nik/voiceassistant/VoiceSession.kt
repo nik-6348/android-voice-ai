@@ -4,6 +4,7 @@ import android.content.Context
 import android.util.Log
 import com.nik.voiceassistant.audio.AudioRecordManager
 import com.nik.voiceassistant.audio.AudioTrackManager
+import com.nik.voiceassistant.audio.CallAudio
 import com.nik.voiceassistant.network.LiveAudioWebSocketClient
 import com.nik.voiceassistant.service.PhoneAgentService
 import com.nik.voiceassistant.service.VoiceAssistantService
@@ -109,7 +110,9 @@ class VoiceSession private constructor(private val context: Context) {
             Music and video: media_control pauses / plays / skips / stops whatever is playing, even in the background or
             in a floating player; use it to stop a video instead of hunting for buttons. To get rid of a floating player
             too: media_control pause, then close the app from recents (or tap the player and its Close / X button).
-            Volume: set_volume (it also changes how loud your own voice is).
+            Volume: set_volume (for music and videos; your own voice uses the call volume).
+            After you start music or a video for the user, say one short line and call end_conversation: the mic
+            should not keep listening to the music. Sound playing on the phone is never the user talking to you.
             When there is more than one match (contacts with the same name, several numbers, similar apps), don't guess:
             call show_choices with all of them (name and number), read them out briefly ('Teen Nikhil hain: Nikhil Rajput,
             Nikhil Office aur Nikhil Sharma. Kaun sa?'), and wait; the user taps one or says it.
@@ -341,6 +344,10 @@ class VoiceSession private constructor(private val context: Context) {
                 addTranscript("assistant", text)
             }
 
+            override fun onResumeHandle(handle: String?) {
+                prefs.edit().putString("resume_handle", handle).putLong("resume_at", System.currentTimeMillis()).apply()
+            }
+
             override fun onToolExecuted(toolName: String, resultSummary: String) {
                 touch()
                 addTranscript("tool", "Executed $toolName: $resultSummary")
@@ -348,13 +355,34 @@ class VoiceSession private constructor(private val context: Context) {
         }
     )
 
+    private val callAudio = CallAudio(context)
+
+    // Mic level (RMS 0..1) that counts as the user talking over the reply, after echo cancelling
+    private val BARGE_IN_LEVEL = 0.05
+    @Volatile private var bargeInOpenUntil = 0L
+
+    private fun rms(chunk: ByteArray): Double {
+        var sum = 0.0
+        var i = 0
+        while (i + 1 < chunk.size) {
+            val s = ((chunk[i].toInt() and 0xFF) or (chunk[i + 1].toInt() shl 8)).toShort().toDouble()
+            sum += s * s
+            i += 2
+        }
+        return Math.sqrt(sum / maxOf(1, chunk.size / 2)) / 32768.0
+    }
+
     private val audioRecordManager = AudioRecordManager(
         onAudioChunkReady = { chunk ->
-            // The mic goes out as silence while the reply plays (and briefly after): otherwise the
-            // speaker's sound reaches the mic and the assistant answers its own words. Matching the
-            // echo's words on the server failed (its transcript and the reply use different scripts).
-            val selfEcho = audioTrackManager.isAudible()
-            webSocketClient.sendAudioChunk(if (selfEcho) ByteArray(chunk.size) else chunk)
+            // While the reply plays, the phone's echo canceller (CallAudio) strips it from the mic; what is
+            // left of it is quiet, so only clearly loud sound (the user, close to the phone) goes through,
+            // and then stays open a moment so their words aren't chopped. That lets the user cut in by voice.
+            val now = System.currentTimeMillis()
+            if (audioTrackManager.isAudible() && now >= bargeInOpenUntil) {
+                if (rms(chunk) > BARGE_IN_LEVEL) bargeInOpenUntil = now + 800
+            }
+            val pass = !audioTrackManager.isAudible() || now < bargeInOpenUntil
+            webSocketClient.sendAudioChunk(if (pass) chunk else ByteArray(chunk.size))
         },
         onAmplitudeChanged = { amp -> _micAmplitude.value = amp }
     )
@@ -402,8 +430,9 @@ class VoiceSession private constructor(private val context: Context) {
             touch()
             // The service keeps the mic and the process alive while the screen is off or the app is closed
             VoiceAssistantService.startConversation(context)
+            callAudio.enter()
             preroll?.let { webSocketClient.queueAudio(it) }
-            webSocketClient.connect(buildConnectionUrl(), _apiKey.value, DEFAULT_INSTRUCTIONS)
+            webSocketClient.connect(buildConnectionUrl(), _apiKey.value, ::instructionsFor, savedResumeHandle())
             audioRecordManager.startRecording(scope)
             _isRecording.value = true
             startWatchdog()
@@ -427,6 +456,7 @@ class VoiceSession private constructor(private val context: Context) {
         _micAmplitude.value = 0f
         audioTrackManager.stopAndFlush()
         webSocketClient.disconnect()
+        callAudio.exit()
         _connectionStatus.value = ConnectionStatus.DISCONNECTED
         _choices.value = null
     }
@@ -493,6 +523,27 @@ class VoiceSession private constructor(private val context: Context) {
 
     fun clearTranscripts() {
         _transcripts.value = emptyList()
+        // A clean slate: the next conversation doesn't continue the old one either
+        prefs.edit().remove("resume_handle").remove("resume_at").apply()
+    }
+
+    /** The last conversation's handle while Gemini still keeps it (~2 h; we use it for 100 min). */
+    private fun savedResumeHandle(): String? {
+        val at = prefs.getLong("resume_at", 0L)
+        if (System.currentTimeMillis() - at > 100 * 60_000L) return null
+        return prefs.getString("resume_handle", null)
+    }
+
+    /**
+     * Resuming: Gemini still has the conversation. Fresh: add the last lines said (from this screen's
+     * transcript) so a new session still knows what was going on.
+     */
+    private fun instructionsFor(resuming: Boolean): String {
+        if (resuming) return DEFAULT_INSTRUCTIONS
+        val recent = _transcripts.value.filter { it.sender == "user" || it.sender == "assistant" }.takeLast(12)
+        if (recent.isEmpty()) return DEFAULT_INSTRUCTIONS
+        val lines = recent.joinToString("\n") { (if (it.sender == "user") "User: " else "You: ") + it.text.take(300) }
+        return "$DEFAULT_INSTRUCTIONS\n\nEarlier in this conversation (continue from here; don't repeat it back):\n$lines"
     }
 
     fun setWakeWordEnabled(enabled: Boolean) {

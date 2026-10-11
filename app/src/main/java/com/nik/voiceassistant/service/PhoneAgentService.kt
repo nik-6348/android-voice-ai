@@ -55,8 +55,26 @@ class PhoneAgentService : AccessibilityService() {
     override fun onServiceConnected() {
         instance = this
         Log.i(TAG, "Phone agent connected")
-        // Bound at boot too: start listening for "Hi Nik" without the app being opened first
-        if (com.nik.voiceassistant.VoiceSession.get(this).isWakeWordEnabled.value) VoiceAssistantService.startListening(this)
+        // Bound at boot and after updates too: start listening for "Hi Nik" without the app being opened
+        if (com.nik.voiceassistant.VoiceSession.get(this).isWakeWordEnabled.value && !VoiceAssistantService.listeningOk) bringUpListening()
+    }
+
+    /**
+     * Starts "Hi Nik" listening from the background with a working mic: Android only grants the mic
+     * to a foreground service started while the app is visible, so this opens the invisible
+     * AssistActivity for a moment (accessibility services may start activities from the background).
+     */
+    fun bringUpListening() {
+        Log.i(TAG, "Bringing up \"Hi Nik\" listening through the app")
+        try {
+            startActivity(
+                Intent(this, com.nik.voiceassistant.AssistActivity::class.java)
+                    .setAction(com.nik.voiceassistant.AssistActivity.ACTION_KEEP_LISTENING)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION)
+            )
+        } catch (e: Exception) {
+            Log.w(TAG, "Couldn't open the app to start listening: ${e.message}")
+        }
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {}

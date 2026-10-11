@@ -36,9 +36,17 @@ class VoiceAssistantService : Service() {
         private const val ACTION_LISTEN = "com.nik.voiceassistant.action.LISTEN"
         private const val ACTION_CONVERSATION = "com.nik.voiceassistant.action.CONVERSATION"
         private const val ACTION_STOP = "com.nik.voiceassistant.action.STOP"
+        private const val ACTION_REFRESH = "com.nik.voiceassistant.action.REFRESH"
+
+        /** Listening for "Hi Nik" with a mic that works (not silenced by Android). */
+        @Volatile var listeningOk = false
+            private set
 
         /** Wait for "Hi Nik" in the background. */
         fun startListening(context: Context) = send(context, ACTION_LISTEN)
+
+        /** From AssistActivity while it is on screen: restart listening so Android grants the mic. */
+        fun refreshListening(context: Context) = send(context, ACTION_REFRESH)
 
         /** A conversation is starting: keep the mic and process alive for it. */
         fun startConversation(context: Context) = send(context, ACTION_CONVERSATION)
@@ -67,11 +75,18 @@ class VoiceAssistantService : Service() {
         super.onCreate()
         createNotificationChannel()
         session = VoiceSession.get(this)
-        detector = WakeWordDetector(this) { preroll ->
-            // "Hi Nik": the detector has let go of the mic; the conversation takes over
-            WakeWordManager.playWakeChime()
-            session.start(preroll)
-        }
+        detector = WakeWordDetector(this,
+            onListening = { silenced ->
+                listeningOk = !silenced
+                // Started in the background, Android hands us a muted mic: get it back through the app
+                if (silenced) PhoneAgentService.instance?.bringUpListening()
+            },
+            onWake = { preroll ->
+                // "Hi Nik": the detector has let go of the mic; the conversation takes over
+                listeningOk = false
+                WakeWordManager.playWakeChime()
+                session.start(preroll)
+            })
         session.onConversationEnded = { listenOrStop() }
     }
 
@@ -88,12 +103,18 @@ class VoiceAssistantService : Service() {
             ACTION_CONVERSATION -> {
                 goForeground("Listening… (conversation active)")
                 detector.stop()
+                listeningOk = false
+            }
+            ACTION_REFRESH -> {
+                // Called while AssistActivity is visible: going foreground now gets the mic for good
+                detector.stop()
+                if (!goForeground("Say \"Hi Nik\" to talk")) return START_NOT_STICKY
+                if (!session.isActive) detector.start()
             }
             else -> { // ACTION_LISTEN, or a restart by the system
                 if (session.isActive) {
                     goForeground("Listening… (conversation active)")
-                } else {
-                    goForeground("Say \"Hi Nik\" to talk")
+                } else if (goForeground("Say \"Hi Nik\" to talk")) {
                     detector.start()
                 }
             }
@@ -117,12 +138,25 @@ class VoiceAssistantService : Service() {
         super.onDestroy()
     }
 
-    private fun goForeground(status: String) {
+    /**
+     * Shows the notification and claims the mic. Android refuses a microphone foreground service
+     * started from the background; then the accessibility service briefly opens AssistActivity,
+     * which starts this again from the foreground. Returns false if refused.
+     */
+    private fun goForeground(status: String): Boolean {
         val notification = buildNotification(status)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
-        } else {
-            startForeground(NOTIFICATION_ID, notification)
+        return try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
+            } else {
+                startForeground(NOTIFICATION_ID, notification)
+            }
+            true
+        } catch (e: Exception) {
+            Log.w(TAG, "Mic service refused in the background (${e.message}); reopening through the app")
+            stopSelf()
+            PhoneAgentService.instance?.bringUpListening()
+            false
         }
     }
 

@@ -65,10 +65,11 @@ class AudioTrackManager(
         )
         val bufferSize = maxOf(minBufferSize, 24000 * 2) // ~1 sec buffer capacity
 
-        // Assistant usage plays on the media volume the user turns up; voice-communication usage
-        // followed the much quieter in-call volume (phone at full media volume still sounded low)
+        // Voice-communication usage so the phone's echo canceller removes the reply from the mic (lets the
+        // user cut in by voice). It plays at the in-call volume, which CallAudio turns up for the
+        // conversation (USAGE_ASSISTANT was louder but left the reply in the mic)
         val audioAttributes = AudioAttributes.Builder()
-            .setUsage(AudioAttributes.USAGE_ASSISTANT)
+            .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
             .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
             .build()
 
