@@ -150,4 +150,11 @@ class VoiceAssistantViewModel(application: Application) : AndroidViewModel(appli
             onComplete(result.first, result.second)
         }
     }
+
+    fun recordAndExecuteAutomation(instruction: String) {
+        val clean = instruction.trim()
+        if (clean.isBlank()) return
+        com.nik.voiceassistant.data.automation.AutomationManager.startRecording(clean)
+        session.sendText(clean)
+    }
 }

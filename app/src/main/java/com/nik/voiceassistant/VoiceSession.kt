@@ -354,6 +354,10 @@ class VoiceSession private constructor(val context: Context) {
                 noteAnswer(text)
                 _choices.value = null // answered by voice
                 addTranscript("user", text)
+
+                if (handleAutomationShortcutOrRecord(text)) {
+                    return
+                }
             }
 
             override fun onUserSpeaking() = touch()
@@ -361,15 +365,29 @@ class VoiceSession private constructor(val context: Context) {
             override fun onModelTranscript(text: String) {
                 touch()
                 addTranscript("assistant", text)
+
+                // If this task was being auto-recorded, finalize and save!
+                if (com.nik.voiceassistant.data.automation.AutomationManager.isRecording()) {
+                    val saved = com.nik.voiceassistant.data.automation.AutomationManager.finishRecording(context, success = true)
+                    if (saved != null) {
+                        addTranscript("system", "⚡ Automation '${saved.title}' saved! Next time it will execute directly.")
+                    }
+                }
             }
 
             override fun onResumeHandle(handle: String?) {
                 prefs.edit().putString("resume_handle", handle).putLong("resume_at", System.currentTimeMillis()).apply()
             }
 
-            override fun onToolExecuted(toolName: String, resultSummary: String) {
+            override fun onToolExecuted(toolName: String, args: Map<String, Any?>, resultSummary: String) {
                 touch()
-                addTranscript("tool", "Executed $toolName: $resultSummary")
+                val shownArgs = args.mapValues { (k, v) -> if (k == "pin") "***" else v }
+                addTranscript("tool", "Executed $toolName $shownArgs: $resultSummary")
+
+                // Dynamically record every action step executed by AI
+                if (com.nik.voiceassistant.data.automation.AutomationManager.isRecording()) {
+                    com.nik.voiceassistant.data.automation.AutomationManager.recordStep(toolName, args, resultSummary)
+                }
             }
         }
     )
@@ -494,6 +512,51 @@ class VoiceSession private constructor(val context: Context) {
         onConversationEnded?.invoke()
     }
 
+    /**
+     * Checks if the user command matches an existing saved automation recipe, or is an explicit recording command.
+     * Returns true if handled directly without sending to Gemini.
+     */
+    private fun handleAutomationShortcutOrRecord(prompt: String): Boolean {
+        val clean = prompt.trim().lowercase()
+
+        // 1. Check for explicit record instruction: e.g. "record task", "save task", "automation banao", "task save karo"
+        val recordPrefixes = listOf(
+            "record task", "save task", "record automation", "save automation",
+            "automation banao", "automation save karo", "task save karo", "naya task banao"
+        )
+        for (prefix in recordPrefixes) {
+            if (clean.startsWith(prefix)) {
+                val actualInstruction = prompt.substring(prefix.length).trim().removePrefix(":").removePrefix("-").trim()
+                if (actualInstruction.isNotBlank()) {
+                    com.nik.voiceassistant.data.automation.AutomationManager.startRecording(actualInstruction)
+                    addTranscript("system", "⏺️ Recording automation: '$actualInstruction'. AI will perform and save it.")
+                    return false // Let it continue to Gemini so AI performs the actual task!
+                }
+            }
+        }
+
+        // 2. FAST SHORTCUT: If it matches any saved automation, execute directly!
+        if (!com.nik.voiceassistant.data.automation.AutomationManager.isRecording()) {
+            val matchedTask = com.nik.voiceassistant.data.automation.AutomationManager.findMatchingTask(context, prompt)
+            if (matchedTask != null && matchedTask.steps.isNotEmpty()) {
+                addTranscript("assistant", "Running '${matchedTask.title}'...")
+                scope.launch {
+                    com.nik.voiceassistant.data.automation.AutomationManager.executeTask(
+                        context,
+                        matchedTask,
+                        toolExecutor
+                    ) { stepIdx, total, desc ->
+                        addTranscript("system", "[$stepIdx/$total] $desc")
+                    }
+                    addTranscript("assistant", "Done! '${matchedTask.title}' complete.")
+                }
+                return true
+            }
+        }
+
+        return false
+    }
+
     /** A typed request (or a suggestion chip): sent like speech, starting a conversation if needed. */
     fun sendText(text: String) {
         val t = text.trim()
@@ -501,6 +564,11 @@ class VoiceSession private constructor(val context: Context) {
         addTranscript("user", t)
         noteAnswer(t)
         touch()
+
+        if (handleAutomationShortcutOrRecord(t)) {
+            return
+        }
+
         if (_isRecording.value && _connectionStatus.value == ConnectionStatus.CONNECTED) sendTextNow(t)
         else {
             pendingText = t

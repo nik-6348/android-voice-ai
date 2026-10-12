@@ -210,6 +210,11 @@ fun AutomationsTab(
                 viewModel.saveAutomation(newTask)
                 showCreateDialog = false
                 Toast.makeText(context, "Automation saved!", Toast.LENGTH_SHORT).show()
+            },
+            onRecordWithAi = { instruction ->
+                viewModel.recordAndExecuteAutomation(instruction)
+                showCreateDialog = false
+                Toast.makeText(context, "AI is executing & learning this task live...", Toast.LENGTH_LONG).show()
             }
         )
     }
@@ -369,107 +374,128 @@ fun AutomationCard(
 @Composable
 fun CreateAutomationDialog(
     onDismiss: () -> Unit,
-    onSave: (AutomationTask) -> Unit
+    onSave: (AutomationTask) -> Unit,
+    onRecordWithAi: (instruction: String) -> Unit
 ) {
+    var mode by remember { mutableStateOf("ai") } // "ai" or "manual"
+    var aiInstruction by remember { mutableStateOf("") }
     var title by remember { mutableStateOf("") }
     var description by remember { mutableStateOf("") }
     var trigger by remember { mutableStateOf("") }
-    var selectedActionType by remember { mutableStateOf("alarm") } // alarm, youtube, status, app
+    var selectedActionType by remember { mutableStateOf("alarm") } // alarm, youtube, app
     var customAppName by remember { mutableStateOf("") }
 
     Dialog(onDismissRequest = onDismiss) {
         Surface(
-            shape = RoundedCornerShape(20.dp),
+            shape = RoundedCornerShape(22.dp),
             color = SurfaceDark,
             border = androidx.compose.foundation.BorderStroke(1.dp, GlassBorder),
             modifier = Modifier.fillMaxWidth()
         ) {
-            Column(modifier = Modifier.padding(18.dp)) {
-                Text("New Task Automation", color = TextPrimary, fontSize = 18.sp, fontWeight = FontWeight.Bold)
-                Spacer(modifier = Modifier.height(12.dp))
-
-                OutlinedTextField(
-                    value = title,
-                    onValueChange = { title = it },
-                    label = { Text("Task Title", color = TextSecondary) },
-                    placeholder = { Text("e.g. Set Night Alarm", color = TextMuted) },
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(12.dp),
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedTextColor = TextPrimary, unfocusedTextColor = TextPrimary,
-                        focusedBorderColor = CyanAccent, unfocusedBorderColor = GlassBorder,
-                        focusedContainerColor = SurfaceCard, unfocusedContainerColor = SurfaceCard
-                    ),
-                    singleLine = true
-                )
-
-                Spacer(modifier = Modifier.height(8.dp))
-
-                OutlinedTextField(
-                    value = description,
-                    onValueChange = { description = it },
-                    label = { Text("Description", color = TextSecondary) },
-                    placeholder = { Text("What does this do?", color = TextMuted) },
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(12.dp),
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedTextColor = TextPrimary, unfocusedTextColor = TextPrimary,
-                        focusedBorderColor = CyanAccent, unfocusedBorderColor = GlassBorder,
-                        focusedContainerColor = SurfaceCard, unfocusedContainerColor = SurfaceCard
-                    ),
-                    singleLine = true
-                )
-
-                Spacer(modifier = Modifier.height(8.dp))
-
-                OutlinedTextField(
-                    value = trigger,
-                    onValueChange = { trigger = it },
-                    label = { Text("Voice Trigger (Optional)", color = TextSecondary) },
-                    placeholder = { Text("e.g. Raat ka alarm", color = TextMuted) },
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(12.dp),
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedTextColor = TextPrimary, unfocusedTextColor = TextPrimary,
-                        focusedBorderColor = CyanAccent, unfocusedBorderColor = GlassBorder,
-                        focusedContainerColor = SurfaceCard, unfocusedContainerColor = SurfaceCard
-                    ),
-                    singleLine = true
-                )
-
-                Spacer(modifier = Modifier.height(12.dp))
-
-                Text("Action Type", color = TextPrimary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                Spacer(modifier = Modifier.height(6.dp))
-
+            Column(modifier = Modifier.padding(20.dp)) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    listOf("alarm" to "Alarm", "youtube" to "YouTube", "app" to "Open App").forEach { (type, label) ->
-                        val selected = selectedActionType == type
-                        Box(
-                            modifier = Modifier
-                                .weight(1f)
-                                .clip(RoundedCornerShape(10.dp))
-                                .background(if (selected) CyanAccent.copy(alpha = 0.2f) else SurfaceCard)
-                                .border(1.dp, if (selected) CyanAccent else GlassBorder, RoundedCornerShape(10.dp))
-                                .clickable { selectedActionType = type }
-                                .padding(vertical = 8.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text(label, color = if (selected) CyanAccent else TextSecondary, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                        }
+                    Text("New Automation", color = TextPrimary, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                    IconButton(onClick = onDismiss, modifier = Modifier.size(28.dp)) {
+                        Icon(Icons.Default.Close, contentDescription = "Close", tint = TextMuted)
                     }
                 }
 
-                if (selectedActionType == "app") {
-                    Spacer(modifier = Modifier.height(8.dp))
+                Spacer(modifier = Modifier.height(10.dp))
+
+                // Mode Selector
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(SurfaceCard)
+                        .padding(3.dp),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(if (mode == "ai") CyanAccent.copy(alpha = 0.22f) else Color.Transparent)
+                            .border(if (mode == "ai") 1.dp else 0.dp, if (mode == "ai") CyanAccent else Color.Transparent, RoundedCornerShape(10.dp))
+                            .clickable { mode = "ai" }
+                            .padding(vertical = 8.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text("✨ AI Auto-Record", color = if (mode == "ai") CyanAccent else TextSecondary, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    }
+
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(if (mode == "manual") BrandViolet.copy(alpha = 0.22f) else Color.Transparent)
+                            .border(if (mode == "manual") 1.dp else 0.dp, if (mode == "manual") BrandViolet else Color.Transparent, RoundedCornerShape(10.dp))
+                            .clickable { mode = "manual" }
+                            .padding(vertical = 8.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text("🛠️ Manual Shortcut", color = if (mode == "manual") TextPrimary else TextSecondary, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(14.dp))
+
+                if (mode == "ai") {
+                    // ---- AI AUTO-RECORD: Single Instruction Mode ----
+                    Text(
+                        "Tell Shiv what to do once. AI will execute the steps live, record them, and save them for instant 1-tap runs in the future!",
+                        color = TextSecondary,
+                        fontSize = 12.sp,
+                        lineHeight = 16.sp
+                    )
+                    Spacer(modifier = Modifier.height(12.dp))
+
                     OutlinedTextField(
-                        value = customAppName,
-                        onValueChange = { customAppName = it },
-                        label = { Text("App Name", color = TextSecondary) },
-                        placeholder = { Text("e.g. WhatsApp, Camera", color = TextMuted) },
+                        value = aiInstruction,
+                        onValueChange = { aiInstruction = it },
+                        label = { Text("Task Instruction (Prompt)", color = TextSecondary) },
+                        placeholder = { Text("e.g. YouTube par Lofi chalao\nya 5:30 ka alarm lagao", color = TextMuted) },
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedTextColor = TextPrimary, unfocusedTextColor = TextPrimary,
+                            focusedBorderColor = CyanAccent, unfocusedBorderColor = GlassBorder,
+                            focusedContainerColor = SurfaceCard, unfocusedContainerColor = SurfaceCard
+                        ),
+                        minLines = 3,
+                        maxLines = 4
+                    )
+
+                    Spacer(modifier = Modifier.height(18.dp))
+
+                    Button(
+                        onClick = {
+                            if (aiInstruction.isNotBlank()) {
+                                onRecordWithAi(aiInstruction.trim())
+                            }
+                        },
+                        enabled = aiInstruction.isNotBlank(),
+                        colors = ButtonDefaults.buttonColors(containerColor = CyanAccent),
+                        shape = RoundedCornerShape(14.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(46.dp)
+                    ) {
+                        Icon(Icons.Default.Bolt, contentDescription = null, tint = BgDark, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Let AI Do It & Record Steps", color = BgDark, fontWeight = FontWeight.Bold, fontSize = 13.5.sp)
+                    }
+                } else {
+                    // ---- MANUAL TEMPLATE MODE ----
+                    OutlinedTextField(
+                        value = title,
+                        onValueChange = { title = it },
+                        label = { Text("Task Title", color = TextSecondary) },
+                        placeholder = { Text("e.g. Set Night Alarm", color = TextMuted) },
                         modifier = Modifier.fillMaxWidth(),
                         shape = RoundedCornerShape(12.dp),
                         colors = OutlinedTextFieldDefaults.colors(
@@ -479,18 +505,70 @@ fun CreateAutomationDialog(
                         ),
                         singleLine = true
                     )
-                }
 
-                Spacer(modifier = Modifier.height(16.dp))
+                    Spacer(modifier = Modifier.height(8.dp))
 
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.End
-                ) {
-                    TextButton(onClick = onDismiss) {
-                        Text("Cancel", color = TextSecondary)
+                    OutlinedTextField(
+                        value = trigger,
+                        onValueChange = { trigger = it },
+                        label = { Text("Voice Trigger", color = TextSecondary) },
+                        placeholder = { Text("e.g. Raat ka alarm", color = TextMuted) },
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedTextColor = TextPrimary, unfocusedTextColor = TextPrimary,
+                            focusedBorderColor = CyanAccent, unfocusedBorderColor = GlassBorder,
+                            focusedContainerColor = SurfaceCard, unfocusedContainerColor = SurfaceCard
+                        ),
+                        singleLine = true
+                    )
+
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    Text("Action Type", color = TextPrimary, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                    Spacer(modifier = Modifier.height(6.dp))
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        listOf("alarm" to "Alarm", "youtube" to "YouTube", "app" to "Open App").forEach { (type, label) ->
+                            val selected = selectedActionType == type
+                            Box(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(if (selected) CyanAccent.copy(alpha = 0.2f) else SurfaceCard)
+                                    .border(1.dp, if (selected) CyanAccent else GlassBorder, RoundedCornerShape(10.dp))
+                                    .clickable { selectedActionType = type }
+                                    .padding(vertical = 8.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(label, color = if (selected) CyanAccent else TextSecondary, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                            }
+                        }
                     }
-                    Spacer(modifier = Modifier.width(8.dp))
+
+                    if (selectedActionType == "app") {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        OutlinedTextField(
+                            value = customAppName,
+                            onValueChange = { customAppName = it },
+                            label = { Text("App Name", color = TextSecondary) },
+                            placeholder = { Text("e.g. WhatsApp, Camera", color = TextMuted) },
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(12.dp),
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedTextColor = TextPrimary, unfocusedTextColor = TextPrimary,
+                                focusedBorderColor = CyanAccent, unfocusedBorderColor = GlassBorder,
+                                focusedContainerColor = SurfaceCard, unfocusedContainerColor = SurfaceCard
+                            ),
+                            singleLine = true
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(16.dp))
+
                     Button(
                         onClick = {
                             if (title.isBlank()) return@Button
@@ -523,7 +601,7 @@ fun CreateAutomationDialog(
                             onSave(
                                 AutomationTask(
                                     title = title,
-                                    description = description.ifBlank { "Automated step sequence" },
+                                    description = description.ifBlank { "Manual automation shortcut" },
                                     triggerPhrase = trigger,
                                     iconName = if (selectedActionType == "alarm") "alarm" else "bolt",
                                     steps = steps
@@ -532,9 +610,10 @@ fun CreateAutomationDialog(
                         },
                         enabled = title.isNotBlank(),
                         colors = ButtonDefaults.buttonColors(containerColor = CyanAccent),
-                        shape = RoundedCornerShape(12.dp)
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.fillMaxWidth()
                     ) {
-                        Text("Save Automation", color = BgDark, fontWeight = FontWeight.Bold)
+                        Text("Save Shortcut", color = BgDark, fontWeight = FontWeight.Bold)
                     }
                 }
             }

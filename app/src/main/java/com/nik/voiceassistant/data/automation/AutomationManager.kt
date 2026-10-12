@@ -207,4 +207,133 @@ object AutomationManager {
 
         Pair(true, "Automation '${task.title}' completed successfully!")
     }
+
+    // ==========================================
+    // ACTION RECORDER: Dynamically learns multi-step tasks from 1 instruction
+    // ==========================================
+
+    data class RecordingSession(
+        val instruction: String,
+        val triggerPhrase: String,
+        val title: String,
+        val startTime: Long = System.currentTimeMillis(),
+        val steps: MutableList<AutomationStep> = mutableListOf()
+    )
+
+    @Volatile
+    private var activeRecording: RecordingSession? = null
+
+    @Synchronized
+    fun startRecording(instruction: String, triggerPhrase: String? = null, title: String? = null) {
+        val cleanTitle = title?.takeIf { it.isNotBlank() } ?: generateTitle(instruction)
+        val trigger = triggerPhrase?.takeIf { it.isNotBlank() } ?: instruction
+        activeRecording = RecordingSession(
+            instruction = instruction,
+            triggerPhrase = trigger,
+            title = cleanTitle
+        )
+        Log.i(TAG, "Started recording automation session: '$cleanTitle' from instruction: '$instruction'")
+    }
+
+    fun isRecording(): Boolean = activeRecording != null
+
+    fun getActiveRecording(): RecordingSession? = activeRecording
+
+    fun cancelRecording() {
+        activeRecording = null
+        Log.i(TAG, "Cancelled automation recording")
+    }
+
+    @Synchronized
+    fun recordStep(toolName: String, args: Map<String, Any?>, resultSummary: String = "") {
+        val session = activeRecording ?: return
+
+        // Skip internal non-action tools
+        if (toolName == "read_screen" || toolName == "show_choices") return
+
+        val desc = when (toolName) {
+            "open_app" -> "Open ${args["app_name"] ?: "App"}"
+            "tap" -> "Tap ${args["text"]?.let { "'$it'" } ?: "screen element"}"
+            "type_text" -> "Type \"${args["text"] ?: ""}\""
+            "set_volume" -> "Set volume to ${args["level"] ?: "level"}"
+            "set_wifi" -> "${if (args["enabled"] == true) "Turn on" else "Turn off"} Wi-Fi"
+            "set_bluetooth" -> "${if (args["enabled"] == true) "Turn on" else "Turn off"} Bluetooth"
+            "launch_intent" -> "Launch ${args["action"]?.toString()?.substringAfterLast('.') ?: "system intent"}"
+            "press_key" -> "Press ${args["key"] ?: "key"}"
+            "navigate" -> "Navigate ${args["action"] ?: "action"}"
+            "device_status" -> "Check device battery & network"
+            "make_call" -> "Call ${args["contact_name"] ?: args["phone_number"] ?: "contact"}"
+            else -> "Execute $toolName"
+        }
+
+        val delay = when (toolName) {
+            "open_app", "launch_intent" -> 1600L
+            "type_text" -> 1000L
+            "tap" -> 800L
+            else -> 600L
+        }
+
+        val step = AutomationStep(
+            toolName = toolName,
+            args = args,
+            description = desc,
+            delayMs = delay
+        )
+        session.steps.add(step)
+        Log.i(TAG, "Recorded automation step #${session.steps.size}: $desc ($toolName)")
+    }
+
+    @Synchronized
+    fun finishRecording(context: Context, success: Boolean = true): AutomationTask? {
+        val session = activeRecording ?: return null
+        activeRecording = null
+
+        if (!success || session.steps.isEmpty()) {
+            Log.w(TAG, "Recording discarded (success=$success, steps=${session.steps.size})")
+            return null
+        }
+
+        val icon = determineIcon(session.steps)
+        val task = AutomationTask(
+            title = session.title,
+            description = "Auto-recorded from: \"${session.instruction}\"",
+            triggerPhrase = session.triggerPhrase,
+            iconName = icon,
+            steps = session.steps.toList()
+        )
+        saveTask(context, task)
+        Log.i(TAG, "Auto-saved automation task '${task.title}' with ${task.steps.size} steps!")
+        return task
+    }
+
+    private fun determineIcon(steps: List<AutomationStep>): String {
+        val names = steps.map { it.toolName }
+        val allValues = steps.flatMap { it.args.values.map { v -> v.toString().lowercase() } }
+        return when {
+            names.contains("set_volume") || allValues.any { it.contains("music") || it.contains("youtube") || it.contains("spotify") || it.contains("song") } -> "music"
+            allValues.any { it.contains("alarm") || it.contains("clock") || it.contains("timer") } -> "alarm"
+            names.contains("make_call") || names.contains("find_contact") -> "phone"
+            else -> "bolt"
+        }
+    }
+
+    private fun generateTitle(instruction: String): String {
+        val words = instruction.trim().split("\\s+".toRegex())
+        val clean = if (words.size <= 4) instruction.trim() else words.take(4).joinToString(" ")
+        return clean.replaceFirstChar { if (it.isLowerCase()) it.titlecase() else it.toString() }
+    }
+
+    /**
+     * Checks if a user's prompt matches an existing saved automation.
+     */
+    fun findMatchingTask(context: Context, query: String): AutomationTask? {
+        val clean = query.trim().lowercase()
+        if (clean.isBlank()) return null
+        val all = getAllTasks(context)
+        return all.firstOrNull {
+            it.triggerPhrase.isNotBlank() && clean.contains(it.triggerPhrase.lowercase())
+        } ?: all.firstOrNull {
+            clean.contains(it.title.lowercase())
+        }
+    }
 }

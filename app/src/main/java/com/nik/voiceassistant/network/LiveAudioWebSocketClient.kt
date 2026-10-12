@@ -38,7 +38,7 @@ class LiveAudioWebSocketClient(
         fun onUserTranscript(text: String)
         fun onUserSpeaking()
         fun onModelTranscript(text: String)
-        fun onToolExecuted(toolName: String, resultSummary: String)
+        fun onToolExecuted(toolName: String, args: Map<String, Any?>, resultSummary: String)
         /** The latest handle to continue this conversation later (kept across conversations). */
         fun onResumeHandle(handle: String?)
     }
@@ -332,8 +332,7 @@ class LiveAudioWebSocketClient(
         val summary = result["error"] ?: result["done"] ?: result["opened"] ?: result["launched"]
             ?: result["app"]?.let { "screen of $it" } ?: result.filterKeys { it != "screen" && it != "apps" }
         // The transcript shows the arguments; a PIN must never appear there
-        val shownArgs = argsMap.mapValues { (k, v) -> if (k == "pin") "***" else v }
-        listener.onToolExecuted("$toolName $shownArgs", summary.toString().take(160))
+        listener.onToolExecuted(toolName, argsMap, summary.toString().take(160))
 
         // Always answer: Gemini waits for the tool response before it speaks again
         val response = ToolCallResponse(
