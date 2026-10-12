@@ -86,6 +86,9 @@ class VoiceAssistantViewModel(application: Application) : AndroidViewModel(appli
     val assistantName: StateFlow<String> = session.assistantName
     fun setAssistantName(name: String) = session.setAssistantName(name)
 
+    val autoSleep: StateFlow<Boolean> = session.autoSleep
+    fun setAutoSleep(enabled: Boolean) = session.setAutoSleep(enabled)
+
     // Device PIN for auto-unlock: saved encrypted on the phone, never sent anywhere
     fun hasPin(): Boolean = SecurePrefs.hasPin(getApplication())
     fun savePin(pin: String): Boolean = SecurePrefs.setPin(getApplication(), pin)

@@ -135,6 +135,7 @@ fun VoiceAssistantScreen(viewModel: VoiceAssistantViewModel) {
     val isWakeWordEnabled by viewModel.isWakeWordEnabled.collectAsState()
     val choices by viewModel.choices.collectAsState()
     val assistantName by viewModel.assistantName.collectAsState()
+    val autoSleep by viewModel.autoSleep.collectAsState()
     val context = LocalContext.current
 
     val listState = rememberLazyListState()
@@ -675,6 +676,33 @@ fun VoiceAssistantScreen(viewModel: VoiceAssistantViewModel) {
                                 )
                             )
                         }
+                    }
+
+                    // Auto sleep: end the conversation when idle, or keep it running
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Auto sleep", color = TextPrimary, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                            Spacer(modifier = Modifier.height(2.dp))
+                            Text(
+                                text = if (autoSleep)
+                                    "ON: sleeps after ~30 s of silence (saves battery and data)."
+                                else
+                                    "OFF: keeps listening and working until you stop it (or say bye). Uses more battery.",
+                                color = TextSecondary, fontSize = 11.sp, lineHeight = 14.sp
+                            )
+                        }
+                        Switch(
+                            checked = autoSleep,
+                            onCheckedChange = { viewModel.setAutoSleep(it) },
+                            colors = SwitchDefaults.colors(
+                                checkedThumbColor = BgDark, checkedTrackColor = GreenActive,
+                                uncheckedThumbColor = TextMuted, uncheckedTrackColor = SurfaceCard
+                            )
+                        )
                     }
 
                     // "Hi Nik" wake word: applies right away (not on Save)

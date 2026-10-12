@@ -148,11 +148,20 @@ class VoiceSession private constructor(private val context: Context) {
         prefs.edit().putString("assistant_name", n).apply()
     }
 
-    // Saved copies of earlier defaults move to the current one (Vercel): the old Python server
-    // (voice.ai.nik6348.in, ignores setup) and the Cloud Run trial (nik-voice…run.app)
+    // Auto sleep: end the conversation after a while idle. Off = keep listening until the user stops it.
+    private val _autoSleep = MutableStateFlow(prefs.getBoolean("auto_sleep", true))
+    val autoSleep: StateFlow<Boolean> = _autoSleep.asStateFlow()
+
+    fun setAutoSleep(enabled: Boolean) {
+        _autoSleep.value = enabled
+        prefs.edit().putBoolean("auto_sleep", enabled).apply()
+    }
+
+    // Saved copies of earlier shipped defaults move to the current one (Cloud Run): the old Python
+    // server (voice.ai.nik6348.in) and the Vercel default (exact ai.nik6348.in/ws/live). A custom URL stays.
     private val _serverUrl = MutableStateFlow(
         prefs.getString("server_url", null)
-            ?.takeUnless { it.contains("voice.ai.nik6348.in") || it.contains(".run.app") }
+            ?.takeUnless { it.contains("voice.ai.nik6348.in") || it.trimEnd('/') == "wss://ai.nik6348.in/ws/live" }
             ?: BuildConfig.DEFAULT_WS_URL
     )
     val serverUrl: StateFlow<String> = _serverUrl.asStateFlow()
@@ -502,8 +511,10 @@ class VoiceSession private constructor(private val context: Context) {
                 silentSince = if (audible) 0L else if (silentSince == 0L) now else silentSince
                 val quietFor = if (silentSince == 0L) 0L else now - silentSince
                 when {
+                    // "bye" always ends, even with auto-sleep off
                     endRequested && quietFor >= END_AFTER_SILENT_MS -> { endConversation(); return@launch }
-                    !audible && !webSocketClient.isToolRunning() && now - lastActivity > IDLE_END_MS -> {
+                    // Idle auto-sleep only when the toggle is on; off = keep listening until the user stops it
+                    _autoSleep.value && !audible && !webSocketClient.isToolRunning() && now - lastActivity > IDLE_END_MS -> {
                         Log.i(TAG, "No one has talked for ${IDLE_END_MS / 1000} s")
                         endConversation()
                         return@launch
