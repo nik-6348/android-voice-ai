@@ -187,7 +187,9 @@ class DeviceToolExecutor(
         ),
         function(
             "end_conversation",
-            "Ends the voice session and puts the assistant back to sleep (auto wake-off). Call it whenever a requested task is successfully completed (e.g. after setting an alarm, changing a setting, or completing an action), or when the user says bye/thank you. Say your final confirmation line first; the session then automatically ends and waits for the wake word again."
+            "Ends the voice session and puts the assistant to sleep. Call it ONLY when the user clearly says they are done " +
+                "('bas', 'bye', 'band karo', 'that's all'). Never call it just because a task finished: after a task, ask if " +
+                "there is anything else and keep listening. A 'thank you' or 'ok' is not a goodbye. Say a short goodbye first."
         ),
         function(
             "open_website",
@@ -239,7 +241,8 @@ class DeviceToolExecutor(
      * for a moment while the UI settles, so call this off the WebSocket thread.
      */
     fun execute(toolName: String, arguments: Map<String, Any?>?): Map<String, Any?> {
-        Log.i(TAG, "Executing tool: $toolName with arguments: $arguments")
+        // Never log a PIN (unlock_phone's one-time pin argument)
+        Log.i(TAG, "Executing tool: $toolName with arguments: ${arguments?.mapValues { (k, v) -> if (k == "pin") "***" else v }}")
         val args = arguments.orEmpty()
         fun str(key: String) = args[key]?.toString()?.takeIf { it.isNotBlank() }
         fun int(key: String) = args[key]?.toString()?.toDoubleOrNull()?.toInt()

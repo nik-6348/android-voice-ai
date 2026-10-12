@@ -331,7 +331,9 @@ class LiveAudioWebSocketClient(
         // The screen listing is for the model; the transcript gets a one-line summary
         val summary = result["error"] ?: result["done"] ?: result["opened"] ?: result["launched"]
             ?: result["app"]?.let { "screen of $it" } ?: result.filterKeys { it != "screen" && it != "apps" }
-        listener.onToolExecuted("$toolName $argsMap", summary.toString().take(160))
+        // The transcript shows the arguments; a PIN must never appear there
+        val shownArgs = argsMap.mapValues { (k, v) -> if (k == "pin") "***" else v }
+        listener.onToolExecuted("$toolName $shownArgs", summary.toString().take(160))
 
         // Always answer: Gemini waits for the tool response before it speaks again
         val response = ToolCallResponse(
