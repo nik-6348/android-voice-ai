@@ -36,6 +36,9 @@
     <!-- Contacts lookup for "call / message <name>" (find_contact tool) -->
     <uses-permission android:name="android.permission.READ_CONTACTS" />
 
+    <!-- Set alarms and timers directly via intent -->
+    <uses-permission android:name="com.android.alarm.permission.SET_ALARM" />
+
     <!-- App Launcher Permission -->
     <uses-permission
         android:name="android.permission.QUERY_ALL_PACKAGES"

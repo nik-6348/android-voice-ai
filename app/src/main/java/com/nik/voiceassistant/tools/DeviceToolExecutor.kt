@@ -187,8 +187,7 @@ class DeviceToolExecutor(
         ),
         function(
             "end_conversation",
-            "Ends the conversation when the user is done (bye, bas, thank you, that's all). Say a short goodbye first; " +
-                "the assistant then sleeps until the user says \"Hi Nik\" again."
+            "Ends the voice session and puts the assistant back to sleep (auto wake-off). Call it whenever a requested task is successfully completed (e.g. after setting an alarm, changing a setting, or completing an action), or when the user says bye/thank you. Say your final confirmation line first; the session then automatically ends and waits for the wake word again."
         ),
         function(
             "open_website",
