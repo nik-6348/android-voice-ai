@@ -136,8 +136,9 @@ class DeviceToolExecutor(
         ),
         function(
             "make_call",
-            "Calls a phone number right away (not just dialing), on speaker unless told otherwise. For a name, " +
-                "find_contact first. After it starts, say one short line and call end_conversation so you don't talk over the call.",
+            "Calls a phone number. STRICT CONFIRMATION MANDATORY: NEVER call this tool without explicit user confirmation! " +
+                "First say: 'Kya aap [Name/Number] ko call lagana chahte hain?' and wait. Only call make_call when the user explicitly confirms ('haan', 'yes', 'kar do', 'call lagao'). " +
+                "If user says no or speech was unclear, do NOT call. After it starts, say one short line and call end_conversation.",
             required = listOf("number" to param("string", "Phone number, e.g. +919876543210")),
             optional = listOf("speaker" to param("boolean", "Put the call on speaker (default true)"))
         ),

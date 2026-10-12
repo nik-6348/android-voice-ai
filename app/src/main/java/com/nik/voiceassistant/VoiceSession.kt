@@ -27,6 +27,8 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
 import android.util.Base64
+import com.nik.voiceassistant.data.history.ConversationHistoryManager
+import com.nik.voiceassistant.data.history.ConversationSession
 import java.util.concurrent.TimeUnit
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -105,10 +107,17 @@ class VoiceSession private constructor(private val context: Context) {
             CONFIRMATION POLICY:
             - Do NOT ask for confirmation on safe, routine actions (opening apps, alarms, timers, toggling device settings,
               scrolling, media control, searching).
-            - ONLY pause and ask for user confirmation before high-stakes, irreversible actions:
-              1. Sending a message or email to another person (confirm recipient and exact text).
-              2. Making a payment, purchase, or financial transfer.
-              3. Permanently deleting files, messages, or contacts.
+            - STRICT PHONE CALL CONFIRMATION:
+              NEVER dial or call directly! When asked to call anyone (e.g. "call Rahul", "call mom", "XYZ ko phone lagao"),
+              you MUST FIRST ask for explicit confirmation:
+              "Kya aap [Contact Name / Number] ko call lagana chahte hain?"
+              Wait for the user's response. ONLY when they say yes ("haan", "yes", "kar do", "call karo"), then call make_call.
+              If they say no, cancel, or if speech was unclear, DO NOT call.
+            - High-stakes, irreversible actions requiring confirmation:
+              1. Placing a phone call (make_call) - ALWAYS confirm contact/number first.
+              2. Sending a message or email to another person (confirm recipient and exact text).
+              3. Making a payment, purchase, or financial transfer.
+              4. Permanently deleting files, messages, or contacts.
             For all other actions, proceed autonomously.
 
             How to interact with the phone:
@@ -194,6 +203,11 @@ class VoiceSession private constructor(private val context: Context) {
 
     private val _transcripts = MutableStateFlow<List<TranscriptItem>>(emptyList())
     val transcripts: StateFlow<List<TranscriptItem>> = _transcripts.asStateFlow()
+
+    private val _historySessions = MutableStateFlow<List<ConversationSession>>(ConversationHistoryManager.getAllSessions(context))
+    val historySessions: StateFlow<List<ConversationSession>> = _historySessions.asStateFlow()
+
+    @Volatile private var currentSession: ConversationSession? = null
 
     /** Called when a conversation ends by itself (bye or idle), so the service can listen for "Hi Nik" again. */
     @Volatile var onConversationEnded: (() -> Unit)? = null
@@ -535,9 +549,43 @@ class VoiceSession private constructor(private val context: Context) {
 
     fun clearTranscripts() {
         _transcripts.value = emptyList()
+        currentSession = null
         // A clean slate: the next conversation doesn't continue the old one either
         prefs.edit().remove("resume_handle").remove("resume_at").apply()
     }
+
+    fun startNewChat() {
+        if (connectionStatus.value == ConnectionStatus.CONNECTED) {
+            stop()
+        }
+        _transcripts.value = emptyList()
+        currentSession = ConversationHistoryManager.createSession(context)
+        _historySessions.value = ConversationHistoryManager.getAllSessions(context)
+        prefs.edit().remove("resume_handle").remove("resume_at").apply()
+        addTranscript("system", "New conversation started")
+    }
+
+    fun resumeChat(sessionId: String) {
+        val session = ConversationHistoryManager.getSession(context, sessionId) ?: return
+        if (connectionStatus.value == ConnectionStatus.CONNECTED) {
+            stop()
+        }
+        currentSession = session
+        _transcripts.value = session.messages.toList()
+        _historySessions.value = ConversationHistoryManager.getAllSessions(context)
+        addTranscript("system", "Resumed: ${session.title}")
+    }
+
+    fun deleteChat(sessionId: String) {
+        ConversationHistoryManager.deleteSession(context, sessionId)
+        if (currentSession?.id == sessionId) {
+            currentSession = null
+            _transcripts.value = emptyList()
+        }
+        _historySessions.value = ConversationHistoryManager.getAllSessions(context)
+    }
+
+    fun getToolExecutor(): DeviceToolExecutor = toolExecutor
 
     /** The last conversation's handle while Gemini still keeps it (~2 h; we use it for 100 min). */
     private fun savedResumeHandle(): String? {
@@ -606,14 +654,35 @@ class VoiceSession private constructor(private val context: Context) {
         scope.launch {
             val list = _transcripts.value.toMutableList()
             val last = list.lastOrNull()
+            val item: TranscriptItem
             if (last != null && last.sender == sender && (sender == "assistant" || sender == "user")) {
                 val needsSpace = !last.text.endsWith(" ") && !text.startsWith(" ") && !text.matches(Regex("^[.,!?:;].*"))
                 val newText = if (needsSpace) last.text + " " + text else last.text + text
-                list[list.lastIndex] = last.copy(text = newText)
+                item = last.copy(text = newText)
+                list[list.lastIndex] = item
             } else {
-                list.add(TranscriptItem(sender = sender, text = text))
+                item = TranscriptItem(sender = sender, text = text)
+                list.add(item)
             }
             _transcripts.value = list.takeLast(300)
+
+            // Save to persistent conversation history session
+            if (sender == "user" || sender == "assistant" || sender == "tool") {
+                if (currentSession == null) {
+                    currentSession = ConversationHistoryManager.createSession(context)
+                }
+                currentSession?.let { sess ->
+                    val sessList = sess.messages
+                    val idx = sessList.indexOfFirst { it.id == item.id }
+                    if (idx >= 0) {
+                        sessList[idx] = item
+                    } else {
+                        sessList.add(item)
+                    }
+                    ConversationHistoryManager.saveSession(context, sess)
+                    _historySessions.value = ConversationHistoryManager.getAllSessions(context)
+                }
+            }
         }
     }
 }

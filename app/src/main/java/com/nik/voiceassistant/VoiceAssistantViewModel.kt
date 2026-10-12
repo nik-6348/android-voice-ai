@@ -2,9 +2,11 @@ package com.nik.voiceassistant
 
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 
 /**
  * The screen's view of the conversation. The conversation itself lives in VoiceSession, so it
@@ -97,4 +99,55 @@ class VoiceAssistantViewModel(application: Application) : AndroidViewModel(appli
 
     fun saveSettings(model: String, voice: String, searchEnabled: Boolean, url: String, key: String) =
         session.saveSettings(model, voice, searchEnabled, url, key)
+
+    // ---- History Management ----
+    val historySessions: StateFlow<List<com.nik.voiceassistant.data.history.ConversationSession>> = session.historySessions
+
+    fun startNewChat() = session.startNewChat()
+
+    fun resumeChat(sessionId: String) = session.resumeChat(sessionId)
+
+    fun deleteChat(sessionId: String) = session.deleteChat(sessionId)
+
+    // ---- Automations Management ----
+    private val _automations = MutableStateFlow<List<com.nik.voiceassistant.data.automation.AutomationTask>>(
+        com.nik.voiceassistant.data.automation.AutomationManager.getAllTasks(getApplication())
+    )
+    val automations: StateFlow<List<com.nik.voiceassistant.data.automation.AutomationTask>> = _automations.asStateFlow()
+
+    fun refreshAutomations() {
+        _automations.value = com.nik.voiceassistant.data.automation.AutomationManager.getAllTasks(getApplication())
+    }
+
+    fun saveAutomation(task: com.nik.voiceassistant.data.automation.AutomationTask) {
+        com.nik.voiceassistant.data.automation.AutomationManager.saveTask(getApplication(), task)
+        refreshAutomations()
+    }
+
+    fun deleteAutomation(id: String) {
+        com.nik.voiceassistant.data.automation.AutomationManager.deleteTask(getApplication(), id)
+        refreshAutomations()
+    }
+
+    fun toggleFavoriteAutomation(id: String) {
+        com.nik.voiceassistant.data.automation.AutomationManager.toggleFavorite(getApplication(), id)
+        refreshAutomations()
+    }
+
+    fun executeAutomation(
+        task: com.nik.voiceassistant.data.automation.AutomationTask,
+        onProgress: (stepIndex: Int, total: Int, desc: String) -> Unit,
+        onComplete: (success: Boolean, message: String) -> Unit
+    ) {
+        viewModelScope.launch {
+            val result = com.nik.voiceassistant.data.automation.AutomationManager.executeTask(
+                getApplication(),
+                task,
+                session.getToolExecutor(),
+                onProgress
+            )
+            refreshAutomations()
+            onComplete(result.first, result.second)
+        }
+    }
 }
