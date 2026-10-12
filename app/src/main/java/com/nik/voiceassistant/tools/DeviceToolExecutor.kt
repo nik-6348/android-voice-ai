@@ -67,10 +67,8 @@ class DeviceToolExecutor(
         ),
         function(
             "unlock_phone",
-            "Unlocks the phone when the screen is locked. Normally call it with no arguments: it uses the PIN the user " +
-                "saved in Settings, on the device (you never see that PIN). Only if it reports that no PIN is saved, ask the " +
-                "user to tell you their PIN once and call it again with that pin; a one-time pin is used and not stored.",
-            optional = listOf("pin" to param("string", "Only a one-time PIN the user just told you because none is saved"))
+            "Unlocks the phone using the PIN saved in Settings. Only works if Auto-unlock is turned ON in Settings. " +
+                "If Auto-unlock is OFF or no PIN is saved, do NOT call this tool; instead, inform the user: 'Phone locked hai, kripya pehle phone unlock karein'."
         ),
         function(
             "look_at_screen",
@@ -253,10 +251,18 @@ class DeviceToolExecutor(
             when (toolName) {
                 "read_screen" -> agent?.readScreen() ?: mapOf("error" to AGENT_OFF)
 
-                "unlock_phone" -> if (agent == null) mapOf("error" to AGENT_OFF) else {
-                    val err = agent.unlockWithSavedPin(str("pin"))
-                    if (err == null) withScreen(mapOf("success" to true, "done" to "phone unlocked"))
-                    else mapOf("success" to false, "error" to err)
+                "unlock_phone" -> {
+                    if (!com.nik.voiceassistant.SecurePrefs.isAutoUnlockEnabled(context)) {
+                        mapOf("success" to false, "error" to "Auto-unlock is OFF in Settings for security. Tell the user: 'Phone locked hai, kripya pehle phone unlock karein.'")
+                    } else if (!com.nik.voiceassistant.SecurePrefs.hasPin(context)) {
+                        mapOf("success" to false, "error" to "No PIN is saved in Settings. Tell the user: 'Phone locked hai aur PIN saved nahi hai. Kripya pehle phone unlock karein.'")
+                    } else if (agent == null) {
+                        mapOf("error" to AGENT_OFF)
+                    } else {
+                        val err = agent.unlockWithSavedPin()
+                        if (err == null) withScreen(mapOf("success" to true, "done" to "phone unlocked"))
+                        else mapOf("success" to false, "error" to err)
+                    }
                 }
 
                 "look_at_screen" -> if (agent == null) mapOf("error" to AGENT_OFF) else lookAtScreen(agent, str("question"))

@@ -808,13 +808,13 @@ fun VoiceAssistantScreen(viewModel: VoiceAssistantViewModel) {
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Column(modifier = Modifier.weight(1f)) {
-                            Text("Unlock without asking", color = TextPrimary, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                            Text("Auto-unlock phone", color = TextPrimary, fontSize = 13.sp, fontWeight = FontWeight.Bold)
                             Spacer(modifier = Modifier.height(2.dp))
                             Text(
                                 text = if (autoUnlock)
-                                    "ON: when locked, Nik unlocks straight away using the saved PIN."
+                                    "ON (Testing / Hands-free): When locked, $assistantName automatically unlocks the phone using the saved PIN."
                                 else
-                                    "OFF: when locked, Nik asks 'unlock kar doon?' first.",
+                                    "OFF (Secure): When locked, $assistantName will ask you to unlock the phone first ('Phone locked hai, pehle unlock karein').",
                                 color = TextSecondary, fontSize = 11.sp, lineHeight = 14.sp
                             )
                         }

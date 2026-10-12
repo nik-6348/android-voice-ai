@@ -564,9 +564,9 @@ class VoiceSession private constructor(private val context: Context) {
         val hasPin = SecurePrefs.hasPin(context)
         val auto = SecurePrefs.isAutoUnlockEnabled(context)
         return "Locked phone: if the screen is locked and you need to act on it, " + when {
-            hasPin && auto -> "call unlock_phone (it uses the saved PIN) right away, saying one short line like 'unlock kar raha hoon'."
-            hasPin && !auto -> "first ask the user 'unlock kar doon?' and, only after they say yes, call unlock_phone (it uses the saved PIN). Don't ask for the PIN; it is already saved."
-            else -> "ask the user to say their PIN, then call unlock_phone with that pin (used once, not saved). You may suggest they save it in Settings to skip this next time."
+            hasPin && auto -> "call unlock_phone (it uses the saved PIN on device) right away without asking, and then proceed with the requested task."
+            hasPin && !auto -> "do NOT unlock the phone, and do NOT call unlock_phone. Tell the user clearly: 'Phone locked hai, kripya pehle phone unlock karein.' (Auto-unlock is OFF in Settings for security). Wait for the user to unlock the phone."
+            else -> "do NOT unlock the phone. Tell the user clearly: 'Phone locked hai, kripya pehle phone unlock karein.' (No PIN is saved in Settings)."
         }
     }
 

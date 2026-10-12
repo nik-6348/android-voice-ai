@@ -145,6 +145,7 @@ class PhoneAgentService : AccessibilityService() {
         elements = found
         return mapOf(
             "app" to active?.packageName?.toString(),
+            "locked" to isLocked(),
             "keyboard_open" to windows.any { it.type == AccessibilityWindowInfo.TYPE_INPUT_METHOD },
             "elements" to lines,
             "truncated" to (found.size >= MAX_ELEMENTS)
@@ -369,24 +370,36 @@ class PhoneAgentService : AccessibilityService() {
             ?: return "No PIN is saved. Ask the user for their PIN, then call unlock_phone with it."
         if (!pin.all { it.isDigit() }) return "Only a numeric PIN can be entered automatically."
 
+        Log.i(TAG, "unlockWithSavedPin started: waking screen and swiping up")
         wakeScreen()
         Thread.sleep(600)
         // Reveal the PIN pad: swipe up from the bottom (the lock screen shows the clock first)
         val m = resources.displayMetrics
         gesture(m.widthPixels / 2f, m.heightPixels * 0.85f, m.widthPixels / 2f, m.heightPixels * 0.2f, 250)
-        Thread.sleep(700)
+        Thread.sleep(800)
 
         for (digit in pin) {
-            if (!tapKeypadDigit(digit)) return "Couldn't find the PIN keypad on screen."
-            Thread.sleep(180)
+            if (!tapKeypadDigit(digit)) {
+                Log.w(TAG, "Failed to tap digit '$digit'")
+                return "Couldn't find the PIN keypad on screen."
+            }
+            Thread.sleep(200)
         }
-        // Many PINs auto-submit at the right length; otherwise press enter/done
+        // Many PINs auto-submit at the right length; otherwise press enter/done/continue
         Thread.sleep(500)
         if (km.isKeyguardLocked) {
+            Log.i(TAG, "Phone still locked after entering digits; tapping enter/continue key")
             tapKeypadEnter()
-            Thread.sleep(800)
+            Thread.sleep(900)
+            if (km.isKeyguardLocked) {
+                Log.i(TAG, "Phone still locked; re-tapping enter/continue key")
+                tapKeypadEnter()
+                Thread.sleep(700)
+            }
         }
-        return if (km.isKeyguardLocked) "The PIN didn't unlock the phone (it may be wrong)." else null
+        val stillLocked = km.isKeyguardLocked
+        Log.i(TAG, "unlockWithSavedPin finished; stillLocked=$stillLocked")
+        return if (stillLocked) "The PIN didn't unlock the phone (it may be wrong)." else null
     }
 
     @Suppress("DEPRECATION")
@@ -401,33 +414,94 @@ class PhoneAgentService : AccessibilityService() {
 
     /** Taps a digit on the lock-screen keypad, found by its text or content description. */
     private fun tapKeypadDigit(digit: Char): Boolean {
-        val root = rootInActiveWindow ?: return false
-        val candidates = root.findAccessibilityNodeInfosByText(digit.toString()).orEmpty()
-            .filter { it.isVisibleToUser && (it.isClickable || it.className?.contains("Button") == true || it.className?.contains("View") == true) }
-        // Prefer a node whose label is exactly the digit (not "12" etc.)
-        val node = candidates.firstOrNull { ownLabel(it) == digit.toString() || it.contentDescription?.toString() == digit.toString() }
-            ?: candidates.firstOrNull()
-            ?: findByDesc(root, digit.toString())
-            ?: return false
-        var target: AccessibilityNodeInfo? = node
-        while (target != null && !target.isClickable) target = target.parent
-        if (target?.performAction(AccessibilityNodeInfo.ACTION_CLICK) == true) return true
-        val r = Rect().also { node.getBoundsInScreen(it) }
-        return gesture(r.exactCenterX(), r.exactCenterY(), r.exactCenterX(), r.exactCenterY(), 50)
+        val roots = buildList {
+            rootInActiveWindow?.let { add(it) }
+            for (w in windows) { w.root?.let { if (!contains(it)) add(it) } }
+        }
+        for (root in roots) {
+            val candidates = root.findAccessibilityNodeInfosByText(digit.toString()).orEmpty()
+                .filter { it.className?.contains("Button") == true || it.className?.contains("View") == true || it.isClickable }
+            val node = candidates.firstOrNull { ownLabel(it) == digit.toString() || it.contentDescription?.toString() == digit.toString() }
+                ?: candidates.firstOrNull()
+                ?: findByDesc(root, digit.toString())
+                ?: continue
+
+            val r = Rect().also { node.getBoundsInScreen(it) }
+            Log.i(TAG, "Tapping digit '$digit' at screen coords (${r.exactCenterX()}, ${r.exactCenterY()}) [bounds=$r]")
+            val gestureOk = gesture(r.exactCenterX(), r.exactCenterY(), r.exactCenterX(), r.exactCenterY(), 60)
+            var target: AccessibilityNodeInfo? = node
+            while (target != null && !target.isClickable) target = target.parent
+            target?.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+            return gestureOk || target != null
+        }
+        return false
     }
 
-    private fun tapKeypadEnter() {
-        val root = rootInActiveWindow ?: return
-        for (word in listOf("Enter", "Done", "OK", "Confirm", "Unlock")) {
-            val n = root.findAccessibilityNodeInfosByText(word).orEmpty().firstOrNull { it.isVisibleToUser } ?: continue
-            var t: AccessibilityNodeInfo? = n
-            while (t != null && !t.isClickable) t = t.parent
-            if (t?.performAction(AccessibilityNodeInfo.ACTION_CLICK) == true) return
+    private fun tapKeypadEnter(): Boolean {
+        val roots = buildList {
+            rootInActiveWindow?.let { add(it) }
+            for (w in windows) { w.root?.let { if (!contains(it)) add(it) } }
         }
+        val words = listOf("continue", "enter", "done", "ok", "confirm", "unlock", "next", "go", "check")
+
+        // 1. Search across all windows for matching view ID, content description, or text
+        for (root in roots) {
+            // Check direct resource IDs
+            val enterById = firstMatching(root) { n ->
+                val res = n.viewIdResourceName?.lowercase() ?: ""
+                res.contains("enter") || res.contains("continue") || res.contains("confirm") || res.contains("submit")
+            }
+            if (enterById != null) {
+                val r = Rect().also { enterById.getBoundsInScreen(it) }
+                if (r.width() > 0 && r.height() > 0) {
+                    Log.i(TAG, "Found enter/continue key by ID: ${enterById.viewIdResourceName} at $r")
+                    gesture(r.exactCenterX(), r.exactCenterY(), r.exactCenterX(), r.exactCenterY(), 60)
+                    enterById.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                    return true
+                }
+            }
+
+            // Check content description
+            val enterByDesc = firstMatching(root) { n ->
+                val desc = n.contentDescription?.toString()?.lowercase() ?: ""
+                words.any { desc.contains(it) }
+            }
+            if (enterByDesc != null) {
+                val r = Rect().also { enterByDesc.getBoundsInScreen(it) }
+                if (r.width() > 0 && r.height() > 0) {
+                    Log.i(TAG, "Found enter/continue key by desc: ${enterByDesc.contentDescription} at $r")
+                    gesture(r.exactCenterX(), r.exactCenterY(), r.exactCenterX(), r.exactCenterY(), 60)
+                    enterByDesc.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                    return true
+                }
+            }
+
+            // Check text
+            for (word in words) {
+                val candidates = root.findAccessibilityNodeInfosByText(word).orEmpty()
+                for (node in candidates) {
+                    val r = Rect().also { node.getBoundsInScreen(it) }
+                    if (r.width() > 0 && r.height() > 0) {
+                        Log.i(TAG, "Found enter/continue key by text '$word' at $r")
+                        gesture(r.exactCenterX(), r.exactCenterY(), r.exactCenterX(), r.exactCenterY(), 60)
+                        node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                        return true
+                    }
+                }
+            }
+        }
+
+        // 2. Geometrical keypad fallback:
+        // On Android keypad layout (3 cols x 4 rows), the Enter/Continue key is bottom-right.
+        val m = resources.displayMetrics
+        val fallbackX = m.widthPixels * 0.74f
+        val fallbackY = m.heightPixels * 0.805f
+        Log.i(TAG, "No enter key node found in accessibility tree; tapping bottom-right keypad coords ($fallbackX, $fallbackY)")
+        return gesture(fallbackX, fallbackY, fallbackX, fallbackY, 60)
     }
 
     private fun findByDesc(root: AccessibilityNodeInfo?, text: String): AccessibilityNodeInfo? =
-        firstMatching(root) { it.isVisibleToUser && it.contentDescription?.toString() == text }
+        firstMatching(root) { it.contentDescription?.toString()?.equals(text, ignoreCase = true) == true }
 
     fun navigate(action: String): Map<String, Any?> {
         val global = when (action.lowercase()) {
