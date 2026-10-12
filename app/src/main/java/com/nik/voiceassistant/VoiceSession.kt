@@ -59,7 +59,7 @@ enum class ConnectionStatus {
  * A conversation ends on its own: when the user says bye (the model calls end_conversation) or
  * after IDLE_END_MS with nobody talking; the service then goes back to listening for "Hi Nik".
  */
-class VoiceSession private constructor(private val context: Context) {
+class VoiceSession private constructor(val context: Context) {
 
     companion object {
         private const val TAG = "VoiceSession"

@@ -15,7 +15,9 @@ import android.widget.TextView
 import com.nik.voiceassistant.Choices
 import com.nik.voiceassistant.TranscriptItem
 import com.nik.voiceassistant.VoiceSession
-import com.nik.voiceassistant.service.PhoneAgentService
+import android.content.Context
+import android.os.Build
+import android.provider.Settings
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
@@ -92,24 +94,44 @@ class AssistantOverlay(private val session: VoiceSession) {
     private fun latestLine(items: List<TranscriptItem>): String =
         latestItem(items)?.text?.trim()?.takeLast(120) ?: "Listening…"
 
-    private fun windowManager(): WindowManager? = PhoneAgentService.instance?.getSystemService(WindowManager::class.java)
+    private fun getOverlayContext(): Context? {
+        val agent = com.nik.voiceassistant.service.PhoneAgentService.instance
+        if (agent != null) return agent
+        return if (Settings.canDrawOverlays(session.context)) session.context else null
+    }
+
+    private fun windowManager(): WindowManager? {
+        val ctx = getOverlayContext() ?: return null
+        return ctx.getSystemService(WindowManager::class.java)
+    }
+
+    private fun getOverlayWindowType(): Int {
+        return if (com.nik.voiceassistant.service.PhoneAgentService.instance != null) {
+            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY
+        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+        } else {
+            @Suppress("DEPRECATION")
+            WindowManager.LayoutParams.TYPE_PHONE
+        }
+    }
 
     private fun show() {
         if (glow != null) return
-        val agent = PhoneAgentService.instance ?: return // screen control is off: no overlay
+        val ctx = getOverlayContext() ?: return // neither screen agent nor overlay permission available
         val wm = windowManager() ?: return
-        val dp = agent.resources.displayMetrics.density
+        val dp = ctx.resources.displayMetrics.density
         tuckedAtLine = null
 
         // Bottom-edge glow line
-        val line = View(agent).apply {
+        val line = View(ctx).apply {
             background = GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT, intArrayOf(CYAN, VIOLET, PINK, CYAN))
             alpha = 0f
             pivotY = (4 * dp)
         }
         val lineParams = WindowManager.LayoutParams(
             WindowManager.LayoutParams.MATCH_PARENT, (4 * dp).toInt(),
-            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+            getOverlayWindowType(),
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
                 WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
             PixelFormat.TRANSLUCENT
@@ -132,30 +154,30 @@ class AssistantOverlay(private val session: VoiceSession) {
     /** The small pill: pulsing dot + latest line; floats up from the bottom. */
     private fun showPill() {
         if (pill != null) return
-        val agent = PhoneAgentService.instance ?: return
+        val ctx = getOverlayContext() ?: return
         val wm = windowManager() ?: return
-        val dp = agent.resources.displayMetrics.density
-        val pulse = View(agent).apply {
+        val dp = ctx.resources.displayMetrics.density
+        val pulse = View(ctx).apply {
             background = GradientDrawable(GradientDrawable.Orientation.TL_BR, intArrayOf(CYAN, VIOLET)).apply { shape = GradientDrawable.OVAL }
         }
-        val text = TextView(agent).apply {
+        val text = TextView(ctx).apply {
             text = latestLine(session.transcripts.value)
             setTextColor(Color.WHITE)
             textSize = 14f
             maxLines = 2
             ellipsize = TextUtils.TruncateAt.START
-            maxWidth = (agent.resources.displayMetrics.widthPixels * 0.72f).toInt()
+            maxWidth = (ctx.resources.displayMetrics.widthPixels * 0.72f).toInt()
             setPadding((10 * dp).toInt(), 0, 0, 0)
         }
-        val row = LinearLayout(agent).apply {
+        val row = LinearLayout(ctx).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             addView(pulse, LinearLayout.LayoutParams((10 * dp).toInt(), (10 * dp).toInt()))
             addView(text)
         }
         // Options to tap when the assistant asks the user to pick (show_choices)
-        val options = LinearLayout(agent).apply { orientation = LinearLayout.VERTICAL }
-        val box = LinearLayout(agent).apply {
+        val options = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
+        val box = LinearLayout(ctx).apply {
             orientation = LinearLayout.VERTICAL
             background = GradientDrawable().apply {
                 setColor(Color.parseColor("#E60F1424"))
@@ -171,7 +193,7 @@ class AssistantOverlay(private val session: VoiceSession) {
         // Touchable only on the pill itself; any touch elsewhere arrives as ACTION_OUTSIDE
         val boxParams = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT, WindowManager.LayoutParams.WRAP_CONTENT,
-            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+            getOverlayWindowType(),
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
                 WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
                 WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON,
