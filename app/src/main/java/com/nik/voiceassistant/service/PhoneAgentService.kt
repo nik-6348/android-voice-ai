@@ -427,12 +427,19 @@ class PhoneAgentService : AccessibilityService() {
                 ?: continue
 
             val r = Rect().also { node.getBoundsInScreen(it) }
-            Log.i(TAG, "Tapping digit '$digit' at screen coords (${r.exactCenterX()}, ${r.exactCenterY()}) [bounds=$r]")
-            val gestureOk = gesture(r.exactCenterX(), r.exactCenterY(), r.exactCenterX(), r.exactCenterY(), 60)
-            var target: AccessibilityNodeInfo? = node
-            while (target != null && !target.isClickable) target = target.parent
-            target?.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-            return gestureOk || target != null
+            if (r.width() > 0 && r.height() > 0) {
+                Log.i(TAG, "Tapping digit '$digit' at screen coords (${r.exactCenterX()}, ${r.exactCenterY()}) [bounds=$r]")
+                // Use physical touch gesture first (hardware-level screen tap)
+                val gestureOk = gesture(r.exactCenterX(), r.exactCenterY(), r.exactCenterX(), r.exactCenterY(), 60)
+                if (gestureOk) {
+                    return true // Return immediately so digit is NOT tapped twice
+                }
+                // Fallback only if physical gesture wasn't dispatched
+                var target: AccessibilityNodeInfo? = node
+                while (target != null && !target.isClickable) target = target.parent
+                val clickOk = target?.performAction(AccessibilityNodeInfo.ACTION_CLICK) == true
+                return clickOk
+            }
         }
         return false
     }
@@ -455,8 +462,10 @@ class PhoneAgentService : AccessibilityService() {
                 val r = Rect().also { enterById.getBoundsInScreen(it) }
                 if (r.width() > 0 && r.height() > 0) {
                     Log.i(TAG, "Found enter/continue key by ID: ${enterById.viewIdResourceName} at $r")
-                    gesture(r.exactCenterX(), r.exactCenterY(), r.exactCenterX(), r.exactCenterY(), 60)
-                    enterById.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                    val gestureOk = gesture(r.exactCenterX(), r.exactCenterY(), r.exactCenterX(), r.exactCenterY(), 60)
+                    if (!gestureOk) {
+                        enterById.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                    }
                     return true
                 }
             }
@@ -470,8 +479,10 @@ class PhoneAgentService : AccessibilityService() {
                 val r = Rect().also { enterByDesc.getBoundsInScreen(it) }
                 if (r.width() > 0 && r.height() > 0) {
                     Log.i(TAG, "Found enter/continue key by desc: ${enterByDesc.contentDescription} at $r")
-                    gesture(r.exactCenterX(), r.exactCenterY(), r.exactCenterX(), r.exactCenterY(), 60)
-                    enterByDesc.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                    val gestureOk = gesture(r.exactCenterX(), r.exactCenterY(), r.exactCenterX(), r.exactCenterY(), 60)
+                    if (!gestureOk) {
+                        enterByDesc.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                    }
                     return true
                 }
             }
@@ -483,8 +494,10 @@ class PhoneAgentService : AccessibilityService() {
                     val r = Rect().also { node.getBoundsInScreen(it) }
                     if (r.width() > 0 && r.height() > 0) {
                         Log.i(TAG, "Found enter/continue key by text '$word' at $r")
-                        gesture(r.exactCenterX(), r.exactCenterY(), r.exactCenterX(), r.exactCenterY(), 60)
-                        node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                        val gestureOk = gesture(r.exactCenterX(), r.exactCenterY(), r.exactCenterX(), r.exactCenterY(), 60)
+                        if (!gestureOk) {
+                            node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                        }
                         return true
                     }
                 }
