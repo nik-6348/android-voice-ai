@@ -458,31 +458,48 @@ fun VoiceAssistantScreen(viewModel: VoiceAssistantViewModel) {
 
         val scrollState = rememberScrollState()
 
-        AlertDialog(
-            onDismissRequest = { showSettingsDialog = false },
-            containerColor = SurfaceDark,
-            title = {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        imageVector = Icons.Default.Settings,
-                        contentDescription = null,
-                        tint = CyanAccent,
-                        modifier = Modifier.size(22.dp)
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = "Voice & Model Settings",
-                        color = TextPrimary,
-                        fontSize = 18.sp,
-                        fontWeight = FontWeight.Bold
-                    )
-                }
-            },
-            text = {
-                Column(
+        Surface(modifier = Modifier.fillMaxSize(), color = BgDark) {
+            Column(modifier = Modifier.fillMaxSize().systemBarsPadding()) {
+                // Header bar with Close + title + Save
+                Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .verticalScroll(scrollState),
+                        .padding(start = 6.dp, end = 12.dp, top = 6.dp, bottom = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    IconButton(onClick = { showSettingsDialog = false }) {
+                        Icon(Icons.Default.Close, contentDescription = "Close", tint = TextPrimary)
+                    }
+                    Text(
+                        "Settings",
+                        color = TextPrimary,
+                        fontSize = 20.sp,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.weight(1f).padding(start = 4.dp)
+                    )
+                    Button(
+                        onClick = {
+                            viewModel.saveSettings(
+                                model = selectedModelId,
+                                voice = selectedVoiceName,
+                                searchEnabled = searchEnabledState,
+                                url = editUrl,
+                                key = editKey
+                            )
+                            showSettingsDialog = false
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = CyanAccent),
+                        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 20.dp, vertical = 8.dp)
+                    ) {
+                        Text("Save", color = BgDark, fontWeight = FontWeight.Bold)
+                    }
+                }
+                HorizontalDivider(color = SurfaceCard)
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .verticalScroll(scrollState)
+                        .padding(horizontal = 20.dp, vertical = 18.dp),
                     verticalArrangement = Arrangement.spacedBy(16.dp)
                 ) {
                     // Assistant name: applies right away (not on Save)
@@ -713,7 +730,7 @@ fun VoiceAssistantScreen(viewModel: VoiceAssistantViewModel) {
                     ) {
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
-                                text = "\"Hi Nik\" wake word",
+                                text = "\"Hi $assistantName\" wake word",
                                 color = TextPrimary,
                                 fontSize = 13.sp,
                                 fontWeight = FontWeight.Bold
@@ -721,7 +738,7 @@ fun VoiceAssistantScreen(viewModel: VoiceAssistantViewModel) {
                             Spacer(modifier = Modifier.height(2.dp))
                             Text(
                                 text = if (isWakeWordEnabled)
-                                    "ON: listens on the phone (offline) for \"Hi Nik\" even when the app is closed; sleeps after each conversation."
+                                    "ON: listens on the phone (offline) for \"Hi $assistantName\" even when the app is closed; sleeps after each conversation."
                                 else
                                     "OFF (mic stays closed): use the assistant gesture below, or open the app and tap the mic.",
                                 color = TextSecondary,
@@ -828,9 +845,9 @@ fun VoiceAssistantScreen(viewModel: VoiceAssistantViewModel) {
                         Spacer(modifier = Modifier.height(2.dp))
                         Text(
                             text = if (isAssistant)
-                                "✓ Nik's voice is your assistant: long-press the power button (or swipe up from a bottom corner) to talk."
+                                "✓ $assistantName is your assistant: long-press the power button (or swipe up from a bottom corner) to talk."
                             else
-                                "Make Nik's voice the digital assistant app, then long-press the power button (or swipe up from a bottom corner) to talk. The mic opens only then.",
+                                "Make $assistantName the digital assistant app, then long-press the power button (or swipe up from a bottom corner) to talk. The mic opens only then.",
                             color = TextSecondary,
                             fontSize = 11.sp,
                             lineHeight = 14.sp
@@ -839,7 +856,7 @@ fun VoiceAssistantScreen(viewModel: VoiceAssistantViewModel) {
                             TextButton(onClick = {
                                 context.startActivity(Intent(Settings.ACTION_VOICE_INPUT_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
                             }) {
-                                Text("Choose Nik's voice as assistant →", color = CyanAccent, fontSize = 12.sp)
+                                Text("Choose $assistantName as assistant →", color = CyanAccent, fontSize = 12.sp)
                             }
                         }
                     }
@@ -884,31 +901,11 @@ fun VoiceAssistantScreen(viewModel: VoiceAssistantViewModel) {
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
-                }
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        viewModel.saveSettings(
-                            model = selectedModelId,
-                            voice = selectedVoiceName,
-                            searchEnabled = searchEnabledState,
-                            url = editUrl,
-                            key = editKey
-                        )
-                        showSettingsDialog = false
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = CyanAccent)
-                ) {
-                    Text("Save & Apply", color = BgDark, fontWeight = FontWeight.Bold)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showSettingsDialog = false }) {
-                    Text("Cancel", color = TextSecondary)
+
+                    Spacer(modifier = Modifier.height(8.dp))
                 }
             }
-        )
+        }
     }
 }
 
