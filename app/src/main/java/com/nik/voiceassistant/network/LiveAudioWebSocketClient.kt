@@ -317,12 +317,6 @@ class LiveAudioWebSocketClient(
         val toolName = jsonObj.get("name")?.asString ?: return
         val callId = jsonObj.get("id")?.asString
 
-        val callNumber = consecutiveToolCalls.getAndIncrement()
-        if (callNumber == 0) {
-            // First tool of the turn: allow 500ms lead time so the initial spoken acknowledgment ("Theek hai...") plays out loud first
-            try { Thread.sleep(500) } catch (_: Exception) {}
-        }
-
         val argsMap = mutableMapOf<String, Any?>()
         val argsElement = jsonObj.get("args") ?: jsonObj.get("arguments")
         if (argsElement != null && argsElement.isJsonObject) {
@@ -345,10 +339,6 @@ class LiveAudioWebSocketClient(
             ?: result["app"]?.let { "screen of $it" } ?: result.filterKeys { it != "screen" && it != "apps" }
         // The transcript shows the arguments; a PIN must never appear there
         listener.onToolExecuted(toolName, argsMap, summary.toString().take(160))
-
-        // Self-interruption: flush any lingering speech backlog from the previous action
-        // so the new action's narration interrupts cleanly and speaks fresh!
-        audioTrackManager.stopAndFlush()
 
         // Always answer: Gemini waits for the tool response before it speaks again
         val response = ToolCallResponse(
