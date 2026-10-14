@@ -64,6 +64,8 @@ fun AssistantLiveTab(
     val assistantName by viewModel.assistantName.collectAsState()
     val currentSessionTitle by viewModel.currentSessionTitle.collectAsState()
     val currentSessionId by viewModel.currentSessionId.collectAsState()
+    val isMicMuted by viewModel.isMicMuted.collectAsState()
+    val activeToolStatus by viewModel.activeToolStatus.collectAsState()
     val context = LocalContext.current
 
     val listState = rememberLazyListState()
@@ -87,6 +89,7 @@ fun AssistantLiveTab(
         connectionStatus == ConnectionStatus.CONNECTING -> "Connecting…"
         connectionStatus == ConnectionStatus.ERROR -> "Couldn't connect"
         speaking -> "Speaking…"
+        isMicMuted -> "Mic Muted · Tap to speak"
         live && micAmp > 0.03f -> "Listening to you…"
         live -> "Listening…"
         isWakeWordEnabled -> "Sleeping · say \"Hi $assistantName\""
@@ -317,6 +320,41 @@ fun AssistantLiveTab(
             }
         }
 
+        // ---- Real-time Animated Tool Processing Banner ----
+        AnimatedVisibility(
+            visible = activeToolStatus != null,
+            enter = fadeIn() + expandVertically(),
+            exit = fadeOut() + shrinkVertically()
+        ) {
+            val status = activeToolStatus ?: ""
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 8.dp)
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(Brush.horizontalGradient(listOf(BrandCyan.copy(alpha = 0.22f), BrandViolet.copy(alpha = 0.22f))))
+                    .border(1.dp, BrandCyan.copy(alpha = 0.5f), RoundedCornerShape(16.dp))
+                    .padding(horizontal = 14.dp, vertical = 9.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.Center
+            ) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(15.dp),
+                    color = BrandCyan,
+                    strokeWidth = 2.dp
+                )
+                Spacer(modifier = Modifier.width(10.dp))
+                Text(
+                    text = status,
+                    color = TextPrimary,
+                    fontSize = 12.5.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
+
         // ---- Text Input Box ----
         AnimatedVisibility(visible = typing) {
             Row(
@@ -362,13 +400,23 @@ fun AssistantLiveTab(
             horizontalArrangement = Arrangement.SpaceEvenly,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            RoundIconButton(if (typing) Icons.Default.Close else Icons.Default.Keyboard, "Type", size = 46.dp) { typing = !typing }
+            RoundIconButton(if (typing) Icons.Default.Close else Icons.Default.Keyboard, "Type", size = 44.dp) { typing = !typing }
+
+            // Dedicated Mic Mute/Unmute toggle button
+            RoundIconButton(
+                if (isMicMuted) Icons.Default.MicOff else Icons.Default.Mic,
+                description = if (isMicMuted) "Unmute mic" else "Mute mic",
+                size = 44.dp,
+                tint = if (isMicMuted) RedStop else BrandCyan
+            ) {
+                viewModel.toggleMicMute()
+            }
 
             // Big glowing mic button
             val pulse = rememberInfiniteTransition(label = "micPulse")
             val ring by pulse.animateFloat(1f, 1.35f, infiniteRepeatable(tween(1400), RepeatMode.Restart), label = "ring")
             Box(contentAlignment = Alignment.Center, modifier = Modifier.size(86.dp)) {
-                if (live) {
+                if (live && !isMicMuted) {
                     Box(
                         modifier = Modifier
                             .size(68.dp)
@@ -383,24 +431,42 @@ fun AssistantLiveTab(
                         .shadow(if (live) 16.dp else 4.dp, CircleShape, ambientColor = BrandViolet, spotColor = BrandCyan)
                         .clip(CircleShape)
                         .background(
-                            if (live) Brush.linearGradient(listOf(BrandCyan, BrandViolet, BrandPink))
-                            else Brush.linearGradient(listOf(SurfaceCard, SurfaceDark))
+                            when {
+                                isMicMuted -> Brush.linearGradient(listOf(SurfaceCard, SurfaceDark))
+                                live -> Brush.linearGradient(listOf(BrandCyan, BrandViolet, BrandPink))
+                                else -> Brush.linearGradient(listOf(SurfaceCard, SurfaceDark))
+                            }
                         )
-                        .border(1.dp, if (live) Color.White.copy(alpha = 0.3f) else GlassBorder, CircleShape)
-                        .clickable { viewModel.toggleSession() },
+                        .border(
+                            1.dp,
+                            if (isMicMuted) RedStop.copy(alpha = 0.5f) else if (live) Color.White.copy(alpha = 0.3f) else GlassBorder,
+                            CircleShape
+                        )
+                        .clickable {
+                            if (isMicMuted) {
+                                viewModel.setMicMuted(false)
+                                if (!live) viewModel.startSession()
+                            } else {
+                                viewModel.toggleSession()
+                            }
+                        },
                     contentAlignment = Alignment.Center
                 ) {
                     Icon(
-                        if (live) Icons.Default.GraphicEq else Icons.Default.Mic,
-                        contentDescription = if (live) "Mute" else "Speak",
-                        tint = Color.White,
+                        when {
+                            isMicMuted -> Icons.Default.MicOff
+                            live -> Icons.Default.GraphicEq
+                            else -> Icons.Default.Mic
+                        },
+                        contentDescription = if (isMicMuted) "Unmute & speak" else if (live) "Stop" else "Speak",
+                        tint = if (isMicMuted) RedStop else Color.White,
                         modifier = Modifier.size(30.dp)
                     )
                 }
             }
 
             RoundIconButton(
-                Icons.Default.StopCircle, "Stop reply", size = 46.dp,
+                Icons.Default.StopCircle, "Stop reply", size = 44.dp,
                 tint = if (speaking) RedStop else TextMuted
             ) { viewModel.interruptAssistant() }
         }

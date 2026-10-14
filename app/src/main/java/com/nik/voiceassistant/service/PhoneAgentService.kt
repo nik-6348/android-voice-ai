@@ -235,7 +235,17 @@ class PhoneAgentService : AccessibilityService() {
 
     /** An element by its [n] from the last read, or the first visible element showing this text. */
     private fun find(elementId: Int?, text: String?): AccessibilityNodeInfo? {
-        if (elementId != null) return elements.getOrNull(elementId)?.takeIf { it.refresh() }
+        if (elementId != null) {
+            val cached = elements.getOrNull(elementId)
+            if (cached != null) {
+                if (cached.refresh()) return cached
+                val r = Rect().also { cached.getBoundsInScreen(it) }
+                if (r.width() > 0 && r.height() > 0) return cached
+            }
+            // Auto-refresh screen nodes if stale or out of bounds
+            readScreenOnce()
+            return elements.getOrNull(elementId)?.takeIf { it.refresh() } ?: elements.getOrNull(elementId)
+        }
         if (text.isNullOrBlank()) return null
         val matches = rootInActiveWindow?.findAccessibilityNodeInfosByText(text).orEmpty().filter { it.isVisibleToUser }
         return matches.firstOrNull { ownLabel(it).equals(text, ignoreCase = true) } ?: matches.firstOrNull()
@@ -288,26 +298,37 @@ class PhoneAgentService : AccessibilityService() {
 
     fun scroll(direction: String, elementId: Int?): Map<String, Any?> {
         val dir = direction.lowercase()
-        val node = (if (elementId != null) find(elementId, null) else null)
-            ?: firstMatching(rootInActiveWindow) { it.isScrollable && it.isVisibleToUser }
-        val directional = when (dir) {
-            "up" -> AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_UP
-            "left" -> AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_LEFT
-            "right" -> AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_RIGHT
-            else -> AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_DOWN
+        val m = resources.displayMetrics
+        val (w, h) = m.widthPixels.toFloat() to m.heightPixels.toFloat()
+
+        // Physical touch gesture drag coordinates:
+        // "down": drag finger UP from 74% to 24% to reveal lower items
+        // "up": drag finger DOWN from 26% to 74% to reveal higher items
+        val cx = w / 2f
+        val (x1, y1, x2, y2) = when (dir) {
+            "up" -> listOf(cx, h * 0.26f, cx, h * 0.74f)
+            "left" -> listOf(w * 0.22f, h / 2f, w * 0.78f, h / 2f)
+            "right" -> listOf(w * 0.78f, h / 2f, w * 0.22f, h / 2f)
+            else -> listOf(cx, h * 0.74f, cx, h * 0.24f)
         }
-        val linear = if (dir == "up" || dir == "left") AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD else AccessibilityNodeInfo.ACTION_SCROLL_FORWARD
-        val ok = node?.performAction(directional.id) == true || node?.performAction(linear) == true || run {
-            // No scrollable view reported: swipe across the middle of the screen
-            val m = resources.displayMetrics
-            val (w, h) = m.widthPixels.toFloat() to m.heightPixels.toFloat()
-            when (dir) {
-                "up" -> gesture(w / 2, h * 0.3f, w / 2, h * 0.7f, 300)
-                "left" -> gesture(w * 0.2f, h / 2, w * 0.8f, h / 2, 300)
-                "right" -> gesture(w * 0.8f, h / 2, w * 0.2f, h / 2, 300)
-                else -> gesture(w / 2, h * 0.7f, w / 2, h * 0.3f, 300)
+
+        // Primary: guaranteed physical touch swipe via OS touch digitizer
+        var ok = gesture(x1, y1, x2, y2, 280)
+
+        // Fallback: Accessibility linear/directional scroll action if gesture failed
+        if (!ok) {
+            val node = (if (elementId != null) find(elementId, null) else null)
+                ?: firstMatching(rootInActiveWindow) { it.isScrollable && it.isVisibleToUser }
+            val directional = when (dir) {
+                "up" -> AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_UP
+                "left" -> AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_LEFT
+                "right" -> AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_RIGHT
+                else -> AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_DOWN
             }
+            ok = node?.performAction(directional.id) == true
         }
+
+        Thread.sleep(150) // Let scroll physics settle before reading screen
         return after("scrolled $dir", ok)
     }
 

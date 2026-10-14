@@ -82,35 +82,41 @@ class VoiceSession private constructor(val context: Context) {
             SYNCHRONOUS STEP-BY-STEP EXECUTION POLICY (CRITICAL):
             1. SPEECH POLICY (SPEAK ONLY AT START AND COMPLETION):
                - When a goal or request begins: Speak 1 short, natural sentence acknowledging your intention:
-                 (e.g., "Theek hai, main developer options check karta hoon...", "Theek hai, WhatsApp open karke message bhejta hoon...").
+                 (e.g., "Theek hai, main developer mode enable karta hoon...", "Theek hai, 5G network settings check karta hoon...").
                - INTERMEDIATE TOOL STEPS MUST BE SILENT:
                  Do NOT speak aloud while executing intermediate clicks, taps, or scrolls. Perform all intermediate screen actions SILENTLY, FAST, and SEAMLESSLY! This guarantees zero latency and no speech stutter.
                - Once the goal is 100% completed: Speak once confirming the final outcome in a clear, friendly sentence:
-                 (e.g., "Aapka Developer options enable ho gaya hai. Ab batayein, aur kya help kar sakti hoon?")
+                 (e.g., "Aapka 5G network mode enable ho gaya hai. Ab batayein, aur kya help kar sakti hoon?")
 
-            2. ZERO GUESSING & ACCURATE NAVIGATION:
-               - NEVER tap random unverified elements on screen!
-               - Whenever searching for ANY setting or feature in Settings:
-                 ALWAYS use the Search bar in Settings (tap the 'Search settings' button, type the query, and tap the result)! This is fast, accurate, and 100% reliable.
-               - You can also use direct launch_intent with Android setting actions:
-                 * Developer options: action 'android.settings.APPLICATION_DEVELOPMENT_SETTINGS'
-                 * About phone: action 'android.settings.DEVICE_INFO_SETTINGS'
-                 * General settings: action 'android.settings.SETTINGS'
+            2. ANTI-LOOP & SMART SEARCH POLICY (DO NOT BLIND SCROLL):
+               - NEVER call scroll more than 2 consecutive times in a row without evaluating screen elements!
+               - If an item or setting is not visible after at most 2 scrolls:
+                 STOP scrolling immediately and USE THE SEARCH BAR in Settings (tap Search, type query, and tap result)!
+               - Search bar is 100% accurate, fast, and eliminates endless scrolling.
 
-            3. BUILT-IN GOOGLE SEARCH (ALWAYS USE FOR UNFAMILIAR TASKS):
+            3. SPECIFIC HARDWARE & SYSTEM PROCEDURES:
+               - To enable Developer Mode:
+                 1. Open About phone ('android.settings.DEVICE_INFO_SETTINGS').
+                 2. Look for "Build number" (scroll at most once or twice).
+                 3. Tap "Build number" 7 times in a row!
+                 4. Once enabled, Developer options can be opened directly via 'android.settings.APPLICATION_DEVELOPMENT_SETTINGS'.
+               - To enable 5G / Network Mode:
+                 1. Open Settings > Network & internet > SIMs (or Mobile network).
+                 2. Tap the active SIM (e.g. Nik or Vi) > Tap 'Preferred network type' > Select '5G' or '5G (recommended)'.
+
+            4. BUILT-IN GOOGLE SEARCH (ALWAYS USE FOR UNFAMILIAR TASKS):
                You have built-in Google Search grounding enabled! Whenever you need to perform an action, find a hidden setting, or configure an Android feature that is not immediately visible or familiar:
                USE GOOGLE SEARCH IMMEDIATELY to retrieve the exact Android steps!
                Never guess, and NEVER ask the user: "Aapko dikh raha hai kya?" or "Aap scroll kar do".
-               Take decisions yourself! Read the screen, scroll automatically, use the app's search bar, or look up the procedure on Google Search.
+               Take decisions yourself! Read the screen, use the search bar, or look up the procedure on Google Search.
 
-            4. ZERO USER BURDEN:
+            5. ZERO USER BURDEN:
                - NEVER ask the user to scroll, look at the screen, or find elements.
-               - You are holding the phone. Scroll down/up autonomously with 'scroll'.
                - ONLY ask the user for:
                  1. Truly irreversible financial payments/transfers.
                  2. Permanent data wipes (contacts, photos).
 
-            5. COMPLETION & PERSISTENCE:
+            6. COMPLETION & PERSISTENCE:
                - Chain tools step-by-step until the goal is 100% achieved.
                - If an intent or action fails, dynamically try the Search bar route or manual navigation.
                - Never call end_conversation while a multi-step task is still in progress.
@@ -195,6 +201,25 @@ class VoiceSession private constructor(val context: Context) {
 
     private val _currentSessionTitle = MutableStateFlow("New Chat")
     val currentSessionTitle: StateFlow<String> = _currentSessionTitle.asStateFlow()
+
+    // Default mic mute state to prevent background noise / chatter interruption
+    private val _isMicMuted = MutableStateFlow(prefs.getBoolean("mic_muted", true))
+    val isMicMuted: StateFlow<Boolean> = _isMicMuted.asStateFlow()
+
+    fun toggleMicMute() {
+        val next = !_isMicMuted.value
+        _isMicMuted.value = next
+        prefs.edit().putBoolean("mic_muted", next).apply()
+    }
+
+    fun setMicMuted(muted: Boolean) {
+        _isMicMuted.value = muted
+        prefs.edit().putBoolean("mic_muted", muted).apply()
+    }
+
+    // Active tool status for real-time animated display
+    private val _activeToolStatus = MutableStateFlow<String?>(null)
+    val activeToolStatus: StateFlow<String?> = _activeToolStatus.asStateFlow()
 
     @Volatile private var currentSession: ConversationSession? = null
 
@@ -384,7 +409,14 @@ class VoiceSession private constructor(val context: Context) {
                 }
             }
 
+            override fun onToolStart(toolName: String, statusText: String) {
+                touch()
+                markTaskActivity()
+                _activeToolStatus.value = statusText
+            }
+
             override fun onToolExecuted(toolName: String, args: Map<String, Any?>, resultSummary: String) {
+                _activeToolStatus.value = null
                 touch()
                 markTaskActivity()
                 val shownArgs = args.mapValues { (k, v) -> if (k == "pin") "***" else v }
@@ -422,17 +454,25 @@ class VoiceSession private constructor(val context: Context) {
 
     private val audioRecordManager = AudioRecordManager(
         onAudioChunkReady = { chunk ->
-            // Strict listening while the reply plays, a tool runs, or other audio (music, a video) plays:
-            // the echo canceller (CallAudio) strips the reply, and what is left of it, room noise and the
-            // phone's own sound are quieter than the user speaking close to it. So only clearly loud sound
-            // goes through then (and stays open a moment so words aren't chopped); the user can still cut in.
+            if (_isMicMuted.value) {
+                // Mic is MUTED: send silent zeroed frames so Gemini server stays alive without hearing room speech
+                webSocketClient.sendAudioChunk(ByteArray(chunk.size))
+                return@AudioRecordManager
+            }
             val now = System.currentTimeMillis()
+            val chunkRms = rms(chunk)
             val strict = audioTrackManager.isAudible() || webSocketClient.isToolRunning() || otherAudioPlaying()
-            if (strict && now >= bargeInOpenUntil && rms(chunk) > BARGE_IN_LEVEL) bargeInOpenUntil = now + 800
-            val pass = !strict || now < bargeInOpenUntil
+            if (strict && now >= bargeInOpenUntil && chunkRms > BARGE_IN_LEVEL) bargeInOpenUntil = now + 800
+
+            // Noise gate filter: background whispers & ambient noise (< 0.012 RMS) are filtered
+            val pass = if (strict) {
+                now < bargeInOpenUntil
+            } else {
+                chunkRms > 0.012 || now < bargeInOpenUntil
+            }
             webSocketClient.sendAudioChunk(if (pass) chunk else ByteArray(chunk.size))
         },
-        onAmplitudeChanged = { amp -> _micAmplitude.value = amp }
+        onAmplitudeChanged = { amp -> _micAmplitude.value = if (_isMicMuted.value) 0f else amp }
     )
 
     // Nik's own screen is showing; the overlay appears over other apps only
@@ -515,6 +555,7 @@ class VoiceSession private constructor(val context: Context) {
         audioRecordManager.stopRecording()
         _isRecording.value = false
         _micAmplitude.value = 0f
+        _activeToolStatus.value = null
         audioTrackManager.stopAndFlush()
         webSocketClient.disconnect()
         callAudio.exit()

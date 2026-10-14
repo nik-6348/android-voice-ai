@@ -38,6 +38,7 @@ class LiveAudioWebSocketClient(
         fun onUserTranscript(text: String)
         fun onUserSpeaking()
         fun onModelTranscript(text: String)
+        fun onToolStart(toolName: String, statusText: String) {}
         fun onToolExecuted(toolName: String, args: Map<String, Any?>, resultSummary: String)
         /** The latest handle to continue this conversation later (kept across conversations). */
         fun onResumeHandle(handle: String?)
@@ -340,6 +341,20 @@ class LiveAudioWebSocketClient(
                 }
             }
         }
+
+        val statusText = when (toolName) {
+            "scroll" -> "Scrolling screen (${argsMap["direction"] ?: "down"})..."
+            "tap" -> "Tapping ${argsMap["text"]?.let { "\"$it\"" } ?: "element"}..."
+            "type_text" -> "Typing \"${argsMap["text"] ?: ""}\"..."
+            "read_screen" -> "Reading screen elements..."
+            "look_at_screen" -> "Analyzing screen with AI vision..."
+            "launch_intent", "open_app" -> "Opening ${argsMap["app_name"] ?: argsMap["action"]?.toString()?.substringAfterLast('.') ?: "settings"}..."
+            "navigate" -> "Navigating ${argsMap["action"] ?: "back"}..."
+            "find_contact" -> "Searching contacts..."
+            "make_call" -> "Placing call..."
+            else -> "Executing $toolName..."
+        }
+        listener.onToolStart(toolName, statusText)
 
         val result = toolExecutor?.execute(toolName, argsMap)
             ?: mapOf("error" to "Device tools are not available")
