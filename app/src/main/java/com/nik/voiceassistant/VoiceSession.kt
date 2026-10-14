@@ -190,6 +190,12 @@ class VoiceSession private constructor(val context: Context) {
     private val _historySessions = MutableStateFlow<List<ConversationSession>>(ConversationHistoryManager.getAllSessions(context))
     val historySessions: StateFlow<List<ConversationSession>> = _historySessions.asStateFlow()
 
+    private val _currentSessionId = MutableStateFlow<String?>(null)
+    val currentSessionId: StateFlow<String?> = _currentSessionId.asStateFlow()
+
+    private val _currentSessionTitle = MutableStateFlow("New Chat")
+    val currentSessionTitle: StateFlow<String> = _currentSessionTitle.asStateFlow()
+
     @Volatile private var currentSession: ConversationSession? = null
 
     /** Called when a conversation ends by itself (bye or idle), so the service can listen for "Hi Nik" again. */
@@ -370,7 +376,12 @@ class VoiceSession private constructor(val context: Context) {
             }
 
             override fun onResumeHandle(handle: String?) {
-                prefs.edit().putString("resume_handle", handle).putLong("resume_at", System.currentTimeMillis()).apply()
+                if (handle == null) return
+                currentSession?.let { sess ->
+                    sess.resumeHandle = handle
+                    sess.resumeAt = System.currentTimeMillis()
+                    ConversationHistoryManager.saveSession(context, sess)
+                }
             }
 
             override fun onToolExecuted(toolName: String, args: Map<String, Any?>, resultSummary: String) {
@@ -434,6 +445,18 @@ class VoiceSession private constructor(val context: Context) {
     init {
         audioTrackManager.startPlaybackWorker(scope)
         AssistantOverlay(this).bind(scope, appVisible)
+
+        // Restore last active session if valid
+        val lastId = prefs.getString("active_session_id", null)
+        if (lastId != null) {
+            val sess = ConversationHistoryManager.getSession(context, lastId)
+            if (sess != null && sess.messages.isNotEmpty()) {
+                currentSession = sess
+                _currentSessionId.value = sess.id
+                _currentSessionTitle.value = sess.title
+                _transcripts.value = sess.messages.toList()
+            }
+        }
     }
 
     val isActive: Boolean
@@ -469,7 +492,8 @@ class VoiceSession private constructor(val context: Context) {
             VoiceAssistantService.startConversation(context)
             callAudio.enter()
             preroll?.let { webSocketClient.queueAudio(it) }
-            webSocketClient.connect(buildConnectionUrl(), _apiKey.value, ::instructionsFor, savedResumeHandle())
+            val resumeHandleToUse = currentSessionResumeHandle()
+            webSocketClient.connect(buildConnectionUrl(), _apiKey.value, ::instructionsFor, resumeHandleToUse)
             audioRecordManager.startRecording(scope)
             _isRecording.value = true
             startWatchdog()
@@ -513,6 +537,17 @@ class VoiceSession private constructor(val context: Context) {
      */
     private fun handleAutomationShortcutOrRecord(prompt: String): Boolean {
         val clean = prompt.trim().lowercase()
+
+        // Fast voice command: "new chat", "start new chat", "naya chat", "naya session", "naya chat shuru karo"
+        val newChatPhrases = listOf(
+            "new chat", "start new chat", "start a new chat", "naya chat", "naya session",
+            "naya chat shuru karo", "new chat shuru karo", "clear chat"
+        )
+        if (newChatPhrases.any { clean == it || clean.startsWith("$it ") }) {
+            startNewChat()
+            addTranscript("assistant", "Naya chat shuru ho gaya hai. Batayein, kya karna hai?")
+            return true
+        }
 
         // 1. Check for explicit record instruction: e.g. "record task", "save task", "automation banao", "task save karo"
         val recordPrefixes = listOf(
@@ -612,29 +647,30 @@ class VoiceSession private constructor(val context: Context) {
     }
 
     fun clearTranscripts() {
-        _transcripts.value = emptyList()
-        currentSession = null
-        // A clean slate: the next conversation doesn't continue the old one either
-        prefs.edit().remove("resume_handle").remove("resume_at").apply()
+        startNewChat()
     }
 
     fun startNewChat() {
-        if (connectionStatus.value == ConnectionStatus.CONNECTED) {
-            stop()
-        }
+        shutDown()
+        webSocketClient.clearResumeHandle()
+        prefs.edit().remove("resume_handle").remove("resume_at").remove("active_session_id").apply()
         _transcripts.value = emptyList()
-        currentSession = ConversationHistoryManager.createSession(context)
+        currentSession = null
+        _currentSessionId.value = null
+        _currentSessionTitle.value = "New Chat"
         _historySessions.value = ConversationHistoryManager.getAllSessions(context)
-        prefs.edit().remove("resume_handle").remove("resume_at").apply()
         addTranscript("system", "New conversation started")
     }
 
     fun resumeChat(sessionId: String) {
         val session = ConversationHistoryManager.getSession(context, sessionId) ?: return
-        if (connectionStatus.value == ConnectionStatus.CONNECTED) {
-            stop()
-        }
+        shutDown()
+        webSocketClient.clearResumeHandle()
+        prefs.edit().putString("active_session_id", sessionId).apply()
+
         currentSession = session
+        _currentSessionId.value = session.id
+        _currentSessionTitle.value = session.title
         _transcripts.value = session.messages.toList()
         _historySessions.value = ConversationHistoryManager.getAllSessions(context)
         addTranscript("system", "Resumed: ${session.title}")
@@ -643,29 +679,30 @@ class VoiceSession private constructor(val context: Context) {
     fun deleteChat(sessionId: String) {
         ConversationHistoryManager.deleteSession(context, sessionId)
         if (currentSession?.id == sessionId) {
-            currentSession = null
-            _transcripts.value = emptyList()
+            startNewChat()
+        } else {
+            _historySessions.value = ConversationHistoryManager.getAllSessions(context)
         }
-        _historySessions.value = ConversationHistoryManager.getAllSessions(context)
     }
 
     fun getToolExecutor(): DeviceToolExecutor = toolExecutor
 
-    /** The last conversation's handle while Gemini still keeps it (~2 h; we use it for 100 min). */
-    private fun savedResumeHandle(): String? {
-        val at = prefs.getLong("resume_at", 0L)
+    /** The current conversation's handle while Gemini still keeps it (~2 h; we use it for 100 min). */
+    private fun currentSessionResumeHandle(): String? {
+        val session = currentSession ?: return null
+        val at = session.resumeAt
         if (System.currentTimeMillis() - at > 100 * 60_000L) return null
-        return prefs.getString("resume_handle", null)
+        return session.resumeHandle
     }
 
     /**
-     * Resuming: Gemini still has the conversation. Fresh: add the last lines said (from this screen's
+     * Resuming: Gemini still has the conversation. Fresh: add the last lines said (from THIS active
      * transcript) so a new session still knows what was going on.
      */
     private fun instructionsFor(resuming: Boolean): String {
         val base = DEFAULT_INSTRUCTIONS.replace("{NAME}", _assistantName.value) + "\n\n" + lockPolicy()
         if (resuming) return base
-        val recent = _transcripts.value.filter { it.sender == "user" || it.sender == "assistant" }.takeLast(12)
+        val recent = _transcripts.value.filter { it.sender == "user" || it.sender == "assistant" }.takeLast(10)
         if (recent.isEmpty()) return base
         val lines = recent.joinToString("\n") { (if (it.sender == "user") "User: " else "You: ") + it.text.take(300) }
         return "$base\n\nEarlier in this conversation (continue from here; don't repeat it back):\n$lines"
@@ -733,7 +770,11 @@ class VoiceSession private constructor(val context: Context) {
             // Save to persistent conversation history session
             if (sender == "user" || sender == "assistant" || sender == "tool") {
                 if (currentSession == null) {
-                    currentSession = ConversationHistoryManager.createSession(context)
+                    val newSession = ConversationHistoryManager.createSession(context)
+                    currentSession = newSession
+                    _currentSessionId.value = newSession.id
+                    _currentSessionTitle.value = newSession.title
+                    prefs.edit().putString("active_session_id", newSession.id).apply()
                 }
                 currentSession?.let { sess ->
                     val sessList = sess.messages
@@ -744,6 +785,7 @@ class VoiceSession private constructor(val context: Context) {
                         sessList.add(item)
                     }
                     ConversationHistoryManager.saveSession(context, sess)
+                    _currentSessionTitle.value = sess.title
                     _historySessions.value = ConversationHistoryManager.getAllSessions(context)
                 }
             }

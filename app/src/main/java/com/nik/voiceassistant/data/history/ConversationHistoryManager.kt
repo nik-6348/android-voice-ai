@@ -13,7 +13,9 @@ data class ConversationSession(
     var title: String = "New Conversation",
     val createdAt: Long = System.currentTimeMillis(),
     var updatedAt: Long = System.currentTimeMillis(),
-    val messages: MutableList<TranscriptItem> = mutableListOf()
+    val messages: MutableList<TranscriptItem> = mutableListOf(),
+    var resumeHandle: String? = null,
+    var resumeAt: Long = 0L
 )
 
 object ConversationHistoryManager {
@@ -41,7 +43,9 @@ object ConversationHistoryManager {
                 Log.w(TAG, "Error reading history file ${file.name}: ${e.message}")
             }
         }
-        return list.sortedByDescending { it.updatedAt }
+        // Only return sessions that have actual conversation content (user or assistant speech)
+        return list.filter { it.messages.any { m -> m.sender == "user" || m.sender == "assistant" } }
+            .sortedByDescending { it.updatedAt }
     }
 
     @Synchronized
@@ -58,13 +62,16 @@ object ConversationHistoryManager {
 
     @Synchronized
     fun saveSession(context: Context, session: ConversationSession) {
+        if (session.messages.isEmpty()) return
         try {
             session.updatedAt = System.currentTimeMillis()
             // Auto-title if it's still default and there's a user message
             if (session.title == "New Conversation" || session.title.isBlank()) {
-                val firstUserMsg = session.messages.firstOrNull { it.sender == "user" }?.text
+                val firstUserMsg = session.messages.firstOrNull { it.sender == "user" }?.text?.trim()
                 if (!firstUserMsg.isNullOrBlank()) {
-                    session.title = if (firstUserMsg.length > 36) firstUserMsg.take(36) + "…" else firstUserMsg
+                    val cleanTitle = firstUserMsg.replace(Regex("^(?i)(hi|hey|hello)?\\s*(shiv|nik|assistant)[,\\s]*"), "").trim()
+                    val candidate = if (cleanTitle.isNotBlank()) cleanTitle else firstUserMsg
+                    session.title = if (candidate.length > 36) candidate.take(36) + "…" else candidate
                 }
             }
             val file = File(getHistoryDir(context), "${session.id}.json")
@@ -87,13 +94,11 @@ object ConversationHistoryManager {
     }
 
     fun createSession(context: Context, initialTitle: String = "New Conversation"): ConversationSession {
-        val session = ConversationSession(
+        return ConversationSession(
             id = UUID.randomUUID().toString(),
             title = initialTitle,
             createdAt = System.currentTimeMillis(),
             updatedAt = System.currentTimeMillis()
         )
-        saveSession(context, session)
-        return session
     }
 }

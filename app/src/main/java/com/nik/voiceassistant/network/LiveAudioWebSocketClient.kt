@@ -230,21 +230,30 @@ class LiveAudioWebSocketClient(
         sendJson("""{"type":"interrupt"}""")
     }
 
+    fun clearResumeHandle() {
+        resumeHandle = null
+    }
+
     fun disconnect() {
         Log.i(TAG, "Disconnecting WebSocket")
         userClosed = true
         isConnected.set(false)
+        resumeHandle = null
         synchronized(queued) { queued.clear(); queuedBytes = 0 }
         try {
             webSocket?.close(1000, "User disconnected")
         } catch (e: Exception) {
             Log.w(TAG, "Error closing webSocket: ${e.message}")
         }
+        webSocket = null
     }
 
     fun isConnected(): Boolean = isConnected.get()
 
     private fun handleJsonMessage(jsonStr: String) {
+        if (userClosed) {
+            return
+        }
         try {
             val jsonObject = JsonParser.parseString(jsonStr).asJsonObject
             val type = jsonObject.get("type")?.asString

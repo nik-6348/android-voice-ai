@@ -36,6 +36,7 @@ fun HistoryTab(
     onNavigateToAssistant: () -> Unit
 ) {
     val historySessions by viewModel.historySessions.collectAsState()
+    val currentSessionId by viewModel.currentSessionId.collectAsState()
     var searchQuery by remember { mutableStateOf("") }
     var viewingSession by remember { mutableStateOf<ConversationSession?>(null) }
     var sessionToDelete by remember { mutableStateOf<ConversationSession?>(null) }
@@ -170,6 +171,7 @@ fun HistoryTab(
                 items(filteredSessions, key = { it.id }) { session ->
                     HistorySessionCard(
                         session = session,
+                        isActive = session.id == currentSessionId,
                         onContinue = {
                             viewModel.resumeChat(session.id)
                             onNavigateToAssistant()
@@ -224,6 +226,7 @@ fun HistoryTab(
 @Composable
 fun HistorySessionCard(
     session: ConversationSession,
+    isActive: Boolean = false,
     onContinue: () -> Unit,
     onViewTranscript: () -> Unit,
     onDelete: () -> Unit
@@ -238,10 +241,14 @@ fun HistorySessionCard(
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .border(1.dp, GlassBorder, RoundedCornerShape(16.dp))
+            .border(
+                if (isActive) 1.5.dp else 1.dp,
+                if (isActive) BrandCyan.copy(alpha = 0.8f) else GlassBorder,
+                RoundedCornerShape(16.dp)
+            )
             .clickable { onViewTranscript() },
         shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(containerColor = SurfaceCard)
+        colors = CardDefaults.cardColors(containerColor = if (isActive) SurfaceDark else SurfaceCard)
     ) {
         Column(modifier = Modifier.padding(14.dp)) {
             Row(
@@ -249,15 +256,35 @@ fun HistorySessionCard(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(
-                    text = session.title,
-                    color = TextPrimary,
-                    fontSize = 15.sp,
-                    fontWeight = FontWeight.Bold,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier.weight(1f)
-                )
+                ) {
+                    if (isActive) {
+                        Box(
+                            modifier = Modifier
+                                .background(BrandCyan.copy(alpha = 0.22f), RoundedCornerShape(6.dp))
+                                .border(0.5.dp, BrandCyan, RoundedCornerShape(6.dp))
+                                .padding(horizontal = 5.dp, vertical = 2.dp)
+                        ) {
+                            Text(
+                                text = "ACTIVE",
+                                color = BrandCyan,
+                                fontSize = 9.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                        Spacer(modifier = Modifier.width(6.dp))
+                    }
+                    Text(
+                        text = session.title,
+                        color = TextPrimary,
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
 
                 Text(
                     text = dateStr,
@@ -321,14 +348,24 @@ fun HistorySessionCard(
 
                     Button(
                         onClick = onContinue,
-                        colors = ButtonDefaults.buttonColors(containerColor = CyanAccent),
+                        colors = ButtonDefaults.buttonColors(containerColor = if (isActive) BrandCyan else CyanAccent),
                         shape = RoundedCornerShape(12.dp),
                         contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
                         modifier = Modifier.height(28.dp)
                     ) {
-                        Icon(Icons.Default.PlayArrow, contentDescription = null, tint = BgDark, modifier = Modifier.size(14.dp))
-                        Spacer(modifier = Modifier.width(2.dp))
-                        Text("Continue", color = BgDark, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                        Icon(
+                            if (isActive) Icons.Default.ChatBubbleOutline else Icons.Default.PlayArrow,
+                            contentDescription = null,
+                            tint = BgDark,
+                            modifier = Modifier.size(13.dp)
+                        )
+                        Spacer(modifier = Modifier.width(3.dp))
+                        Text(
+                            if (isActive) "Current" else "Resume",
+                            color = BgDark,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold
+                        )
                     }
                 }
             }

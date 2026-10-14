@@ -102,6 +102,8 @@ class VoiceAssistantViewModel(application: Application) : AndroidViewModel(appli
 
     // ---- History Management ----
     val historySessions: StateFlow<List<com.nik.voiceassistant.data.history.ConversationSession>> = session.historySessions
+    val currentSessionId: StateFlow<String?> = session.currentSessionId
+    val currentSessionTitle: StateFlow<String> = session.currentSessionTitle
 
     fun startNewChat() = session.startNewChat()
 

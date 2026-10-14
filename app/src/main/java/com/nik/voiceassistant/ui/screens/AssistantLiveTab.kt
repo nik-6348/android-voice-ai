@@ -62,6 +62,8 @@ fun AssistantLiveTab(
     val isWakeWordEnabled by viewModel.isWakeWordEnabled.collectAsState()
     val choices by viewModel.choices.collectAsState()
     val assistantName by viewModel.assistantName.collectAsState()
+    val currentSessionTitle by viewModel.currentSessionTitle.collectAsState()
+    val currentSessionId by viewModel.currentSessionId.collectAsState()
     val context = LocalContext.current
 
     val listState = rememberLazyListState()
@@ -121,7 +123,26 @@ fun AssistantLiveTab(
             }
             Spacer(modifier = Modifier.width(10.dp))
             Column(modifier = Modifier.weight(1f)) {
-                Text(assistantName, color = TextPrimary, fontSize = 19.sp, fontWeight = FontWeight.Bold)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(assistantName, color = TextPrimary, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(BrandViolet.copy(alpha = 0.22f))
+                            .border(0.5.dp, BrandCyan.copy(alpha = 0.4f), RoundedCornerShape(8.dp))
+                            .padding(horizontal = 6.dp, vertical = 2.dp)
+                    ) {
+                        Text(
+                            text = if (currentSessionId == null) "New Chat" else currentSessionTitle.take(18),
+                            color = BrandCyan,
+                            fontSize = 10.5.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     val dot = when (connectionStatus) {
                         ConnectionStatus.CONNECTED -> GreenActive
