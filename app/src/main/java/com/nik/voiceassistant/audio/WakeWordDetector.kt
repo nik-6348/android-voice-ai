@@ -25,6 +25,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  */
 class WakeWordDetector(
     private val context: Context,
+    private val assistantNameProvider: () -> String = { "Shiv" },
     // Called once listening has started: true if Android gave a silenced (muted) mic
     private val onListening: (silenced: Boolean) -> Unit = {},
     private val onWake: (preroll: ByteArray) -> Unit
@@ -36,15 +37,17 @@ class WakeWordDetector(
         private const val CHUNK_BYTES = 3200 // 100 ms
         private const val PREROLL_BYTES = SAMPLE_RATE * 2 * 4 // 4 s
 
-        private val GRAMMAR = listOf(
+        private val BASE_GRAMMAR = listOf(
+            // Shiv and Indian English phonetic lookalikes
+            "hi shiv", "hey shiv", "hello shiv", "okay shiv", "ok shiv", "shiv",
+            "hi shiva", "hey shiva", "hello shiva", "okay shiva", "ok shiva", "shiva",
+            "shiver", "shift",
+            // Nik and fallback greetings
             "hi nick", "hey nick", "hello nick", "okay nick",
-            // look-alikes and common words, so similar speech doesn't get forced onto a wake phrase
             "nick", "neck", "nickel", "nicole", "nickname", "stick", "picked", "hill", "kill",
-            "hi", "hey", "hello", "okay", "high", "my", "nice", "night", "fine", "friend",
-            "is", "here", "there", "how", "are", "you", "the", "name", "[unk]"
+            "hi", "hey", "hello", "okay", "ok", "high", "my", "nice", "night", "fine", "friend",
+            "is", "here", "there", "how", "are", "you", "the", "name", "jarvis", "[unk]"
         )
-        // "my" / "high": how "hi" often comes out through a speaker or from across the room (tested)
-        private val WAKE = Regex("""\b(hi|hey|hello|okay|my|high) (nick|neck)\b(?! (hill|kill|name)\b)""")
     }
 
     private var model: Model? = null
@@ -81,7 +84,17 @@ class WakeWordDetector(
     @SuppressLint("MissingPermission")
     private fun listen(model: Model) {
         thread = Thread({
-            val grammar = org.json.JSONArray(GRAMMAR).toString()
+            val currentName = assistantNameProvider().trim().lowercase()
+            val dynamicGrammar = BASE_GRAMMAR.toMutableList()
+            if (currentName.isNotBlank() && !dynamicGrammar.contains(currentName)) {
+                dynamicGrammar.add(currentName)
+                dynamicGrammar.add("hi $currentName")
+                dynamicGrammar.add("hey $currentName")
+                dynamicGrammar.add("hello $currentName")
+                dynamicGrammar.add("okay $currentName")
+                dynamicGrammar.add("ok $currentName")
+            }
+            val grammar = org.json.JSONArray(dynamicGrammar).toString()
             val recognizer = Recognizer(model, SAMPLE_RATE.toFloat(), grammar)
             val minBuf = AudioRecord.getMinBufferSize(SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
             val record = AudioRecord(
@@ -101,7 +114,7 @@ class WakeWordDetector(
             var ringFull = false
             val buf = ByteArray(CHUNK_BYTES)
             record.startRecording()
-            Log.i(TAG, "Listening for \"Hi Nik\"")
+            Log.i(TAG, "Listening for wake word (\"Hi ${assistantNameProvider()}\")")
             // A background-started service gets a silenced mic (all zeros): report it so the app can fix it
             val sessionId = record.audioSessionId
             android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
@@ -124,8 +137,8 @@ class WakeWordDetector(
                     val text = JSONObject(recognizer.result).optString("text")
                     if (text.isBlank()) continue
                     Log.d(TAG, "Heard: $text")
-                    if (WAKE.containsMatchIn(text)) {
-                        Log.i(TAG, "Wake word: \"$text\"")
+                    if (isWakePhrase(text, assistantNameProvider())) {
+                        Log.i(TAG, "Wake word matched: \"$text\"")
                         val preroll = if (ringFull) ring.copyOfRange(ringPos, ring.size) + ring.copyOfRange(0, ringPos) else ring.copyOfRange(0, ringPos)
                         running.set(false)
                         record.stop()
@@ -139,5 +152,30 @@ class WakeWordDetector(
                 recognizer.close()
             }
         }, "wake-word").also { it.start() }
+    }
+
+    private fun isWakePhrase(text: String, assistantName: String): Boolean {
+        val lower = text.lowercase().trim()
+        val name = assistantName.lowercase().trim()
+
+        // 1. Match Shiv and its Indian Vosk phonetic variants ("shiva", "shiver")
+        if (name.contains("shiv") || lower.contains("shiv") || lower.contains("shiva")) {
+            val shivRegex = Regex("""\b(hi|hey|hello|okay|ok|my|high)?\s*(shiva|shiv|shiver)\b""")
+            if (shivRegex.containsMatchIn(lower)) return true
+        }
+
+        // 2. Match custom assistant name if configured
+        if (name.isNotBlank()) {
+            val customRegex = Regex("""\b(hi|hey|hello|okay|ok|my|high)?\s*${Regex.escape(name)}\b""")
+            if (customRegex.containsMatchIn(lower)) return true
+        }
+
+        // 3. Fallback match for "Hi Nik" / "Nick" / "Jarvis"
+        val nikRegex = Regex("""\b(hi|hey|hello|okay|my|high) (nick|neck)\b(?! (hill|kill|name)\b)""")
+        if (nikRegex.containsMatchIn(lower)) return true
+
+        if (Regex("""\b(hi|hey|hello|okay|ok)?\s*jarvis\b""").containsMatchIn(lower)) return true
+
+        return false
     }
 }

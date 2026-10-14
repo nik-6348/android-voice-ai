@@ -75,22 +75,26 @@ class VoiceAssistantService : Service() {
         super.onCreate()
         createNotificationChannel()
         session = VoiceSession.get(this)
-        detector = WakeWordDetector(this,
+        detector = WakeWordDetector(
+            context = this,
+            assistantNameProvider = { session.assistantName.value },
             onListening = { silenced ->
                 listeningOk = !silenced
                 // Started in the background, Android hands us a muted mic: get it back through the app
                 if (silenced) PhoneAgentService.instance?.bringUpListening()
             },
             onWake = { preroll ->
-                // "Hi Nik": the detector has let go of the mic; the conversation takes over
+                // Wake word detected: the detector has let go of the mic; the conversation takes over
                 listeningOk = false
                 WakeWordManager.playWakeChime()
                 session.start(preroll)
-            })
+            }
+        )
         session.onConversationEnded = { listenOrStop() }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        val name = session.assistantName.value
         when (intent?.action) {
             ACTION_STOP -> {
                 Log.i(TAG, "Stopping")
@@ -108,13 +112,13 @@ class VoiceAssistantService : Service() {
             ACTION_REFRESH -> {
                 // Called while AssistActivity is visible: going foreground now gets the mic for good
                 detector.stop()
-                if (!goForeground("Say \"Hi Nik\" to talk")) return START_NOT_STICKY
+                if (!goForeground("Say \"Hi $name\" to talk")) return START_NOT_STICKY
                 if (!session.isActive) detector.start()
             }
             else -> { // ACTION_LISTEN, or a restart by the system
                 if (session.isActive) {
                     goForeground("Listening… (conversation active)")
-                } else if (goForeground("Say \"Hi Nik\" to talk")) {
+                } else if (goForeground("Say \"Hi $name\" to talk")) {
                     detector.start()
                 }
             }
@@ -124,7 +128,8 @@ class VoiceAssistantService : Service() {
 
     private fun listenOrStop() {
         if (session.isWakeWordEnabled.value) {
-            goForeground("Say \"Hi Nik\" to talk")
+            val name = session.assistantName.value
+            goForeground("Say \"Hi $name\" to talk")
             detector.start()
         } else {
             stopForeground(STOP_FOREGROUND_REMOVE)

@@ -39,14 +39,11 @@ class DeviceToolExecutor(
         private const val TAG = "DeviceToolExecutor"
         private const val MAX_APPS = 60
 
-        // Buttons that act on the user's behalf for others to see, or can't be undone (Share / Reply only open
-        // the next screen, so they don't count)
+        // Only high-stakes actions: irreversible financial payments, money transfers, or destructive wipes
         private val NEEDS_YES = Regex(
-            """(?i)\b(send|post|publish|submit|pay|buy|purchase|order|delete|remove|transfer)\b|भेज|पोस्ट|भुगतान|डिलीट"""
+            """(?i)\b(pay now|confirm payment|complete purchase|transfer funds|delete account|erase all|factory reset)\b|भुगतान करें|पैसे भेजें"""
         )
-        private const val ASK_FIRST = "Not pressed: this sends / pays / deletes, and the user hasn't confirmed yet. Say who it goes to " +
-            "and the exact text (or what will happen), call show_choices with \"Haan, bhej do\", \"Nahi\" and \"Badalna hai\", " +
-            "and wait for their answer before tapping it again."
+        private const val ASK_FIRST = "Not pressed: this action performs an irreversible payment or wipe, and the user hasn't confirmed yet. Say what will happen, call show_choices with \"Haan, confirm karo\", \"Nahi\", and wait for their answer before tapping it."
 
         private const val AGENT_OFF = "Screen control is off. Ask the user to enable \"Nik's voice\" in " +
             "Settings > Accessibility (you can open it with launch_intent action android.settings.ACCESSIBILITY_SETTINGS)."
@@ -136,9 +133,7 @@ class DeviceToolExecutor(
         ),
         function(
             "make_call",
-            "Calls a phone number. STRICT CONFIRMATION MANDATORY: NEVER call this tool without explicit user confirmation! " +
-                "First say: 'Kya aap [Name/Number] ko call lagana chahte hain?' and wait. Only call make_call when the user explicitly confirms ('haan', 'yes', 'kar do', 'call lagao'). " +
-                "If user says no or speech was unclear, do NOT call. After it starts, say one short line and call end_conversation.",
+            "Places a phone call. If the user explicitly requested a call (e.g. 'Rahul ko call lagao' or 'Call 9876543210'), place the call directly and narrate 'Calling...'. If there is contact ambiguity, confirm the contact first.",
             required = listOf("number" to param("string", "Phone number, e.g. +919876543210")),
             optional = listOf("speaker" to param("boolean", "Put the call on speaker (default true)"))
         ),
@@ -222,8 +217,7 @@ class DeviceToolExecutor(
         optional: List<Pair<String, Map<String, Any>>> = emptyList()
     ): Map<String, Any> = buildMap {
         put("name", name)
-        // Repeated on every tool: the rule is followed far more often here than in the system prompt alone (tested)
-        put("description", "Before calling this, first say out loud in one short line what you're doing. $description")
+        put("description", description)
         if (required.isNotEmpty() || optional.isNotEmpty()) {
             put(
                 "parameters", mapOf(

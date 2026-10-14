@@ -31,10 +31,30 @@ object WakeWordManager {
     }
 
     /**
-     * Checks if a phrase is a wake word greeting like "hi nik", "hey nik", "nik", "jarvis".
+     * Checks if a phrase is a wake word greeting like "hi shiv", "hey shiv", "shiv", "hi nik", "jarvis".
      */
-    fun isWakeWord(text: String): Boolean {
+    fun isWakeWord(text: String, assistantName: String = "Shiv"): Boolean {
         val lower = text.lowercase().trim()
+        val name = assistantName.lowercase().trim()
+
+        if (name.contains("shiv") || lower.contains("shiv") || lower.contains("shiva")) {
+            if (lower.contains("hi shiv") || lower.contains("hey shiv") ||
+                lower.contains("hello shiv") || lower.contains("ok shiv") ||
+                lower.contains("okay shiv") || lower.contains("hi shiva") ||
+                lower.contains("hey shiva") || lower.contains("hello shiva") ||
+                lower == "shiv" || lower == "shiva") {
+                return true
+            }
+        }
+
+        if (name.isNotBlank()) {
+            if (lower.contains("hi $name") || lower.contains("hey $name") ||
+                lower.contains("hello $name") || lower.contains("okay $name") ||
+                lower.contains("ok $name") || lower == name) {
+                return true
+            }
+        }
+
         return lower.contains("hi nik") ||
                 lower.contains("hey nik") ||
                 lower.contains("hello nik") ||

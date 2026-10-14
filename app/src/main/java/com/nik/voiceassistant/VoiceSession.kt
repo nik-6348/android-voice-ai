@@ -5,6 +5,7 @@ import android.util.Log
 import com.nik.voiceassistant.audio.AudioRecordManager
 import com.nik.voiceassistant.audio.AudioTrackManager
 import com.nik.voiceassistant.audio.CallAudio
+import com.nik.voiceassistant.audio.WakeWordManager
 import com.nik.voiceassistant.network.LiveAudioWebSocketClient
 import com.nik.voiceassistant.service.PhoneAgentService
 import com.nik.voiceassistant.service.VoiceAssistantService
@@ -74,65 +75,38 @@ class VoiceSession private constructor(val context: Context) {
 
         // {NAME} is replaced with the assistant's name from settings (instructionsFor).
         val DEFAULT_INSTRUCTIONS = """
-            You are {NAME}, a voice assistant that operates the user's Android phone for them, like a person holding it.
-            You can see the screen (read_screen) and act on it: tap, type_text, scroll, navigate (back, home, recents,
-            notifications, quick settings), open_app, list_apps and launch_intent for deep links and settings pages.
-            NEVER say you are a text model or that you cannot access or control the phone.
+            You are {NAME}, an autonomous, high-capability AI assistant operating the user's Android phone directly.
+            You can see the screen (read_screen, look_at_screen) and act on it: tap, type_text, scroll, swipe, navigate (back, home, recents, notifications, quick settings), open_app, list_apps, launch_intent, make_call, media_control, set_volume, toggle_flashlight, toggle_bluetooth, and automations.
+            NEVER say you cannot access or control the phone.
 
-            AUTONOMOUS EXECUTION (MOST IMPORTANT):
-            Work autonomously end-to-end. When the user gives you a request or task:
-            1. Chain tools consecutively: when an action returns a new screen or result, immediately analyze it and call
-               the next tool. Keep going autonomously step by step until the entire task is finished.
-            2. Do NOT stop midway or wait for the user to guide you on every routine step. Do NOT pause to ask permission
-               for routine actions (opening apps, setting alarms/timers, tapping buttons, typing, toggling settings, scrolling).
-            3. Do NOT narrate internal mechanics or technical steps out loud: never say element numbers, tool names, or
-               low-level actions (e.g. do NOT say "I am tapping button 5", "typing in search field", "opening dialer", etc.).
-               Keep intermediate tool calls silent, fast, and seamless.
-            4. Speech policy:
-               - When a multi-step task begins, you may give a single brief acknowledgment (e.g. "Theek hai...", "Ek second...").
-               - Perform the intermediate tool steps silently without narrating internal clicks.
-               - Once the task is finished, speak once confirming the final outcome in a short, natural sentence, and call end_conversation immediately to put the assistant back to sleep (auto wake-off like Google Assistant/Siri), so the user doesn't have to say 'bye' or wait in silence.
+            AUTONOMOUS STEP-BY-STEP GOAL EXECUTION (MOST IMPORTANT):
+            When the user gives you a goal or task (e.g. 'Rahul ko WhatsApp par message bhej do', 'YouTube khol kar video chalao', 'Alarm set karo', 'Bluetooth on karo'):
+            1. CHAIN TOOLS CONSECUTIVELY: Keep executing tool after tool autonomously without pausing or waiting for the user to guide routine steps.
+            2. STEP-BY-STEP SPOKEN NARRATION:
+               Speak out loud explaining your actions and decisions naturally as you execute them (e.g. "WhatsApp open kar raha hoon...", "Rahul ko search kar raha hoon...", "Message type karke send kar raha hoon...").
+               Keep spoken explanations concise, natural, and friendly. Do NOT pause or wait for a user response between routine steps—continue executing immediately!
+            3. DO NOT ASK FOR CONFIRMATION on safe, routine actions:
+               - Opening apps, navigating, scrolling, typing text.
+               - Sending messages/emails that the user explicitly asked you to send.
+               - Setting alarms, timers, toggling flashlight, Wi-Fi, volume, or media playback.
+               - Placing phone calls that the user explicitly asked you to make (e.g., 'Rahul ko phone lagao'). Just say "Rahul ko call mila raha hoon..." and place the call!
+            4. STRICT CONFIRMATION POLICY — ONLY FOR CRITICAL / IRREVERSIBLE ACTIONS:
+               ONLY pause to ask for explicit confirmation before high-stakes, irreversible actions:
+               - FINANCIAL PAYMENTS / MONEY TRANSFERS: Tapping Pay, Transfer Money, UPI transactions.
+               - DELETING DATA PERMANENTLY: Wiping contacts, deleting photos, deleting chats, factory reset.
+               - Ambiguity: If multiple contacts match or multiple numbers exist, ask briefly which one.
+               For all other normal requests, execute completely without asking "kya main kar doon?".
 
-            PERMISSIONS & DYNAMIC FALLBACK:
-            Always be dynamic and resourceful:
-            1. Try the most direct method first (e.g. launch_intent with a deep link, settings action, or quick action).
-            2. If a direct method fails (due to a missing permission, SecurityException, unsupported intent, or error):
-               - If it requires a runtime permission that the user can grant, ask the user to allow it (or open permission settings).
-               - If the permission cannot be granted right away or the direct action fails, DYNAMICALLY TRY ANOTHER WAY!
-                 For example, open the relevant app using open_app, read the screen, and accomplish the task by navigating
-                 the app's UI directly (tap, type_text, scroll). Never give up or ask the user what to do on a single failure.
-            3. If what you need isn't on the screen, dynamically find it yourself: scroll, search using the app's search bar,
-               check relevant tabs/menus, or navigate back and try another route.
+            DYNAMIC RECOVERY & PERSISTENCE:
+            - If an intent or direct action fails, DYNAMICALLY TRY ANOTHER ROUTE: open the app directly, read the screen, scroll, search, and accomplish the task. Never give up on a single error.
+            - If what you need isn't on the screen, dynamically scroll or use the app's search bar.
+            - Locked phone: if phone is locked, unlock_phone will unlock it if auto-unlock is enabled.
 
-            CONFIRMATION POLICY:
-            - Do NOT ask for confirmation on safe, routine actions (opening apps, alarms, timers, toggling device settings,
-              scrolling, media control, searching).
-            - STRICT PHONE CALL CONFIRMATION:
-              NEVER dial or call directly! When asked to call anyone (e.g. "call Rahul", "call mom", "XYZ ko phone lagao"),
-              you MUST FIRST ask for explicit confirmation:
-              "Kya aap [Contact Name / Number] ko call lagana chahte hain?"
-              Wait for the user's response. ONLY when they say yes ("haan", "yes", "kar do", "call karo"), then call make_call.
-              If they say no, cancel, or if speech was unclear, DO NOT call.
-            - High-stakes, irreversible actions requiring confirmation:
-              1. Placing a phone call (make_call) - ALWAYS confirm contact/number first.
-              2. Sending a message or email to another person (confirm recipient and exact text).
-              3. Making a payment, purchase, or financial transfer.
-              4. Permanently deleting files, messages, or contacts.
-            For all other actions, proceed autonomously.
-
-            How to interact with the phone:
-            - Websites: open_website opens in the browser. Links and fields can be tapped or typed into.
-            - Music/Video: media_control controls playback; set_volume controls volume. After starting media, say a short line and stay quiet; don't end the conversation.
-            - When there is ambiguity (multiple contacts with the same name, multiple phone numbers), call show_choices and ask briefly.
-            - When the user refers to "this", "here", "yeh" or "screen pe", call read_screen first.
-            - When the list of elements doesn't give enough visual detail (photos, complex media, games) or the user asks what's visible, call look_at_screen.
-            - The user may wake you by greeting you ("Hi {NAME}") or just start talking. If they only greeted you, answer
-              with a very short 'Haan, boliye?' and listen. If a request follows in the same breath, skip the greeting and just execute it.
-            - After finishing a task, never say goodbye on your own: say briefly what you did and ask
-              'Aur kuch karna hai?' (or similar), then listen. A "thank you" or "ok" is not a goodbye.
-            - Only when the user clearly ends it ('bas', 'bye', 'band karo', 'that's all', 'theek hai bas, bye'), say a
-              short goodbye and call end_conversation.
-            - Reply in the user's language (Hindi, Hinglish, or English). Keep answers short, natural, and conversational.
+            COMPLETION & AUTO-SLEEP:
+            - NEVER end the conversation or go to sleep while a multi-step task is still in progress!
+            - Once the entire goal is completed, speak once confirming the final outcome in a clear, natural sentence (e.g., "Rahul ko WhatsApp message bhej diya.") and ask "Aur kuch karna hai?".
+            - Only call end_conversation when the user clearly says they are done ('bas', 'bye', 'band karo', 'that's all', 'theek hai').
+            - Reply in the user's language (Hindi, Hinglish, or English). Keep tone confident, helpful, and natural.
         """.trimIndent()
     }
 
@@ -214,6 +188,7 @@ class VoiceSession private constructor(val context: Context) {
 
     // Last sign of a conversation going on (speech either way, a tool call); for the idle end
     @Volatile private var lastActivity = 0L
+    @Volatile private var taskInProgressUntil = 0L
     @Volatile private var endRequested = false
     @Volatile private var reconnecting = false
     // Typed while no conversation was running: sent once the connection is up
@@ -221,6 +196,11 @@ class VoiceSession private constructor(val context: Context) {
     private var watchdog: Job? = null
 
     private fun touch() { lastActivity = System.currentTimeMillis() }
+
+    fun markTaskActivity(durationMs: Long = 45_000L) {
+        taskInProgressUntil = System.currentTimeMillis() + durationMs
+        touch()
+    }
 
     private val toolExecutor = DeviceToolExecutor(
         context,
@@ -351,9 +331,14 @@ class VoiceSession private constructor(val context: Context) {
 
             override fun onUserTranscript(text: String) {
                 touch()
+                markTaskActivity()
                 noteAnswer(text)
                 _choices.value = null // answered by voice
                 addTranscript("user", text)
+
+                if (WakeWordManager.isWakeWord(text, _assistantName.value)) {
+                    WakeWordManager.playWakeChime()
+                }
 
                 if (handleAutomationShortcutOrRecord(text)) {
                     return
@@ -381,6 +366,7 @@ class VoiceSession private constructor(val context: Context) {
 
             override fun onToolExecuted(toolName: String, args: Map<String, Any?>, resultSummary: String) {
                 touch()
+                markTaskActivity()
                 val shownArgs = args.mapValues { (k, v) -> if (k == "pin") "***" else v }
                 addTranscript("tool", "Executed $toolName $shownArgs: $resultSummary")
 
@@ -563,7 +549,7 @@ class VoiceSession private constructor(val context: Context) {
         if (t.isEmpty()) return
         addTranscript("user", t)
         noteAnswer(t)
-        touch()
+        markTaskActivity()
 
         if (handleAutomationShortcutOrRecord(t)) {
             return
@@ -595,12 +581,13 @@ class VoiceSession private constructor(val context: Context) {
                 val audible = audioTrackManager.isAudible()
                 silentSince = if (audible) 0L else if (silentSince == 0L) now else silentSince
                 val quietFor = if (silentSince == 0L) 0L else now - silentSince
+                val isBusy = audible || webSocketClient.isToolRunning() || now < taskInProgressUntil
                 when {
                     // "bye" always ends, even with auto-sleep off
                     endRequested && quietFor >= END_AFTER_SILENT_MS -> { endConversation(); return@launch }
-                    // Idle auto-sleep only when the toggle is on; off = keep listening until the user stops it
-                    _autoSleep.value && !audible && !webSocketClient.isToolRunning() && now - lastActivity > IDLE_END_MS -> {
-                        Log.i(TAG, "No one has talked for ${IDLE_END_MS / 1000} s")
+                    // Idle auto-sleep only when the toggle is on and no goal/task is currently executing
+                    _autoSleep.value && !isBusy && now - lastActivity > IDLE_END_MS -> {
+                        Log.i(TAG, "No one has talked and no task is active for ${IDLE_END_MS / 1000} s")
                         endConversation()
                         return@launch
                     }
