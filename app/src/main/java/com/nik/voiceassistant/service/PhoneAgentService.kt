@@ -35,7 +35,7 @@ class PhoneAgentService : AccessibilityService() {
         private const val MAX_ELEMENTS = 150
         private const val MAX_LABEL = 80
         // Time for the UI to settle after an action before the screen is read again
-        private const val SETTLE_MS = 800L
+        private const val SETTLE_MS = 350L
 
         @Volatile
         var instance: PhoneAgentService? = null
@@ -98,14 +98,13 @@ class PhoneAgentService : AccessibilityService() {
      * `[n] Kind "label" (traits)`. Actionable containers take their children's text as label.
      */
     /**
-     * The current screen; while a page is switching, Android briefly reports no content (it was read as
-     * "the page didn't load" while it had), so an empty read is retried for up to ~2 s.
+     * The current screen; fast adaptive polling while screen settles.
      */
     fun readScreen(): Map<String, Any?> {
         var result = readScreenOnce()
         var tries = 0
-        while (tries++ < 7 && (result["elements"] as? List<*>).isNullOrEmpty()) {
-            Thread.sleep(300)
+        while (tries++ < 4 && (result["elements"] as? List<*>).isNullOrEmpty()) {
+            Thread.sleep(80)
             result = readScreenOnce()
         }
         return result

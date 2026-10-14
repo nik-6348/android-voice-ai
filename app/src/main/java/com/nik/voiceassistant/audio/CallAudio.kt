@@ -29,10 +29,8 @@ class CallAudio(context: Context) {
 
     private val audio = context.getSystemService(AudioManager::class.java)
     private var savedMode = AudioManager.MODE_NORMAL
-    private var savedCallVolume = -1
     private var focus: AudioFocusRequest? = null
     @Volatile private var active = false
-    private val main = Handler(Looper.getMainLooper())
 
     fun enter() {
         val am = audio ?: return
@@ -42,13 +40,7 @@ class CallAudio(context: Context) {
             savedMode = am.mode
             am.mode = AudioManager.MODE_IN_COMMUNICATION
             routeToSpeakerUnlessHeadset(am)
-            // Volume is per output device and the switch to the speaker lands a moment later; setting it
-            // right away changed the earpiece instead (tested), so wait for the route first
-            main.postDelayed({
-                if (!active) return@postDelayed
-                savedCallVolume = am.getStreamVolume(AudioManager.STREAM_VOICE_CALL)
-                am.setStreamVolume(AudioManager.STREAM_VOICE_CALL, am.getStreamMaxVolume(AudioManager.STREAM_VOICE_CALL), 0)
-            }, 500)
+            // Do NOT force max volume: respect the user's chosen volume level on their device!
             // Pause / duck other audio while we listen and talk (released when the conversation ends)
             focus = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
                 .setAudioAttributes(
@@ -72,9 +64,6 @@ class CallAudio(context: Context) {
         try {
             focus?.let { am.abandonAudioFocusRequest(it) }
             focus = null
-            // Still on the same output: put its volume back before leaving call mode
-            if (savedCallVolume >= 0) am.setStreamVolume(AudioManager.STREAM_VOICE_CALL, savedCallVolume, 0)
-            savedCallVolume = -1
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 am.clearCommunicationDevice()
             } else {

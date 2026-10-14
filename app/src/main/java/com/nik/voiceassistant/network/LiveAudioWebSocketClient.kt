@@ -80,6 +80,8 @@ class LiveAudioWebSocketClient(
 
     // Tool calls being run; a conversation doesn't time out in the middle of one
     private val toolsRunning = java.util.concurrent.atomic.AtomicInteger(0)
+    // Tracks consecutive tool executions in a single user turn
+    private val consecutiveToolCalls = java.util.concurrent.atomic.AtomicInteger(0)
 
     fun isToolRunning(): Boolean = toolsRunning.get() > 0
 
@@ -249,6 +251,7 @@ class LiveAudioWebSocketClient(
 
             when (type) {
                 "user_transcript" -> {
+                    consecutiveToolCalls.set(0)
                     val text = jsonObject.get("text")?.asString.orEmpty()
                     listener.onUserTranscript(text)
                     if (WakeWordManager.isWakeWord(text)) {
@@ -256,7 +259,10 @@ class LiveAudioWebSocketClient(
                     }
                 }
 
-                "user_transcript_interim" -> listener.onUserSpeaking()
+                "user_transcript_interim" -> {
+                    consecutiveToolCalls.set(0)
+                    listener.onUserSpeaking()
+                }
 
                 "model_transcript" -> {
                     val text = jsonObject.get("text")?.asString.orEmpty()
@@ -311,6 +317,12 @@ class LiveAudioWebSocketClient(
         val toolName = jsonObj.get("name")?.asString ?: return
         val callId = jsonObj.get("id")?.asString
 
+        val callNumber = consecutiveToolCalls.getAndIncrement()
+        if (callNumber == 0) {
+            // First tool of the turn: allow 500ms lead time so the initial spoken acknowledgment ("Theek hai...") plays out loud first
+            try { Thread.sleep(500) } catch (_: Exception) {}
+        }
+
         val argsMap = mutableMapOf<String, Any?>()
         val argsElement = jsonObj.get("args") ?: jsonObj.get("arguments")
         if (argsElement != null && argsElement.isJsonObject) {
@@ -333,6 +345,10 @@ class LiveAudioWebSocketClient(
             ?: result["app"]?.let { "screen of $it" } ?: result.filterKeys { it != "screen" && it != "apps" }
         // The transcript shows the arguments; a PIN must never appear there
         listener.onToolExecuted(toolName, argsMap, summary.toString().take(160))
+
+        // Self-interruption: flush any lingering speech backlog from the previous action
+        // so the new action's narration interrupts cleanly and speaks fresh!
+        audioTrackManager.stopAndFlush()
 
         // Always answer: Gemini waits for the tool response before it speaks again
         val response = ToolCallResponse(
