@@ -905,6 +905,41 @@ class VoiceSession private constructor(val context: Context) {
         com.nik.voiceassistant.data.macro.MacroDispatch.onAgentGoalRequested = { instruction ->
             scope.launch { sendText(instruction) }
         }
+        com.nik.voiceassistant.data.macro.MacroDispatch.onCallGoalRequested = { macro ->
+            val action = macro.action as? com.nik.voiceassistant.data.macro.Action.HandleCall
+            if (action != null) {
+                scope.launch {
+                    addTranscript("system", "📞 Automation triggered outgoing call: \"${macro.title}\"")
+                    callAgentSession.start(
+                        number = null,
+                        goal = action.goal,
+                        discloseAi = action.discloseAi,
+                        maxDurationMs = action.maxDurationMs,
+                        isIncoming = false,
+                        macroId = macro.id
+                    )
+                }
+            }
+        }
+        com.nik.voiceassistant.service.CallTriggerMonitor.onIncomingCallMacroMatched = { macro, number, name ->
+            val action = macro.action as? com.nik.voiceassistant.data.macro.Action.HandleCall
+            if (action != null) {
+                if (ContextCompat.checkSelfPermission(context, Manifest.permission.ANSWER_PHONE_CALLS) != PackageManager.PERMISSION_GRANTED) {
+                    Log.w(TAG, "Incoming call matched macro '${macro.title}' but ANSWER_PHONE_CALLS is not granted")
+                } else {
+                    val callerInfo = name ?: number ?: "Unknown caller"
+                    addTranscript("system", "📞 Incoming call from $callerInfo matched automation: \"${macro.title}\"")
+                    callAgentSession.start(
+                        number = number,
+                        goal = action.goal,
+                        discloseAi = action.discloseAi,
+                        maxDurationMs = action.maxDurationMs,
+                        isIncoming = true,
+                        macroId = macro.id
+                    )
+                }
+            }
+        }
         com.nik.voiceassistant.service.CallTriggerMonitor.start(context)
         com.nik.voiceassistant.service.ChargerAndWifiTriggerMonitor.start(context)
 
