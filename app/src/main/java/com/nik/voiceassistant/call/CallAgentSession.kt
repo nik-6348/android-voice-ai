@@ -12,6 +12,7 @@ import android.telephony.TelephonyCallback
 import android.telephony.TelephonyManager
 import android.util.Log
 import androidx.core.content.ContextCompat
+import android.media.AudioAttributes
 import android.media.AudioDeviceInfo
 import android.media.AudioManager
 import com.nik.voiceassistant.SecurePrefs
@@ -318,7 +319,7 @@ class CallAgentSession(
         callAudio = cAudio
         cAudio.enter(allowInCall = true)
 
-        val trackManager = AudioTrackManager()
+        val trackManager = AudioTrackManager(usage = AudioAttributes.USAGE_ASSISTANT)
         audioTrackManager = trackManager
         trackManager.initialize()
         trackManager.startPlaybackWorker(scope)
@@ -353,7 +354,12 @@ class CallAgentSession(
         val recordManager = AudioRecordManager(
             onAudioChunkReady = { chunk ->
                 if (_status.value == Status.TALKING) {
-                    client.sendAudioChunk(chunk)
+                    if (audioTrackManager?.isAudible() == true) {
+                        // While the AI is speaking out loud, feed silence to Gemini Live so it does not interrupt itself
+                        client.sendAudioChunk(ByteArray(chunk.size))
+                    } else {
+                        client.sendAudioChunk(chunk)
+                    }
                 }
             },
             onError = { err ->
@@ -385,7 +391,16 @@ class CallAgentSession(
     }
 
     private fun enableSpeakerphone() {
-        PhoneAgentService.instance?.switchOn(listOf("Speaker", "Speakerphone", "स्पीकर"))
+        Log.w(TAG, "Enabling speakerphone...")
+        val tm = context.getSystemService(TelecomManager::class.java)
+        try {
+            tm?.showInCallScreen(false)
+        } catch (e: Exception) {
+            Log.w(TAG, "showInCallScreen failed: ${e.message}")
+        }
+        mainHandler.postDelayed({
+            PhoneAgentService.instance?.switchOn(listOf("Speaker", "Speakerphone", "स्पीकर", "Loudspeaker"))
+        }, 500)
         val am = context.getSystemService(AudioManager::class.java)
         @Suppress("DEPRECATION")
         runCatching { am?.isSpeakerphoneOn = true }

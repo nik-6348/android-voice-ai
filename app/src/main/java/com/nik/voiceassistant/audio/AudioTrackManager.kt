@@ -20,6 +20,7 @@ import kotlin.math.sqrt
  * Features instant barge-in / interruption flush to cut assistant speech immediately when needed.
  */
 class AudioTrackManager(
+    private val usage: Int = AudioAttributes.USAGE_VOICE_COMMUNICATION,
     private val onPlaybackAmplitudeChanged: ((Float) -> Unit)? = null,
     // true when reply audio starts coming out of the speaker, false once all of it has played
     // (plus a short tail); the mic is sent as silence meanwhile so the assistant doesn't hear itself
@@ -78,11 +79,11 @@ class AudioTrackManager(
         )
         val bufferSize = maxOf(minBufferSize, 24000 * 2) // ~1 sec buffer capacity
 
-        // Voice-communication usage so the phone's echo canceller removes the reply from the mic (lets the
-        // user cut in by voice). It plays at the in-call volume, which CallAudio turns up for the
-        // conversation (USAGE_ASSISTANT was louder but left the reply in the mic)
+        // Usage dictates how Android and the hardware AEC process the audio.
+        // USAGE_VOICE_COMMUNICATION is filtered from the mic by hardware AEC (normal assistant mode).
+        // USAGE_ASSISTANT / USAGE_MEDIA is heard by the mic (required for cellular phone call coupling).
         val audioAttributes = AudioAttributes.Builder()
-            .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
+            .setUsage(usage)
             .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
             .build()
 
