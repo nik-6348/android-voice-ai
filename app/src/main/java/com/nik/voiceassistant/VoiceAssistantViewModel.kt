@@ -69,6 +69,8 @@ class VoiceAssistantViewModel(application: Application) : AndroidViewModel(appli
     val isMicMuted: StateFlow<Boolean> = session.isMicMuted
     fun toggleMicMute() = session.toggleMicMute()
     fun setMicMuted(muted: Boolean) = session.setMicMuted(muted)
+    val autoMute: StateFlow<Boolean> = session.autoMute
+    fun setAutoMute(enabled: Boolean) = session.setAutoMute(enabled)
 
     val activeToolStatus: StateFlow<String?> = session.activeToolStatus
 

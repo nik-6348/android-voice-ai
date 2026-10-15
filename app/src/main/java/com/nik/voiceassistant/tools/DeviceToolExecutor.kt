@@ -32,7 +32,11 @@ class DeviceToolExecutor(
     // show_choices: (question, options) shown as a tappable list in the app and the overlay
     private val onShowChoices: (String, List<String>) -> Unit = { _, _ -> },
     // Whether the user said yes after the last list was shown (one use); gates send / pay / delete taps
-    private val takeConfirmation: () -> Boolean = { false }
+    private val takeConfirmation: () -> Boolean = { false },
+    // research: a question -> an answer found on the web, or null on failure (blocking)
+    private val research: ((String) -> String?)? = null,
+    // update_plan: the model's current plan, shown as live progress
+    private val onPlan: (TaskPlan?) -> Unit = {}
 ) {
 
     companion object {
@@ -94,9 +98,35 @@ class DeviceToolExecutor(
         ),
         function(
             "scroll",
-            "Scrolls the screen or a list to see more. Returns the new screen.",
+            "Scrolls a list to see more and returns the new screen. The result's \"moved\" says whether the content really " +
+                "moved; moved=false means that list is at its end that way (don't repeat it). To find something in a long " +
+                "list, pass until_text: it keeps scrolling until that text is on screen and returns its element_id.",
             required = listOf("direction" to param("string", "Where to move the view", enum = listOf("down", "up", "left", "right"))),
-            optional = listOf("element_id" to param("integer", "The scrollable element's number, if not the main list"))
+            optional = listOf(
+                "element_id" to param("integer", "The scrollable element's number (or any element inside it), if not the main list"),
+                "until_text" to param("string", "Keep scrolling until an element showing this text is visible"),
+                "max_scrolls" to param("integer", "Most scrolls with until_text, default 10")
+            )
+        ),
+        function(
+            "update_plan",
+            "Your working plan for a multi-step goal, shown to the user as live progress. Call it when a goal starts " +
+                "(goal + steps), as steps complete (current_step), and whenever you change approach (status blocked + note " +
+                "on what failed). The result lists the approaches still untried when you are blocked.",
+            required = listOf("goal" to param("string", "The user's goal in one line")),
+            optional = listOf(
+                "steps" to mapOf("type" to "array", "items" to mapOf("type" to "string"), "description" to "Ordered short steps to reach the goal"),
+                "current_step" to param("integer", "1-based number of the step being done now"),
+                "status" to param("string", "Where the goal stands", enum = listOf("working", "blocked", "done", "failed")),
+                "note" to param("string", "Your current thinking: what you see, what you decided and why (shown to the user)")
+            )
+        ),
+        function(
+            "research",
+            "Looks up on the web (Google) how to do something on THIS phone (its make, model and Android version are added " +
+                "automatically) or any fact you aren't sure of: exact menu paths, setting names, settings intent actions, " +
+                "deep links, app steps. Use it before guessing, and whenever an approach failed. ~3-6 s.",
+            required = listOf("question" to param("string", "What to find out, e.g. \"how to enable developer options\""))
         ),
         function(
             "swipe",
@@ -236,7 +266,11 @@ class DeviceToolExecutor(
     fun execute(toolName: String, arguments: Map<String, Any?>?): Map<String, Any?> {
         // Never log a PIN (unlock_phone's one-time pin argument)
         Log.i(TAG, "Executing tool: $toolName with arguments: ${arguments?.mapValues { (k, v) -> if (k == "pin") "***" else v }}")
-        val args = arguments.orEmpty()
+        val result = run(toolName, arguments.orEmpty())
+        return withProgressCheck(toolName, arguments.orEmpty(), result)
+    }
+
+    private fun run(toolName: String, args: Map<String, Any?>): Map<String, Any?> {
         fun str(key: String) = args[key]?.toString()?.takeIf { it.isNotBlank() }
         fun int(key: String) = args[key]?.toString()?.toDoubleOrNull()?.toInt()
         fun bool(key: String) = args[key]?.toString()?.toBooleanStrictOrNull()
@@ -294,7 +328,18 @@ class DeviceToolExecutor(
 
                 "type_text" -> agent?.typeText(str("text") ?: "", int("element_id"), bool("submit") == true) ?: mapOf("error" to AGENT_OFF)
 
-                "scroll" -> agent?.scroll(str("direction") ?: "down", int("element_id")) ?: mapOf("error" to AGENT_OFF)
+                "scroll" -> agent?.scroll(str("direction") ?: "down", int("element_id"), str("until_text"), int("max_scrolls") ?: 10)
+                    ?: mapOf("error" to AGENT_OFF)
+
+                "update_plan" -> updatePlan(
+                    goal = str("goal") ?: plan?.goal ?: "",
+                    steps = str("steps")?.let { s -> runCatching { JsonParser.parseString(s).asJsonArray.map { it.asString } }.getOrNull() },
+                    currentStep = int("current_step"),
+                    status = str("status"),
+                    note = str("note")
+                )
+
+                "research" -> research(str("question") ?: "")
 
                 "swipe" -> agent?.swipe(str("direction") ?: "up", int("element_id")) ?: mapOf("error" to AGENT_OFF)
 
@@ -336,6 +381,129 @@ class DeviceToolExecutor(
             Log.e(TAG, "Error executing tool '$toolName': ${e.message}", e)
             mapOf("error" to (e.message ?: "Execution failed"))
         }
+    }
+
+    // ---- Planning, research and progress ----
+
+    // The model's plan for the goal in progress (update_plan); null when there is none
+    @Volatile var plan: TaskPlan? = null
+        private set
+
+    // Tools that change the screen: the same screen after several of these in a row means no progress
+    private val acting = setOf("tap", "type_text", "scroll", "swipe", "navigate", "launch_intent", "open_app", "open_website", "wait")
+    private var lastScreenHash = 0
+    private var sameScreenStreak = 0
+    private val recentCalls = ArrayDeque<String>()
+
+    // Ways to get unstuck, keyed by the tool each one uses; the untried ones are suggested when blocked
+    private val approaches = linkedMapOf(
+        "look_at_screen" to "look_at_screen to see what is really there (a dialog, permission prompt, popup or a different layout)",
+        "research" to "research the exact path / setting name / intent for this phone model",
+        "type_text" to "the app's own search: tap its search icon or field, type the item, tap the result",
+        "launch_intent" to "launch_intent straight to the page (a settings action or deep link, found with research if unsure)",
+        "scroll" to "scroll with until_text to find the item in a long list (or scroll the other direction)",
+        "navigate" to "navigate back or home and take another route (another menu, app, or open_website for the web version)",
+        "wait" to "wait for the page or app to finish loading"
+    )
+
+    /** One line per fact about this phone, for the instructions and for research. Read live, never assumed. */
+    fun deviceProfile(): String {
+        val metrics = context.resources.displayMetrics
+        val launcher = packageManager.resolveActivity(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME), PackageManager.MATCH_DEFAULT_ONLY)
+            ?.activityInfo?.packageName
+        return buildString {
+            append("${Build.MANUFACTURER} ${Build.MODEL} (${Build.BRAND}, device ${Build.DEVICE}), ")
+            append("Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT}), build ${Build.DISPLAY}, ")
+            append("screen ${metrics.widthPixels}x${metrics.heightPixels}, ")
+            append("language ${java.util.Locale.getDefault().toLanguageTag()}, ")
+            launcher?.let { append("home app $it, ") }
+            defaultBrowser()?.let { append("browser $it, ") }
+            append("time ${java.text.SimpleDateFormat("EEE d MMM yyyy HH:mm", java.util.Locale.ENGLISH).format(java.util.Date())}")
+        }
+    }
+
+    /** Starts the plan for a new goal, or updates the current one. */
+    private fun updatePlan(goal: String, steps: List<String>?, currentStep: Int?, status: String?, note: String?): Map<String, Any?> {
+        if (goal.isBlank()) return mapOf("error" to "Give the goal")
+        val old = plan
+        val sameGoal = old != null && old.goal.equals(goal, ignoreCase = true) && old.status !in setOf("done", "failed")
+        val next = TaskPlan(
+            goal = goal,
+            steps = steps?.filter { it.isNotBlank() }?.takeIf { it.isNotEmpty() } ?: old?.steps.takeIf { sameGoal }.orEmpty(),
+            currentStep = currentStep ?: old?.currentStep.takeIf { sameGoal } ?: 1,
+            status = status ?: "working",
+            note = note,
+            tried = if (sameGoal) old!!.tried else java.util.Collections.synchronizedSet(mutableSetOf()),
+            blockedCount = (if (sameGoal) old!!.blockedCount else 0) + if (status == "blocked") 1 else 0
+        )
+        plan = next
+        if (!sameGoal) { sameScreenStreak = 0; recentCalls.clear() }
+        onPlan(next)
+        return when (next.status) {
+            "blocked" -> mapOf(
+                "saved" to true,
+                "untried_approaches" to approaches.filterKeys { it !in next.tried }.values.toList().ifEmpty { approaches.values.toList() },
+                "next" to "Pick the most promising untried approach and keep going; the goal isn't lost. " +
+                    "Only after several different approaches failed, tell the user exactly what is stopping you."
+            )
+            "done", "failed" -> mapOf("saved" to true, "next" to "Check the screen shows the result, then tell the user the outcome in one short sentence.")
+            else -> mapOf("saved" to true, "next" to "Carry on with step ${next.currentStep}; say in one short line what you're doing.")
+        }
+    }
+
+    private fun research(question: String): Map<String, Any?> {
+        if (question.isBlank()) return mapOf("error" to "Give a question")
+        val ask = research ?: return mapOf("error" to "Research isn't available; rely on Google Search or the phone's own search")
+        val app = PhoneAgentService.instance?.readScreen()?.get("app")
+        val prompt = """
+            Answer for an assistant that operates this Android phone through its screen and Android intents.
+            Phone: ${deviceProfile()}${app?.let { "\nApp open now: $it" } ?: ""}
+            Question: $question
+            Search the web for the current, correct answer for this exact phone make, model and Android version
+            (menus differ between makers and versions). Reply in plain text, no markdown, at most 12 short lines:
+            1) the exact tap path with on-screen names as they appear on this phone (in its language),
+            2) any Android intent action, settings action or deep link that opens the place directly,
+            3) one alternative route if the first doesn't match.
+        """.trimIndent()
+        val answer = ask(prompt) ?: return mapOf("error" to "Research failed right now; try Google Search, the app's own search, or explore the menus")
+        plan?.tried?.add("research")
+        return mapOf("answer" to answer, "next" to "Follow it on the screen; names may differ slightly, so match what read_screen shows.")
+    }
+
+    /**
+     * Adds a warning when actions stop making progress: the same screen after several actions in a
+     * row, or the same call over and over. It tells the model to change approach instead of looping.
+     */
+    private fun withProgressCheck(toolName: String, args: Map<String, Any?>, result: Map<String, Any?>): Map<String, Any?> {
+        plan?.tried?.add(toolName)
+        @Suppress("UNCHECKED_CAST")
+        val screen = (result["screen"] as? Map<String, Any?>) ?: result.takeIf { toolName == "read_screen" }
+        val hash = (screen?.get("elements") as? List<*>)?.hashCode()
+        if (hash != null) {
+            sameScreenStreak = if (toolName in acting && hash == lastScreenHash) sameScreenStreak + 1 else if (toolName in acting) 0 else sameScreenStreak
+            lastScreenHash = hash
+        }
+        val key = toolName + args.toSortedMap().toString()
+        recentCalls.addLast(key)
+        while (recentCalls.size > 8) recentCalls.removeFirst()
+        val repeats = recentCalls.count { it == key }
+
+        if (toolName !in acting || (sameScreenStreak < 2 && repeats < 3)) return result
+        val untried = approaches.filterKeys { it !in (plan?.tried ?: emptySet<String>()) }.values.toList().ifEmpty { approaches.values.toList() }
+        val why = if (repeats >= 3) "You have made this same call $repeats times" else "The screen hasn't changed after the last ${sameScreenStreak + 1} actions"
+        return result + mapOf(
+            "progress_warning" to "$why: this route isn't working. Stop repeating it and switch approach (call update_plan with status blocked and what you'll try).",
+            "untried_approaches" to untried
+        )
+    }
+
+    /** Clears the plan and progress tracking (a new conversation). */
+    fun resetPlan() {
+        plan = null
+        sameScreenStreak = 0
+        lastScreenHash = 0
+        recentCalls.clear()
+        onPlan(null)
     }
 
     /** Adds the screen an app or intent launch led to, when screen control is on. */

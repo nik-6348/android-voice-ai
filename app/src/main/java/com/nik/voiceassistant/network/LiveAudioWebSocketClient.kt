@@ -39,6 +39,8 @@ class LiveAudioWebSocketClient(
         fun onUserSpeaking()
         fun onModelTranscript(text: String)
         fun onToolStart(toolName: String, statusText: String) {}
+        /** The model finished its reply for this turn. */
+        fun onTurnComplete() {}
         fun onToolExecuted(toolName: String, args: Map<String, Any?>, resultSummary: String)
         /** The latest handle to continue this conversation later (kept across conversations). */
         fun onResumeHandle(handle: String?)
@@ -293,6 +295,8 @@ class LiveAudioWebSocketClient(
                     Log.i(TAG, "Server will close soon (${jsonObject.get("time_left")}); will reconnect")
                 }
 
+                "turn_complete" -> listener.onTurnComplete()
+
                 "interrupted" -> {
                     Log.i(TAG, "AI model signaled barge-in interruption")
                     audioTrackManager.stopAndFlush()
@@ -343,16 +347,21 @@ class LiveAudioWebSocketClient(
         }
 
         val statusText = when (toolName) {
-            "scroll" -> "Scrolling screen (${argsMap["direction"] ?: "down"})..."
-            "tap" -> "Tapping ${argsMap["text"]?.let { "\"$it\"" } ?: "element"}..."
-            "type_text" -> "Typing \"${argsMap["text"] ?: ""}\"..."
-            "read_screen" -> "Reading screen elements..."
-            "look_at_screen" -> "Analyzing screen with AI vision..."
-            "launch_intent", "open_app" -> "Opening ${argsMap["app_name"] ?: argsMap["action"]?.toString()?.substringAfterLast('.') ?: "settings"}..."
-            "navigate" -> "Navigating ${argsMap["action"] ?: "back"}..."
-            "find_contact" -> "Searching contacts..."
-            "make_call" -> "Placing call..."
-            else -> "Executing $toolName..."
+            "scroll" -> argsMap["until_text"]?.let { "Looking for \"$it\"…" } ?: "Scrolling ${argsMap["direction"] ?: "down"}…"
+            "tap" -> "Tapping ${argsMap["text"]?.let { "\"$it\"" } ?: "on screen"}…"
+            "type_text" -> "Typing \"${argsMap["text"] ?: ""}\"…"
+            "read_screen" -> "Reading the screen…"
+            "look_at_screen" -> "Looking at the screen…"
+            "open_app" -> "Opening ${argsMap["app_name"] ?: "app"}…"
+            "launch_intent" -> "Opening ${argsMap["uri"] ?: argsMap["action"]?.toString()?.substringAfterLast('.')?.lowercase()?.replace('_', ' ') ?: argsMap["package"] ?: "page"}…"
+            "open_website" -> "Opening ${argsMap["url_or_search"] ?: "website"}…"
+            "navigate" -> "Going ${argsMap["action"]?.toString()?.replace('_', ' ') ?: "back"}…"
+            "find_contact" -> "Finding ${argsMap["name"] ?: "contact"}…"
+            "make_call" -> "Calling…"
+            "research" -> "Researching: ${argsMap["question"] ?: ""}…"
+            "update_plan" -> "Planning: ${argsMap["goal"] ?: ""}"
+            "wait" -> "Waiting for the screen…"
+            else -> "${toolName.replace('_', ' ').replaceFirstChar { it.uppercase() }}…"
         }
         listener.onToolStart(toolName, statusText)
 

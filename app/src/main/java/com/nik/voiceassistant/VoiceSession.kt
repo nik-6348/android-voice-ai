@@ -67,61 +67,44 @@ class VoiceSession private constructor(val context: Context) {
         private const val IDLE_END_MS = 30_000L
         // After end_conversation: let the goodbye finish playing first
         private const val END_AFTER_SILENT_MS = 800L
+        // After the assistant's turn: this long with no voice and no tool before the mic reopens
+        private const val MIC_REOPEN_QUIET_MS = 700L
 
         @Volatile private var instance: VoiceSession? = null
 
         fun get(context: Context): VoiceSession =
             instance ?: synchronized(this) { instance ?: VoiceSession(context.applicationContext).also { instance = it } }
 
-        // {NAME} is replaced with the assistant's name from settings (instructionsFor).
+        // {NAME} is replaced with the assistant's name from settings, {DEVICE} with this phone's
+        // live profile (instructionsFor). No app- or phone-specific procedure lives here: the model
+        // reads the screen, researches what it doesn't know, and plans for the phone it is on.
         val DEFAULT_INSTRUCTIONS = """
-            You are {NAME}, an autonomous, high-intelligence AI assistant operating the user's Android phone directly.
-            You can see the screen (read_screen, look_at_screen) and act on it: tap, type_text, scroll, swipe, navigate (back, home, recents, notifications, quick settings), open_app, list_apps, launch_intent, make_call, media_control, set_volume, toggle_flashlight, toggle_bluetooth, and automations.
-            NEVER say you cannot access or control the phone.
+            You are {NAME}, an autonomous assistant that operates the user's Android phone for them. You see the screen (read_screen, look_at_screen) and act on it (tap, type_text, scroll, swipe, navigate), open apps, intents and websites, and look things up (research, Google Search). Never say you can't use the phone.
+            This phone, read live: {DEVICE}. Menus, names and settings differ between phone makers and Android versions, so never assume a path: confirm it on the screen or research it for this phone.
 
-            SYNCHRONOUS STEP-BY-STEP EXECUTION POLICY (CRITICAL):
-            1. SPEECH POLICY (SPEAK ONLY AT START AND COMPLETION):
-               - When a goal or request begins: Speak 1 short, natural sentence acknowledging your intention:
-                 (e.g., "Theek hai, main developer mode enable karta hoon...", "Theek hai, 5G network settings check karta hoon...").
-               - INTERMEDIATE TOOL STEPS MUST BE SILENT:
-                 Do NOT speak aloud while executing intermediate clicks, taps, or scrolls. Perform all intermediate screen actions SILENTLY, FAST, and SEAMLESSLY! This guarantees zero latency and no speech stutter.
-               - Once the goal is 100% completed: Speak once confirming the final outcome in a clear, friendly sentence:
-                 (e.g., "Aapka 5G network mode enable ho gaya hai. Ab batayein, aur kya help kar sakti hoon?")
+            HOW YOU WORK ON A GOAL (think, then act; loop until done):
+            1. Understand: what end state does the user want? Note it.
+            2. Plan: for anything over 2 steps call update_plan with the goal and short steps. If you aren't sure of the path, call research (or use Google Search) FIRST instead of guessing.
+            3. Act one step at a time, and after every action check the returned screen: did it do what you expected?
+            4. Decide from what you see:
+               - progress -> next step (update_plan current_step as you go);
+               - the screen didn't change, the item isn't there, an error, a popup -> don't repeat the same action. Switch to the next route: look_at_screen; the app's own search field; scroll with until_text; launch_intent straight to the page; research the exact path; back / home and another route; the web version. Call update_plan status blocked with what failed and what you'll try.
+               - a permission prompt or dialog -> handle it if it serves the goal.
+            5. Verify the end state on the screen before saying it's done (update_plan status done).
+            Never give up after one failure: try every reasonable route. Only when several different routes have failed, tell the user exactly what is blocking you and what they could do.
 
-            2. ANTI-LOOP & SMART SEARCH POLICY (DO NOT BLIND SCROLL):
-               - NEVER call scroll more than 2 consecutive times in a row without evaluating screen elements!
-               - If an item or setting is not visible after at most 2 scrolls:
-                 STOP scrolling immediately and USE THE SEARCH BAR in Settings (tap Search, type query, and tap result)!
-               - Search bar is 100% accurate, fast, and eliminates endless scrolling.
+            SCROLLING: scroll's result says moved=true/false. moved=false means the end of that list: stop, change direction or approach. To find an item in a long list use scroll with until_text, or the app's search.
 
-            3. SPECIFIC HARDWARE & SYSTEM PROCEDURES:
-               - To enable Developer Mode:
-                 1. Open About phone ('android.settings.DEVICE_INFO_SETTINGS').
-                 2. Look for "Build number" (scroll at most once or twice).
-                 3. Tap "Build number" 7 times in a row!
-                 4. Once enabled, Developer options can be opened directly via 'android.settings.APPLICATION_DEVELOPMENT_SETTINGS'.
-               - To enable 5G / Network Mode:
-                 1. Open Settings > Network & internet > SIMs (or Mobile network).
-                 2. Tap the active SIM (e.g. Nik or Vi) > Tap 'Preferred network type' > Select '5G' or '5G (recommended)'.
+            SPEAKING (think out loud, briefly): the user can't see your reasoning, so tell them what you're thinking as you work, in short natural lines, while you keep acting (speak, then call the tool right away; never wait in silence):
+               - at the start: what you understood and your plan ("Theek hai, pehle Settings kholta hoon, phir About phone mein Build number dhundta hoon");
+               - at each decision point: what you see and what you'll do next ("Yahan Build number nahi dikh raha, search karke dekhta hoon");
+               - when something fails: what went wrong and the new approach;
+               - at the end: the verified result in one line.
+              Keep each line under ~12 words, one line per decision, not per tap; don't repeat yourself or read out element numbers. Your mic is off while you work and opens for the user by itself when you finish, so finish your turn when the task is done or you need their answer. Reply in the user's language (Hindi, Hinglish or English).
 
-            4. BUILT-IN GOOGLE SEARCH (ALWAYS USE FOR UNFAMILIAR TASKS):
-               You have built-in Google Search grounding enabled! Whenever you need to perform an action, find a hidden setting, or configure an Android feature that is not immediately visible or familiar:
-               USE GOOGLE SEARCH IMMEDIATELY to retrieve the exact Android steps!
-               Never guess, and NEVER ask the user: "Aapko dikh raha hai kya?" or "Aap scroll kar do".
-               Take decisions yourself! Read the screen, use the search bar, or look up the procedure on Google Search.
+            ASK FIRST only before an irreversible payment / money transfer or permanently deleting data. Never ask the user to scroll, look, or tap for you.
 
-            5. ZERO USER BURDEN:
-               - NEVER ask the user to scroll, look at the screen, or find elements.
-               - ONLY ask the user for:
-                 1. Truly irreversible financial payments/transfers.
-                 2. Permanent data wipes (contacts, photos).
-
-            6. COMPLETION & PERSISTENCE:
-               - Chain tools step-by-step until the goal is 100% achieved.
-               - If an intent or action fails, dynamically try the Search bar route or manual navigation.
-               - Never call end_conversation while a multi-step task is still in progress.
-               - Only call end_conversation when the user clearly says they are done ('bas', 'bye', 'band karo', 'that's all', 'theek hai').
-               - Reply in the user's language (Hindi, Hinglish, or English).
+            ENDING: keep going until the goal is reached. Call end_conversation only when the user clearly says they're done (bye, bas, band karo, that's all); a thank-you or ok is not a goodbye.
         """.trimIndent()
     }
 
@@ -202,24 +185,76 @@ class VoiceSession private constructor(val context: Context) {
     private val _currentSessionTitle = MutableStateFlow("New Chat")
     val currentSessionTitle: StateFlow<String> = _currentSessionTitle.asStateFlow()
 
-    // Default mic mute state to prevent background noise / chatter interruption
-    private val _isMicMuted = MutableStateFlow(prefs.getBoolean("mic_muted", true))
+    // Mic muted: the room isn't heard, so it can't cut the assistant off. With auto-mute (default)
+    // the mic closes only while the assistant is working on a request (thinking, tools, speaking
+    // its reply) and opens again by itself once that is finished; a tap opens it anytime.
+    private val _isMicMuted = MutableStateFlow(true)
     val isMicMuted: StateFlow<Boolean> = _isMicMuted.asStateFlow()
 
-    fun toggleMicMute() {
-        val next = !_isMicMuted.value
-        _isMicMuted.value = next
-        prefs.edit().putBoolean("mic_muted", next).apply()
+    private val _autoMute = MutableStateFlow(prefs.getBoolean("auto_mute", true))
+    val autoMute: StateFlow<Boolean> = _autoMute.asStateFlow()
+
+    fun setAutoMute(enabled: Boolean) {
+        _autoMute.value = enabled
+        prefs.edit().putBoolean("auto_mute", enabled).apply()
+        if (!enabled && _isRecording.value) openMic()
     }
 
+    // The mic was opened for the user and they haven't said anything yet: a reply doesn't close it
+    @Volatile private var awaitingUser = false
+    // The user opened it themselves (to interrupt or add something): nothing closes it until they speak
+    @Volatile private var openedByUser = false
+    // The assistant finished its turn: the mic reopens once its voice and tools have gone quiet
+    @Volatile private var reopenWhenDone = false
+    @Volatile private var lastToolEnd = 0L
+
+    fun toggleMicMute() = setMicMuted(!_isMicMuted.value)
+
     fun setMicMuted(muted: Boolean) {
-        _isMicMuted.value = muted
-        prefs.edit().putBoolean("mic_muted", muted).apply()
+        if (muted) {
+            awaitingUser = false
+            openedByUser = false
+            _isMicMuted.value = true
+        } else {
+            openMic()
+            openedByUser = true
+        }
+    }
+
+    private fun openMic() {
+        awaitingUser = true
+        openedByUser = false
+        reopenWhenDone = false
+        bargeInOpenUntil = 0L
+        _isMicMuted.value = false
+    }
+
+    /**
+     * The assistant is working on a request: close the mic until it's done (auto-mute). A reply only
+     * closes it after the user has spoken; a tool call (the agent acting) closes it in any case,
+     * unless the user opened it themselves.
+     */
+    private fun autoMuteForWork(tool: Boolean) {
+        reopenWhenDone = false
+        if (!_autoMute.value || _isMicMuted.value || openedByUser) return
+        if (tool || !awaitingUser) {
+            awaitingUser = false
+            _isMicMuted.value = true
+        }
     }
 
     // Active tool status for real-time animated display
     private val _activeToolStatus = MutableStateFlow<String?>(null)
     val activeToolStatus: StateFlow<String?> = _activeToolStatus.asStateFlow()
+
+    // The assistant's plan for the goal in progress (update_plan), shown as live progress
+    private val _plan = MutableStateFlow<com.nik.voiceassistant.tools.TaskPlan?>(null)
+    val plan: StateFlow<com.nik.voiceassistant.tools.TaskPlan?> = _plan.asStateFlow()
+
+    // The assistant's reply in the current turn (cleared when the user speaks); shown over other apps
+    private val _liveReply = MutableStateFlow("")
+    val liveReply: StateFlow<String> = _liveReply.asStateFlow()
+    @Volatile private var replyTurnOpen = false
 
     @Volatile private var currentSession: ConversationSession? = null
 
@@ -249,8 +284,12 @@ class VoiceSession private constructor(val context: Context) {
         onShowChoices = { question, options ->
             _choices.value = Choices(question, options)
             choicesShownAt = System.currentTimeMillis()
+            // The user has to answer: let them be heard
+            openMic()
         },
-        takeConfirmation = ::takeConfirmation
+        takeConfirmation = ::takeConfirmation,
+        research = ::research,
+        onPlan = { _plan.value = it }
     )
 
     // Yes-after-asking, for buttons that send / pay / delete (see DeviceToolExecutor.NEEDS_YES)
@@ -287,32 +326,70 @@ class VoiceSession private constructor(val context: Context) {
      * What a screenshot shows, from the gateway's /v1/chat/completions (its Gemini web backend, so
      * no Gemini API key quota is used). Blocking; null on any failure. ~4 s.
      */
-    private fun describeImage(jpeg: ByteArray, prompt: String): String? {
-        val base = _serverUrl.value.trim().substringBefore("?")
-            .replaceFirst("wss://", "https://").replaceFirst("ws://", "http://")
-            .substringBefore("/ws/").substringBefore("/v1/")
+    private fun describeImage(jpeg: ByteArray, prompt: String): String? = chat(prompt, jpeg, "Screen description")
+
+    /**
+     * An answer from the web for the model's research tool: the gateway's Gemini web backend (it
+     * searches Google), then its /api/search as a fallback. Blocking; null on any failure.
+     */
+    private fun research(prompt: String): String? {
+        chat(prompt, null, "Research")?.let { return it }
+        val question = prompt.lineSequence().firstOrNull { it.trim().startsWith("Question:") }?.substringAfter("Question:")?.trim() ?: prompt
+        val request = Request.Builder()
+            .url("${gatewayBase()}/api/search")
+            .header("Authorization", "Bearer ${_apiKey.value}")
+            .post(JSONObject().put("query", question).put("maxResults", 5).toString().toRequestBody("application/json".toMediaType()))
+            .build()
+        return try {
+            http.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) return null
+                val out = JSONObject(response.body?.string().orEmpty())
+                val results = out.optJSONArray("results") ?: JSONArray()
+                buildString {
+                    out.optString("answer").takeIf { it.isNotBlank() }?.let { appendLine(it) }
+                    for (i in 0 until minOf(5, results.length())) {
+                        val r = results.optJSONObject(i) ?: continue
+                        appendLine("- ${r.optString("title")}: ${r.optString("snippet", r.optString("content"))}".take(300))
+                    }
+                }.trim().ifEmpty { null }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Research search failed: ${e.message}")
+            null
+        }
+    }
+
+    /** The gateway's HTTP base from the WebSocket URL in settings. */
+    private fun gatewayBase(): String = _serverUrl.value.trim().substringBefore("?")
+        .replaceFirst("wss://", "https://").replaceFirst("ws://", "http://")
+        .substringBefore("/ws/").substringBefore("/v1/")
+
+    /** One reply from the gateway's /v1/chat/completions, with an optional JPEG attached. */
+    private fun chat(prompt: String, jpeg: ByteArray?, what: String): String? {
         val body = JSONObject()
             .put("messages", JSONArray().put(JSONObject().put("role", "user").put("content", prompt)))
-            .put("file_base64", Base64.encodeToString(jpeg, Base64.NO_WRAP))
-            .put("file_name", "screen.jpg")
-            .put("file_mime", "image/jpeg")
             .put("stream", false)
+        if (jpeg != null) {
+            body.put("file_base64", Base64.encodeToString(jpeg, Base64.NO_WRAP))
+                .put("file_name", "screen.jpg")
+                .put("file_mime", "image/jpeg")
+        }
         val request = Request.Builder()
-            .url("$base/v1/chat/completions")
+            .url("${gatewayBase()}/v1/chat/completions")
             .header("Authorization", "Bearer ${_apiKey.value}")
             .post(body.toString().toRequestBody("application/json".toMediaType()))
             .build()
         return try {
             http.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) {
-                    Log.w(TAG, "Screen description failed: HTTP ${response.code}")
+                    Log.w(TAG, "$what failed: HTTP ${response.code}")
                     return null
                 }
                 JSONObject(response.body?.string().orEmpty()).getJSONArray("choices").getJSONObject(0)
                     .getJSONObject("message").optString("content").trim().ifEmpty { null }
             }
         } catch (e: Exception) {
-            Log.w(TAG, "Screen description failed: ${e.message}")
+            Log.w(TAG, "$what failed: ${e.message}")
             null
         }
     }
@@ -323,7 +400,10 @@ class VoiceSession private constructor(val context: Context) {
             if (amp > 0.02f) touch()
         },
         // The server learns when the reply is audible (it uses this for barge-in with barge_in=words)
-        onPlaybackStateChanged = { playing -> sendPlayback(playing) }
+        onPlaybackStateChanged = { playing ->
+            sendPlayback(playing)
+            if (playing) autoMuteForWork(tool = false)
+        }
     )
 
     private fun sendPlayback(playing: Boolean) {
@@ -372,6 +452,10 @@ class VoiceSession private constructor(val context: Context) {
             override fun onUserTranscript(text: String) {
                 touch()
                 markTaskActivity()
+                // The user has had their say; the mic closes again once the reply starts
+                awaitingUser = false
+                openedByUser = false
+                replyTurnOpen = false
                 noteAnswer(text)
                 _choices.value = null // answered by voice
                 addTranscript("user", text)
@@ -389,7 +473,10 @@ class VoiceSession private constructor(val context: Context) {
 
             override fun onModelTranscript(text: String) {
                 touch()
+                autoMuteForWork(tool = false)
                 addTranscript("assistant", text)
+                _liveReply.value = if (replyTurnOpen) joinSpoken(_liveReply.value, text) else text.trim()
+                replyTurnOpen = true
 
                 // If this task was being auto-recorded, finalize and save!
                 if (com.nik.voiceassistant.data.automation.AutomationManager.isRecording()) {
@@ -412,11 +499,19 @@ class VoiceSession private constructor(val context: Context) {
             override fun onToolStart(toolName: String, statusText: String) {
                 touch()
                 markTaskActivity()
+                autoMuteForWork(tool = true)
                 _activeToolStatus.value = statusText
+            }
+
+            override fun onTurnComplete() {
+                replyTurnOpen = false
+                // The watchdog opens the mic once the reply has played and no tool is running
+                reopenWhenDone = true
             }
 
             override fun onToolExecuted(toolName: String, args: Map<String, Any?>, resultSummary: String) {
                 _activeToolStatus.value = null
+                lastToolEnd = System.currentTimeMillis()
                 touch()
                 markTaskActivity()
                 val shownArgs = args.mapValues { (k, v) -> if (k == "pin") "***" else v }
@@ -528,6 +623,11 @@ class VoiceSession private constructor(val context: Context) {
             _connectionStatus.value = ConnectionStatus.CONNECTING
             endRequested = false
             touch()
+            // A new conversation: the user is about to speak (or has, in the preroll); no old plan
+            toolExecutor.resetPlan()
+            _liveReply.value = ""
+            replyTurnOpen = false
+            openMic()
             // The service keeps the mic and the process alive while the screen is off or the app is closed
             VoiceAssistantService.startConversation(context)
             callAudio.enter()
@@ -556,6 +656,8 @@ class VoiceSession private constructor(val context: Context) {
         _isRecording.value = false
         _micAmplitude.value = 0f
         _activeToolStatus.value = null
+        _isMicMuted.value = true
+        awaitingUser = false
         audioTrackManager.stopAndFlush()
         webSocketClient.disconnect()
         callAudio.exit()
@@ -667,6 +769,10 @@ class VoiceSession private constructor(val context: Context) {
                 silentSince = if (audible) 0L else if (silentSince == 0L) now else silentSince
                 val quietFor = if (silentSince == 0L) 0L else now - silentSince
                 val isBusy = audible || webSocketClient.isToolRunning() || now < taskInProgressUntil
+                // The assistant is done (turn over, voice quiet, no tool for a moment): the user's turn
+                if (reopenWhenDone && _isMicMuted.value && _autoMute.value && quietFor >= MIC_REOPEN_QUIET_MS &&
+                    !webSocketClient.isToolRunning() && now - lastToolEnd >= MIC_REOPEN_QUIET_MS && !endRequested
+                ) openMic()
                 when {
                     // "bye" always ends, even with auto-sleep off
                     endRequested && quietFor >= END_AFTER_SILENT_MS -> { endConversation(); return@launch }
@@ -741,7 +847,8 @@ class VoiceSession private constructor(val context: Context) {
      * transcript) so a new session still knows what was going on.
      */
     private fun instructionsFor(resuming: Boolean): String {
-        val base = DEFAULT_INSTRUCTIONS.replace("{NAME}", _assistantName.value) + "\n\n" + lockPolicy()
+        val base = DEFAULT_INSTRUCTIONS.replace("{NAME}", _assistantName.value).replace("{DEVICE}", toolExecutor.deviceProfile()) +
+            "\n\n" + lockPolicy()
         if (resuming) return base
         val recent = _transcripts.value.filter { it.sender == "user" || it.sender == "assistant" }.takeLast(10)
         if (recent.isEmpty()) return base
@@ -790,6 +897,10 @@ class VoiceSession private constructor(val context: Context) {
 
     /** Screen control (accessibility service) is on. */
     fun isAgentEnabled(): Boolean = PhoneAgentService.isEnabled(context)
+
+    /** Streamed transcript pieces joined with a space where the words need one. */
+    private fun joinSpoken(a: String, b: String): String =
+        if (a.isEmpty() || a.endsWith(" ") || b.startsWith(" ") || b.matches(Regex("^[.,!?:;।].*"))) a + b else "$a $b"
 
     private fun addTranscript(sender: String, text: String) {
         if (text.isBlank()) return

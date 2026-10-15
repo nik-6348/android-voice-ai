@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- App icon background: deep indigo to violet, matching the app's dark theme -->
+<!-- App icon background: deep space navy with a soft blue-violet glow behind the sparkle -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:aapt="http://schemas.android.com/aapt"
     android:width="108dp"
@@ -9,11 +9,22 @@
     <path android:pathData="M0,0h108v108h-108z">
         <aapt:attr name="android:fillColor">
             <gradient
-                android:type="linear"
-                android:startX="0" android:startY="0"
-                android:endX="108" android:endY="108"
-                android:startColor="#FF0B1026"
-                android:endColor="#FF4C1D95" />
+                android:type="radial"
+                android:centerX="54" android:centerY="50"
+                android:gradientRadius="78"
+                android:startColor="#FF1B2147"
+                android:endColor="#FF06080F" />
+        </aapt:attr>
+    </path>
+    <!-- glow -->
+    <path android:pathData="M54,56m-34,0a34,34 0,1 1,68 0a34,34 0,1 1,-68 0">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:type="radial"
+                android:centerX="54" android:centerY="56"
+                android:gradientRadius="34"
+                android:startColor="#664F6BFF"
+                android:endColor="#004F6BFF" />
         </aapt:attr>
     </path>
 </vector>

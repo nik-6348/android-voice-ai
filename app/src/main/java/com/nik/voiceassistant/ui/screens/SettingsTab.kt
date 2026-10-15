@@ -42,6 +42,7 @@ fun SettingsTab(
     val isWakeWordEnabled by viewModel.isWakeWordEnabled.collectAsState()
     val assistantName by viewModel.assistantName.collectAsState()
     val autoSleep by viewModel.autoSleep.collectAsState()
+    val autoMute by viewModel.autoMute.collectAsState()
 
     var model by remember { mutableStateOf(currentModel) }
     var voice by remember { mutableStateOf(currentVoice) }
@@ -200,6 +201,31 @@ fun SettingsTab(
                     Switch(
                         checked = isWakeWordEnabled,
                         onCheckedChange = { viewModel.setWakeWordEnabled(it) },
+                        colors = SwitchDefaults.colors(checkedThumbColor = BgDark, checkedTrackColor = GreenActive)
+                    )
+                }
+
+                HorizontalDivider(color = GlassBorder, modifier = Modifier.padding(vertical = 12.dp))
+
+                // Auto-mute: mic off while the assistant talks or works
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Auto-mute mic while assistant works", color = TextPrimary, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            text = "Mic turns off while $assistantName works on your request, so noise can't interrupt, and turns back on by itself when it's done. Tap the mic to speak anytime.",
+                            color = TextSecondary,
+                            fontSize = 11.sp
+                        )
+                    }
+
+                    Switch(
+                        checked = autoMute,
+                        onCheckedChange = { viewModel.setAutoMute(it) },
                         colors = SwitchDefaults.colors(checkedThumbColor = BgDark, checkedTrackColor = GreenActive)
                     )
                 }

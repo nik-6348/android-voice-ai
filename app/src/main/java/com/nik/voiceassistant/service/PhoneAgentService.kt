@@ -41,6 +41,15 @@ class PhoneAgentService : AccessibilityService() {
         var instance: PhoneAgentService? = null
             private set
 
+        // Set by the assistant overlay: true = let touches through it while a gesture plays in this
+        // area of the screen (it only changes itself when the gesture actually crosses it)
+        @Volatile
+        var overlayPassThrough: ((Boolean, android.graphics.RectF) -> Unit)? = null
+
+        // Set by the assistant overlay: true = hide it (for a screenshot of the app underneath)
+        @Volatile
+        var overlayHidden: ((Boolean) -> Unit)? = null
+
         fun isEnabled(context: Context): Boolean {
             val enabled = Settings.Secure.getString(context.contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES) ?: return false
             val me = ComponentName(context, PhoneAgentService::class.java).flattenToString()
@@ -159,19 +168,24 @@ class PhoneAgentService : AccessibilityService() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return null
         val latch = CountDownLatch(1)
         var shot: Bitmap? = null
-        takeScreenshot(Display.DEFAULT_DISPLAY, mainExecutor, object : TakeScreenshotCallback {
-            override fun onSuccess(result: ScreenshotResult) {
-                shot = Bitmap.wrapHardwareBuffer(result.hardwareBuffer, result.colorSpace)?.copy(Bitmap.Config.ARGB_8888, false)
-                result.hardwareBuffer.close()
-                latch.countDown()
-            }
+        overlayHidden?.invoke(true)
+        try {
+            takeScreenshot(Display.DEFAULT_DISPLAY, mainExecutor, object : TakeScreenshotCallback {
+                override fun onSuccess(result: ScreenshotResult) {
+                    shot = Bitmap.wrapHardwareBuffer(result.hardwareBuffer, result.colorSpace)?.copy(Bitmap.Config.ARGB_8888, false)
+                    result.hardwareBuffer.close()
+                    latch.countDown()
+                }
 
-            override fun onFailure(errorCode: Int) {
-                Log.w(TAG, "Screenshot failed: $errorCode")
-                latch.countDown()
-            }
-        })
-        latch.await(3, TimeUnit.SECONDS)
+                override fun onFailure(errorCode: Int) {
+                    Log.w(TAG, "Screenshot failed: $errorCode")
+                    latch.countDown()
+                }
+            })
+            latch.await(3, TimeUnit.SECONDS)
+        } finally {
+            overlayHidden?.invoke(false)
+        }
         val full = shot ?: return null
         val width = minOf(720, full.width)
         val scaled = Bitmap.createScaledBitmap(full, width, full.height * width / full.width, true)
@@ -296,40 +310,181 @@ class PhoneAgentService : AccessibilityService() {
         return after("typed \"$text\" into ${label(node)}${if (submit) " and pressed enter" else ""}", ok)
     }
 
-    fun scroll(direction: String, elementId: Int?): Map<String, Any?> {
-        val dir = direction.lowercase()
-        val m = resources.displayMetrics
-        val (w, h) = m.widthPixels.toFloat() to m.heightPixels.toFloat()
+    /**
+     * Scrolls a list and reports whether its content really moved (a dispatched swipe isn't proof:
+     * it can land on a non-scrolling area or a list already at its end). Tries, in order, the
+     * container's own accessibility scroll action, a drag inside the container, and a drag across
+     * the screen, checking the content after each. With untilText, keeps going (up to maxScrolls)
+     * until an element showing that text is on screen, and returns its element id.
+     */
+    fun scroll(direction: String, elementId: Int?, untilText: String? = null, maxScrolls: Int = 10): Map<String, Any?> {
+        val dir = direction.lowercase().takeIf { it in setOf("up", "down", "left", "right") }
+            ?: return mapOf("error" to "direction must be up, down, left or right")
+        val wanted = untilText?.trim()?.takeIf { it.isNotEmpty() }
 
-        // Physical touch gesture drag coordinates:
-        // "down": drag finger UP from 74% to 24% to reveal lower items
-        // "up": drag finger DOWN from 26% to 74% to reveal higher items
-        val cx = w / 2f
-        val (x1, y1, x2, y2) = when (dir) {
-            "up" -> listOf(cx, h * 0.26f, cx, h * 0.74f)
-            "left" -> listOf(w * 0.22f, h / 2f, w * 0.78f, h / 2f)
-            "right" -> listOf(w * 0.78f, h / 2f, w * 0.22f, h / 2f)
-            else -> listOf(cx, h * 0.74f, cx, h * 0.24f)
+        if (wanted == null) {
+            val (moved, how) = scrollOnce(dir, elementId)
+            Thread.sleep(SETTLE_MS)
+            val screen = readScreen()
+            return if (moved) mapOf("success" to true, "moved" to true, "done" to "scrolled $dir ($how)", "screen" to screen)
+            else mapOf(
+                "success" to false, "moved" to false,
+                "error" to "Nothing moved when scrolling $dir: this list is at its end in that direction, or that area doesn't scroll. " +
+                    "Don't repeat it: try the other direction, a different scrollable element_id, the app's search, or another route.",
+                "screen" to screen
+            )
         }
 
-        // Primary: guaranteed physical touch swipe via OS touch digitizer
-        var ok = gesture(x1, y1, x2, y2, 280)
-
-        // Fallback: Accessibility linear/directional scroll action if gesture failed
-        if (!ok) {
-            val node = (if (elementId != null) find(elementId, null) else null)
-                ?: firstMatching(rootInActiveWindow) { it.isScrollable && it.isVisibleToUser }
-            val directional = when (dir) {
-                "up" -> AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_UP
-                "left" -> AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_LEFT
-                "right" -> AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_RIGHT
-                else -> AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_DOWN
+        var scrolls = 0
+        while (true) {
+            visibleWithText(wanted)?.let { node ->
+                Thread.sleep(SETTLE_MS)
+                val screen = readScreen()
+                val id = elements.indexOfFirst { it == node }.takeIf { it >= 0 }
+                    ?: elements.indexOfFirst { n -> ownLabel(n)?.contains(wanted, ignoreCase = true) == true }.takeIf { it >= 0 }
+                return mapOf("success" to true, "found" to wanted, "element_id" to id, "scrolls" to scrolls, "screen" to screen)
             }
-            ok = node?.performAction(directional.id) == true
+            if (scrolls >= maxScrolls.coerceIn(1, 30)) break
+            val (moved, _) = scrollOnce(dir, elementId)
+            if (!moved) break // reached the end of the list
+            scrolls++
+            Thread.sleep(200)
+        }
+        return mapOf(
+            "success" to false, "found" to null, "scrolls" to scrolls,
+            "error" to "\"$wanted\" isn't on screen after $scrolls scroll(s) $dir (${if (scrolls < maxScrolls) "reached the end" else "gave up"}). " +
+                "It may have another name here, be in the other direction, or behind a menu: use the app's search, scroll the other way, or research the path.",
+            "screen" to readScreen()
+        )
+    }
+
+    /** One scroll step; returns whether the content moved and how it was done. */
+    private fun scrollOnce(dir: String, elementId: Int?): Pair<Boolean, String> {
+        val container = scrollContainer(dir, elementId)
+        val area = container ?: rootInActiveWindow
+        var before = contentSignature(area)
+
+        // 1. The list's own scroll action: exact, and unaffected by overlays or gesture timing
+        if (container != null) {
+            val actions = container.actionList.map { it.id }
+            val directional = when (dir) {
+                "up" -> AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_UP.id
+                "left" -> AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_LEFT.id
+                "right" -> AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_RIGHT.id
+                else -> AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_DOWN.id
+            }
+            val linear = if (dir == "down" || dir == "right") AccessibilityNodeInfo.ACTION_SCROLL_FORWARD else AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD
+            for (action in listOf(directional, linear).distinct().filter { it in actions }) {
+                if (container.performAction(action) && changed(area, before)) return true to "list action"
+            }
+            before = contentSignature(area)
         }
 
-        Thread.sleep(150) // Let scroll physics settle before reading screen
-        return after("scrolled $dir", ok)
+        // 2. A finger drag inside the list, then 3. across the whole screen
+        val m = resources.displayMetrics
+        val screenRect = Rect(0, 0, m.widthPixels, m.heightPixels)
+        val bounds = container?.let { Rect().also(it::getBoundsInScreen) }?.takeIf { it.intersect(screenRect) && it.width() > 40 && it.height() > 40 }
+        for (r in listOfNotNull(bounds, screenRect).distinct()) {
+            val (x1, y1, x2, y2) = dragPath(dir, r)
+            if (gesture(x1, y1, x2, y2, 420) && changed(area, before)) return true to "drag"
+            before = contentSignature(area)
+        }
+        return false to "none"
+    }
+
+    /** Drag from 80% to 20% of the area (finger moves opposite to where the view goes), centred on it. */
+    private fun dragPath(dir: String, r: Rect): List<Float> {
+        val cx = r.exactCenterX()
+        val cy = r.exactCenterY()
+        return when (dir) {
+            "up" -> listOf(cx, r.top + r.height() * 0.22f, cx, r.top + r.height() * 0.80f)
+            "left" -> listOf(r.left + r.width() * 0.20f, cy, r.left + r.width() * 0.80f, cy)
+            "right" -> listOf(r.left + r.width() * 0.80f, cy, r.left + r.width() * 0.20f, cy)
+            else -> listOf(cx, r.top + r.height() * 0.80f, cx, r.top + r.height() * 0.22f)
+        }
+    }
+
+    /**
+     * The list to scroll: the given element (or its nearest scrollable parent), else the largest
+     * visible scrollable view that can move that way, across all app windows.
+     */
+    private fun scrollContainer(dir: String, elementId: Int?): AccessibilityNodeInfo? {
+        if (elementId != null) {
+            var n = find(elementId, null)
+            while (n != null && !n.isScrollable) n = n.parent
+            if (n != null) return n
+        }
+        val horizontal = dir == "left" || dir == "right"
+        val wantedAction = when (dir) {
+            "up" -> AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_UP.id
+            "left" -> AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_LEFT.id
+            "right" -> AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_RIGHT.id
+            else -> AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_DOWN.id
+        }
+        val candidates = appRoots().flatMap { root -> allMatching(root) { it.isScrollable && it.isVisibleToUser } }
+        fun area(n: AccessibilityNodeInfo) = Rect().also(n::getBoundsInScreen).let { it.width().toLong() * it.height() }
+        fun fits(n: AccessibilityNodeInfo): Boolean {
+            val r = Rect().also(n::getBoundsInScreen)
+            return if (horizontal) r.width() >= r.height() / 3 else r.height() >= r.width() / 3
+        }
+        return candidates.filter { n -> n.actionList.any { it.id == wantedAction } }.maxByOrNull(::area)
+            ?: candidates.filter(::fits).maxByOrNull(::area)
+            ?: candidates.maxByOrNull(::area)
+    }
+
+    /** Text and position of what is visible in this area; changes when its content moves. */
+    private fun contentSignature(root: AccessibilityNodeInfo?): Int {
+        root ?: return 0
+        root.refresh()
+        val sb = StringBuilder()
+        val r = Rect()
+        var count = 0
+        val queue = ArrayDeque<AccessibilityNodeInfo>().apply { add(root) }
+        while (queue.isNotEmpty() && count < 400) {
+            val n = queue.removeFirst()
+            if (n.isVisibleToUser) {
+                n.getBoundsInScreen(r)
+                sb.append(n.text).append(n.contentDescription).append(r.top).append(',').append(r.left).append(';')
+                count++
+            }
+            for (i in 0 until n.childCount) n.getChild(i)?.let { queue.add(it) }
+        }
+        return sb.toString().hashCode()
+    }
+
+    /** Waits briefly for the area's content to differ from before (scroll animations take a moment). */
+    private fun changed(area: AccessibilityNodeInfo?, before: Int): Boolean {
+        repeat(6) {
+            Thread.sleep(120)
+            if (contentSignature(area) != before) return true
+        }
+        return false
+    }
+
+    /** A visible element (in any app window) whose text or description contains this text. */
+    private fun visibleWithText(text: String): AccessibilityNodeInfo? {
+        val screen = resources.displayMetrics.let { Rect(0, 0, it.widthPixels, it.heightPixels) }
+        return appRoots().asSequence()
+            .flatMap { it.findAccessibilityNodeInfosByText(text).orEmpty().asSequence() }
+            .firstOrNull { n -> n.isVisibleToUser && Rect().also(n::getBoundsInScreen).let { it.intersect(screen) && it.height() > 4 } }
+    }
+
+    /** Roots of the app windows on screen (falls back to the active window). */
+    private fun appRoots(): List<AccessibilityNodeInfo> {
+        val roots = windows.filter { it.type == AccessibilityWindowInfo.TYPE_APPLICATION }.sortedByDescending { it.layer }.mapNotNull { it.root }
+        return roots.ifEmpty { listOfNotNull(rootInActiveWindow) }
+    }
+
+    private fun allMatching(root: AccessibilityNodeInfo?, test: (AccessibilityNodeInfo) -> Boolean): List<AccessibilityNodeInfo> {
+        val out = mutableListOf<AccessibilityNodeInfo>()
+        val queue = ArrayDeque<AccessibilityNodeInfo>()
+        root?.let { queue.add(it) }
+        while (queue.isNotEmpty() && out.size < 50) {
+            val n = queue.removeFirst()
+            if (test(n)) out += n
+            for (i in 0 until n.childCount) n.getChild(i)?.let { queue.add(it) }
+        }
+        return out
     }
 
     /**
@@ -570,17 +725,27 @@ class PhoneAgentService : AccessibilityService() {
         return null
     }
 
-    /** A tap (same start and end) or swipe; waits until the system has played it. */
+    /**
+     * A tap (same start and end) or swipe; waits until the system has played it. Our own overlay
+     * lets touches through meanwhile, so a gesture under the assistant panel reaches the app.
+     */
     private fun gesture(x1: Float, y1: Float, x2: Float, y2: Float, durationMs: Long): Boolean {
         val path = Path().apply { moveTo(x1, y1); lineTo(x2, y2) }
         val stroke = GestureDescription.StrokeDescription(path, 0, durationMs)
         val latch = CountDownLatch(1)
         var ok = false
-        val sent = dispatchGesture(GestureDescription.Builder().addStroke(stroke).build(), object : GestureResultCallback() {
-            override fun onCompleted(gestureDescription: GestureDescription?) { ok = true; latch.countDown() }
-            override fun onCancelled(gestureDescription: GestureDescription?) { latch.countDown() }
-        }, null)
-        if (sent) latch.await(durationMs + 2000, TimeUnit.MILLISECONDS)
+        val pad = 24f
+        val area = android.graphics.RectF(minOf(x1, x2) - pad, minOf(y1, y2) - pad, maxOf(x1, x2) + pad, maxOf(y1, y2) + pad)
+        overlayPassThrough?.invoke(true, area)
+        try {
+            val sent = dispatchGesture(GestureDescription.Builder().addStroke(stroke).build(), object : GestureResultCallback() {
+                override fun onCompleted(gestureDescription: GestureDescription?) { ok = true; latch.countDown() }
+                override fun onCancelled(gestureDescription: GestureDescription?) { latch.countDown() }
+            }, null)
+            if (sent) latch.await(durationMs + 2000, TimeUnit.MILLISECONDS)
+        } finally {
+            overlayPassThrough?.invoke(false, area)
+        }
         return ok
     }
 }
