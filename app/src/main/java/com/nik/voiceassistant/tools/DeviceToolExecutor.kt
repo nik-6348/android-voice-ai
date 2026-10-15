@@ -85,11 +85,14 @@ class DeviceToolExecutor(
         ),
         function(
             "tap",
-            "Taps an element on screen by its number from the latest screen, or by its visible text. Returns the new screen.",
+            "Taps an element on screen by its number from the latest screen, or by its visible text. Returns the new screen " +
+                "and \"messages\": what the app showed in response (toasts such as \"You are now 4 steps away from being a developer\" " +
+                "or \"You are already a developer\"). Read them: they say whether it worked.",
             optional = listOf(
                 "element_id" to param("integer", "Element number from the latest screen, e.g. 3 for [3]"),
                 "text" to param("string", "Visible text of the element, when no element_id"),
-                "long_press" to param("boolean", "Long-press instead of tap")
+                "long_press" to param("boolean", "Long-press instead of tap"),
+                "times" to param("integer", "Tap this many times in quick succession (1-15), for things that need repeated taps, e.g. Build number 7 times")
             )
         ),
         function(
@@ -140,6 +143,12 @@ class DeviceToolExecutor(
                 "E.g. to close an app: navigate recents, then swipe up on that app's card. Returns the new screen.",
             required = listOf("direction" to param("string", "Finger direction", enum = listOf("up", "down", "left", "right"))),
             optional = listOf("element_id" to param("integer", "Element to swipe on; default the screen center"))
+        ),
+        function(
+            "search_settings",
+            "Searches this phone's own Settings for a setting by name (opens Settings search, types it, shows the results). " +
+                "The quickest way to any setting on any phone: then tap the matching result. Returns the results screen.",
+            required = listOf("query" to param("string", "The setting's name as it appears in Settings, e.g. \"Build number\", \"USB debugging\""))
         ),
         function(
             "find_contact",
@@ -331,7 +340,7 @@ class DeviceToolExecutor(
                     // Confirmation is enforced here, not left to the model: it once asked and sent without waiting
                     agent.targetLabel(int("element_id"), str("text"))?.let { NEEDS_YES.containsMatchIn(it) } == true && !takeConfirmation() ->
                         mapOf("error" to ASK_FIRST)
-                    else -> agent.tap(int("element_id"), str("text"), bool("long_press") == true)
+                    else -> agent.tap(int("element_id"), str("text"), bool("long_press") == true, int("times") ?: 1)
                 }
 
                 "type_text" -> agent?.typeText(str("text") ?: "", int("element_id"), bool("submit")) ?: mapOf("error" to AGENT_OFF)
@@ -348,6 +357,8 @@ class DeviceToolExecutor(
                 )
 
                 "research" -> research(str("question") ?: "")
+
+                "search_settings" -> if (agent == null) mapOf("error" to AGENT_OFF) else searchSettings(agent, str("query") ?: "")
 
                 "swipe" -> agent?.swipe(str("direction") ?: "up", int("element_id")) ?: mapOf("error" to AGENT_OFF)
 
@@ -714,6 +725,34 @@ class DeviceToolExecutor(
             put("launched", listOfNotNull(action, uri, pkg).joinToString(" "))
             app?.let { put("opened_in", it) }
         })
+    }
+
+    /**
+     * Opens this phone's Settings search, types the query and returns the results. The search screen
+     * is whatever activity handles Settings' search action on this phone (found at runtime); without
+     * one, Settings opens and its own search field is used.
+     */
+    private fun searchSettings(agent: PhoneAgentService, query: String): Map<String, Any?> {
+        if (query.isBlank()) return mapOf("error" to "Give the setting's name")
+        val search = Intent("com.android.settings.action.SETTINGS_SEARCH").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+        val opened = search.resolveActivity(packageManager) != null && runCatching { context.startActivity(search) }.isSuccess
+        if (!opened) {
+            context.startActivity(Intent(Settings.ACTION_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP))
+            agent.screenAfterLaunch()
+            // Settings' own search box (or the button that opens it)
+            agent.tap(null, "Search", longPress = false)
+        }
+        agent.screenAfterLaunch()
+        val typed = agent.typeText(query, null, submit = true)
+        if (typed["error"] != null) return typed + ("note" to "Settings search didn't take the text; tap its search box (read_screen) and use type_text")
+        // Results come in as you type; give them a moment
+        Thread.sleep(700)
+        return mapOf(
+            "success" to true,
+            "done" to "searched Settings for \"$query\"",
+            "next" to "Tap the result that matches best (its path is shown under it). If nothing matches, research the setting's name on this phone.",
+            "screen" to agent.readScreen()
+        )
     }
 
     /** Whether a content:// or file:// URI points at something that exists (other schemes: true). */

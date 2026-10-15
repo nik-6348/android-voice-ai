@@ -103,6 +103,7 @@ class ToolCallRunner(
         "research" -> "Researching: ${args["question"] ?: ""}…"
         "update_plan" -> "Planning: ${args["goal"] ?: ""}"
         "wait" -> "Waiting for the screen…"
+        "search_settings" -> "Searching Settings for \"${args["query"] ?: ""}\"…"
         else -> "${name.replace('_', ' ').replaceFirstChar { it.uppercase() }}…"
     }
 

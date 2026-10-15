@@ -86,7 +86,24 @@ class PhoneAgentService : AccessibilityService() {
         }
     }
 
-    override fun onAccessibilityEvent(event: AccessibilityEvent?) {}
+    // Short messages shown on screen (toasts, accessibility announcements), newest last, with their time
+    private val messages = java.util.concurrent.ConcurrentLinkedDeque<Pair<Long, String>>()
+    // When the action being run started: its result reports the messages shown since then
+    @Volatile private var actionStartedAt = 0L
+
+    override fun onAccessibilityEvent(event: AccessibilityEvent?) {
+        event ?: return
+        val isToast = event.eventType == AccessibilityEvent.TYPE_NOTIFICATION_STATE_CHANGED && event.parcelableData !is android.app.Notification
+        if (!isToast && event.eventType != AccessibilityEvent.TYPE_ANNOUNCEMENT) return
+        val text = event.text.joinToString(" ").trim().takeIf { it.isNotEmpty() } ?: return
+        messages.addLast(System.currentTimeMillis() to text.take(200))
+        while (messages.size > 20) messages.pollFirst()
+    }
+
+    private fun markAction() { actionStartedAt = System.currentTimeMillis() }
+
+    /** Messages shown since the current action started (a toast can lag the action a little). */
+    private fun messagesSinceAction(): List<String> = messages.filter { it.first >= actionStartedAt }.map { it.second }.distinct()
 
     override fun onInterrupt() {}
 
@@ -305,7 +322,14 @@ class PhoneAgentService : AccessibilityService() {
     /** Result of an action plus the screen it led to, so the model can carry on without another call. */
     private fun after(done: String, ok: Boolean = true): Map<String, Any?> {
         Thread.sleep(SETTLE_MS)
-        return mapOf("success" to ok, "done" to done, "screen" to readScreen())
+        val shown = messagesSinceAction()
+        return buildMap {
+            put("success", ok)
+            put("done", done)
+            // What the app said back (e.g. "You are now a developer!", "No need, you are already a developer")
+            if (shown.isNotEmpty()) put("messages", shown)
+            put("screen", readScreen())
+        }
     }
 
     /** The label of what a tap on this element would press (its own text, or the clickable parent's). */
@@ -317,17 +341,29 @@ class PhoneAgentService : AccessibilityService() {
             .joinToString(" ").ifBlank { null }
     }
 
-    fun tap(elementId: Int?, text: String?, longPress: Boolean): Map<String, Any?> {
+    /**
+     * Taps an element, times times in quick succession (some settings react only to repeated taps,
+     * e.g. Build number 7 times). The result includes the messages the app showed meanwhile.
+     */
+    fun tap(elementId: Int?, text: String?, longPress: Boolean, times: Int = 1): Map<String, Any?> {
         val node = find(elementId, text) ?: return notFound(elementId, text)
+        markAction()
         val action = if (longPress) AccessibilityNodeInfo.ACTION_LONG_CLICK else AccessibilityNodeInfo.ACTION_CLICK
         // Labels are often on a child of the clickable view
         var target: AccessibilityNodeInfo? = node
         while (target != null && !(if (longPress) target.isLongClickable else target.isClickable)) target = target.parent
-        val ok = target?.performAction(action) == true || run {
-            val r = Rect().also { node.getBoundsInScreen(it) }
-            gesture(r.exactCenterX(), r.exactCenterY(), r.exactCenterX(), r.exactCenterY(), if (longPress) 800 else 60)
+        val count = times.coerceIn(1, 15)
+        var ok = true
+        repeat(count) { i ->
+            ok = (target?.performAction(action) == true || run {
+                val r = Rect().also { node.getBoundsInScreen(it) }
+                gesture(r.exactCenterX(), r.exactCenterY(), r.exactCenterX(), r.exactCenterY(), if (longPress) 800 else 60)
+            }) && ok
+            if (i < count - 1) Thread.sleep(180)
         }
-        return after("${if (longPress) "long-pressed" else "tapped"} ${label(node)}", ok)
+        // Toasts from the last taps can take a moment
+        if (count > 1) Thread.sleep(400)
+        return after("${if (longPress) "long-pressed" else "tapped"} ${label(target ?: node)}${if (count > 1) " $count times" else ""}", ok)
     }
 
     /**
@@ -336,6 +372,7 @@ class PhoneAgentService : AccessibilityService() {
      * submit null = press enter automatically when the field looks like a search / address box.
      */
     fun typeText(text: String, elementId: Int?, submit: Boolean?): Map<String, Any?> {
+        markAction()
         val given = elementId?.let { id ->
             val n = find(id, null) ?: return notFound(id, null)
             // An element inside the field, or its label: use the editable one in or around it
@@ -592,6 +629,7 @@ class PhoneAgentService : AccessibilityService() {
      * e.g. up on an app card in recents closes that app; left/right flips pages and carousels.
      */
     fun swipe(direction: String, elementId: Int?): Map<String, Any?> {
+        markAction()
         val m = resources.displayMetrics
         val (w, h) = m.widthPixels.toFloat() to m.heightPixels.toFloat()
         val (x, y) = if (elementId != null) {
@@ -792,6 +830,7 @@ class PhoneAgentService : AccessibilityService() {
         firstMatching(root) { it.contentDescription?.toString()?.equals(text, ignoreCase = true) == true }
 
     fun navigate(action: String): Map<String, Any?> {
+        markAction()
         val global = when (action.lowercase()) {
             "back" -> GLOBAL_ACTION_BACK
             "home" -> GLOBAL_ACTION_HOME
@@ -812,7 +851,8 @@ class PhoneAgentService : AccessibilityService() {
         return readScreen()
     }
 
-    private fun label(node: AccessibilityNodeInfo) = ownLabel(node)?.let { "\"$it\"" } ?: kind(node)
+    // A row's name is usually the text of its children ("Build number · 1.2.3"), not the row itself
+    private fun label(node: AccessibilityNodeInfo) = (ownLabel(node) ?: childText(node))?.let { "\"$it\"" } ?: kind(node)
 
     private fun firstMatching(root: AccessibilityNodeInfo?, test: (AccessibilityNodeInfo) -> Boolean): AccessibilityNodeInfo? {
         val queue = ArrayDeque<AccessibilityNodeInfo>()

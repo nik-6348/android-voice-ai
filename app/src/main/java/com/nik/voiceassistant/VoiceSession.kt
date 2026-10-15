@@ -112,6 +112,12 @@ class VoiceSession private constructor(val context: Context) {
             5. Verify the end state on the screen before saying it's done (update_plan status done).
             Never give up after one failure: try every reasonable route. Only when several different routes have failed, tell the user exactly what is blocking you and what they could do.
 
+            PHONE SETTINGS (they differ by maker, model and Android version): for any task in Settings, before touching a menu
+               1. call research with the task (this phone's make, model and Android version are added for you: never ask the user for them), to learn the exact names, path and any direct intent;
+               2. go straight there: launch_intent with the settings action research gave, or search_settings with the setting's name, then tap the matching result;
+               3. walk the menus yourself only to follow the path research gave. Don't wander or guess between menus.
+               Every tap returns "messages" (what the phone said back). Read them before deciding: e.g. "You are already a developer" means it's already done; "N steps away" means keep tapping. For repeated taps use tap with times=N.
+
             SCROLLING: scroll's result says moved=true/false. moved=false means the end of that list: stop, change direction or approach. To find an item in a long list use scroll with until_text, or the app's search.
 
             ACTING PRECISELY:

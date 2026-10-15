@@ -5,10 +5,12 @@
      falls back to its reduced "basic" mode and pages come through incomplete
      (chromium: AccessibilityStateDelegateImpl COMPLEX_USER_INTERACTION_SERVICE_EVENT_TYPE_MASK,
      WebContentsAccessibilityAndroid::SetBrowserAXMode).
+     typeNotificationStateChanged / typeAnnouncement carry the short messages apps show after an action
+     (toasts like "You are now 3 steps away from being a developer"), returned with each action's result.
      typeWindowsChanged / typeWindowContentChanged keep Android's accessibility cache of windows and nodes
      fresh; without them a newly opened page was sometimes read as empty or stale. -->
 <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
-    android:accessibilityEventTypes="typeWindowStateChanged|typeWindowsChanged|typeWindowContentChanged|typeViewScrolled|typeViewSelected|typeAnnouncement"
+    android:accessibilityEventTypes="typeWindowStateChanged|typeWindowsChanged|typeWindowContentChanged|typeViewScrolled|typeViewSelected|typeAnnouncement|typeNotificationStateChanged"
     android:accessibilityFeedbackType="feedbackGeneric"
     android:accessibilityFlags="flagRetrieveInteractiveWindows|flagReportViewIds|flagIncludeNotImportantViews"
     android:canPerformGestures="true"
