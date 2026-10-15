@@ -70,13 +70,24 @@ class AudioRecordManager(
 
         try {
             // VOICE_COMMUNICATION enables hardware Acoustic Echo Cancellation (AEC) & Noise Suppression (NS)
-            val record = AudioRecord(
+            var record = AudioRecord(
                 MediaRecorder.AudioSource.VOICE_COMMUNICATION,
                 SAMPLE_RATE,
                 CHANNEL_CONFIG,
                 AUDIO_FORMAT,
                 bufferSize
             )
+            if (record.state != AudioRecord.STATE_INITIALIZED) {
+                Log.w(TAG, "VOICE_COMMUNICATION source failed to initialize, falling back to MIC")
+                runCatching { record.release() }
+                record = AudioRecord(
+                    MediaRecorder.AudioSource.MIC,
+                    SAMPLE_RATE,
+                    CHANNEL_CONFIG,
+                    AUDIO_FORMAT,
+                    bufferSize
+                )
+            }
             audioRecord = record
 
             if (record.state != AudioRecord.STATE_INITIALIZED) {

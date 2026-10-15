@@ -12,6 +12,8 @@ import android.telephony.TelephonyCallback
 import android.telephony.TelephonyManager
 import android.util.Log
 import androidx.core.content.ContextCompat
+import android.media.AudioDeviceInfo
+import android.media.AudioManager
 import com.nik.voiceassistant.SecurePrefs
 import com.nik.voiceassistant.VoiceSession
 import com.nik.voiceassistant.audio.AudioRecordManager
@@ -86,6 +88,8 @@ class CallAgentSession(
     private var callConnectedDeferred: CompletableDeferred<Boolean>? = null
     private var callWasActive = false
     private var activeMacroId: String? = null
+    @Volatile private var activeGoal: String = ""
+    @Volatile private var shouldDiscloseAi: Boolean = true
 
     /**
      * Minimal tool executor for live call: only end_call and note_for_user.
@@ -148,16 +152,27 @@ class CallAgentSession(
 
     private val liveCallback = object : LiveClient.Callback {
         override fun onConnected() {
-            Log.i(TAG, "Connected to Gemini Live")
+            Log.w(TAG, "Connected to Gemini Live")
             _status.value = Status.TALKING
+            enableSpeakerphone()
+            // KICK OFF the AI's first spoken sentence!
+            val kickoff = if (shouldDiscloseAi) {
+                "The phone call is answered and connected now. Speak immediately! Introduce yourself: 'Namaste, main ${assistantName()} hoon, AI assistant', state your purpose on this call (goal: $activeGoal), and ask how you can help."
+            } else {
+                "The phone call is answered and connected now. Speak immediately! Greet the caller politely, state your purpose on this call (goal: $activeGoal), and ask how you can help."
+            }
+            mainHandler.postDelayed({
+                Log.w(TAG, "Sending kickoff text to Gemini Live: $kickoff")
+                liveClient?.sendText(kickoff)
+            }, 300)
         }
 
         override fun onReconnecting(attempt: Int, reason: String) {
-            Log.i(TAG, "Reconnecting attempt $attempt: $reason")
+            Log.w(TAG, "Reconnecting attempt $attempt: $reason")
         }
 
         override fun onDisconnected(reason: String) {
-            Log.i(TAG, "Gemini disconnected: $reason")
+            Log.w(TAG, "Gemini disconnected: $reason")
             mainHandler.post { stop("Gemini disconnected: $reason") }
         }
 
@@ -167,21 +182,21 @@ class CallAgentSession(
         }
 
         override fun onUserTranscript(text: String) {
-            Log.d(TAG, "Caller: $text")
+            Log.w(TAG, "Caller: $text")
         }
 
         override fun onUserSpeaking() {}
 
         override fun onModelTranscript(text: String) {
-            Log.d(TAG, "AI: $text")
+            Log.w(TAG, "AI Spoke: $text")
         }
 
         override fun onToolStart(toolName: String, statusText: String) {
-            Log.i(TAG, "Tool started: $toolName ($statusText)")
+            Log.w(TAG, "Tool started: $toolName ($statusText)")
         }
 
         override fun onToolExecuted(toolName: String, args: Map<String, Any?>, resultSummary: String) {
-            Log.i(TAG, "Tool finished: $toolName -> $resultSummary")
+            Log.w(TAG, "Tool finished: $toolName -> $resultSummary")
         }
 
         override fun onTurnComplete() {}
@@ -230,6 +245,8 @@ class CallAgentSession(
         }
 
         activeMacroId = macroId
+        activeGoal = goal
+        shouldDiscloseAi = discloseAi
         callWasActive = false
         _status.value = Status.DIALING_OR_CONNECTING
 
@@ -247,6 +264,8 @@ class CallAgentSession(
                         stop("Could not answer call (permission or telecom error)")
                         return@launch
                     }
+                    delay(1200)
+                    enableSpeakerphone()
                 } else {
                     val placeResult = CallPlacer.place(context, number, speaker = true)
                     if (!placeResult.success) {
@@ -294,14 +313,14 @@ class CallAgentSession(
 
         // 1. Audio setup
         val cAudio = CallAudio(context, onFocusLost = {
-            Log.w(TAG, "Call audio focus lost")
-            stop("Audio focus lost")
+            Log.w(TAG, "Call audio focus lost notification (ignored during call)")
         })
         callAudio = cAudio
         cAudio.enter(allowInCall = true)
 
         val trackManager = AudioTrackManager()
         audioTrackManager = trackManager
+        trackManager.initialize()
         trackManager.startPlaybackWorker(scope)
 
         // 2. Gemini Live client setup
@@ -365,6 +384,17 @@ class CallAgentSession(
         }
     }
 
+    private fun enableSpeakerphone() {
+        PhoneAgentService.instance?.switchOn(listOf("Speaker", "Speakerphone", "स्पीकर"))
+        val am = context.getSystemService(AudioManager::class.java)
+        @Suppress("DEPRECATION")
+        runCatching { am?.isSpeakerphoneOn = true }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            val speakerDevice = am?.availableCommunicationDevices?.firstOrNull { it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER }
+            speakerDevice?.let { am?.setCommunicationDevice(it) }
+        }
+    }
+
     private fun hangUpCall() {
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P &&
@@ -398,6 +428,12 @@ class CallAgentSession(
             tm.listen(listener, PhoneStateListener.LISTEN_CALL_STATE)
             telephonyCallback = listener
         }
+        @Suppress("DEPRECATION")
+        if (tm.callState == TelephonyManager.CALL_STATE_OFFHOOK) {
+            Log.w(TAG, "TelephonyManager is already in CALL_STATE_OFFHOOK")
+            enableSpeakerphone()
+            callConnectedDeferred?.complete(true)
+        }
     }
 
     private fun unregisterCallStateListener() {
@@ -419,17 +455,18 @@ class CallAgentSession(
     private fun onTelephonyStateChanged(state: Int) {
         when (state) {
             TelephonyManager.CALL_STATE_OFFHOOK -> {
-                Log.i(TAG, "Telephony state: OFFHOOK (call connected)")
+                Log.w(TAG, "Telephony state: OFFHOOK (call connected)")
+                enableSpeakerphone()
                 callConnectedDeferred?.complete(true)
             }
             TelephonyManager.CALL_STATE_IDLE -> {
-                Log.i(TAG, "Telephony state: IDLE")
+                Log.w(TAG, "Telephony state: IDLE")
                 if (callWasActive) {
                     mainHandler.post { stop("Remote party ended the call") }
                 }
             }
             TelephonyManager.CALL_STATE_RINGING -> {
-                Log.i(TAG, "Telephony state: RINGING")
+                Log.w(TAG, "Telephony state: RINGING")
             }
         }
     }
@@ -437,7 +474,7 @@ class CallAgentSession(
     fun stop(reason: String? = null) {
         if (!_isActive.compareAndSet(true, false)) return
 
-        Log.i(TAG, "Stopping CallAgentSession: ${reason ?: "No reason"}")
+        Log.w(TAG, "Stopping CallAgentSession: ${reason ?: "No reason"}")
         _status.value = Status.ENDED
 
         timeoutJob?.cancel()

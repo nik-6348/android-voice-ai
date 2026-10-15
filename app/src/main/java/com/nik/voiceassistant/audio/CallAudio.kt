@@ -69,14 +69,16 @@ class CallAudio(
                 )
                 .setOnAudioFocusChangeListener({ change ->
                     // Ducking requests (navigation, notifications) don't count: only a real takeover
-                    if (change == AudioManager.AUDIOFOCUS_LOSS || change == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT) {
-                        Log.i(TAG, "Audio focus lost ($change)")
+                    // When allowInCall is true, the telephony stack owns call audio focus so we do not abort on focus changes
+                    Log.w(TAG, "Audio focus changed: $change (allowInCall=$allowInCall)")
+                    if (!allowInCall && (change == AudioManager.AUDIOFOCUS_LOSS || change == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT)) {
                         if (active) onFocusLost()
                     }
                 }, main)
                 .build()
             focus = request
-            if (am.requestAudioFocus(request) != AudioManager.AUDIOFOCUS_REQUEST_GRANTED) {
+            val granted = am.requestAudioFocus(request) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
+            if (!granted && !allowInCall) {
                 Log.w(TAG, "Audio focus refused")
                 return false
             }
