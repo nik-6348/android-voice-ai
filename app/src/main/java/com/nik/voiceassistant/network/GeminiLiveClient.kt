@@ -1,8 +1,10 @@
 package com.nik.voiceassistant.network
 
+import android.os.SystemClock
 import android.util.Base64
 import android.util.Log
 import com.google.gson.Gson
+import com.google.gson.JsonArray
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import com.nik.voiceassistant.audio.AudioTrackManager
@@ -42,6 +44,9 @@ class GeminiLiveClient(
         private const val TAG = "GeminiLive"
         private const val ENDPOINT = "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent"
         private const val MAX_RECONNECTS = 8
+        // Working sessions that may drop within the window before giving up (planned handovers don't count)
+        private const val MAX_DROPS = 6
+        private const val DROP_WINDOW_MS = 2 * 60_000L
         // ~8 s of 16 kHz PCM kept while (re)connecting
         private const val MAX_QUEUED_BYTES = 16000 * 2 * 8
         private const val AUDIO_MIME = "audio/pcm;rate=16000"
@@ -57,7 +62,11 @@ class GeminiLiveClient(
         .build()
     private val reconnector = Executors.newSingleThreadScheduledExecutor()
 
+    // Guards replacing the socket (connect, reconnects, handovers, disconnect run on different threads)
+    private val lock = Any()
     @Volatile private var socket: WebSocket? = null
+    // Bumped by connect() and disconnect(): a reconnect scheduled for an earlier conversation does nothing
+    @Volatile private var generation = 0
     // setupComplete received on the current socket: audio and messages may flow
     private val ready = AtomicBoolean(false)
     @Volatile private var config: LiveClient.Config? = null
@@ -71,6 +80,9 @@ class GeminiLiveClient(
     @Volatile private var lastRefusal: String? = null
     // Google Search was refused for this key (e.g. no grounding quota): the conversation goes on without it
     @Volatile private var searchOff = false
+    // When working sessions dropped lately: attempts resets with each session, so a server that takes
+    // the setup and then closes would otherwise be retried every 250 ms forever
+    private val drops = ArrayDeque<Long>()
 
     // The user's words arrive in pieces; sent on as one line when the model starts answering
     private val userWords = StringBuilder()
@@ -83,75 +95,113 @@ class GeminiLiveClient(
     private var queuedBytes = 0
 
     override fun connect(config: LiveClient.Config) {
-        if (!userClosed) return
-        this.config = config
-        resumeHandle = config.resumeHandle
-        attempts = 0
-        everConnected = false
-        lastRefusal = null
-        searchOff = false
-        userClosed = false
-        open()
+        val gen = synchronized(lock) {
+            if (!userClosed) return
+            this.config = config
+            resumeHandle = config.resumeHandle
+            attempts = 0
+            everConnected = false
+            handingOver = false
+            lastRefusal = null
+            searchOff = false
+            synchronized(drops) { drops.clear() }
+            userClosed = false
+            ++generation
+        }
+        open(gen)
     }
 
-    private fun open() {
-        val cfg = config ?: return
-        ready.set(false)
-        socketReady = false
-        Log.i(TAG, "Connecting to Gemini Live (${cfg.model})${if (resumeHandle != null) ", resuming" else ""}")
-        // The key goes in a header, never in the URL (URLs end up in logs)
-        val request = Request.Builder().url(ENDPOINT).header("x-goog-api-key", cfg.apiKey).build()
-        socket = http.newWebSocket(request, object : WebSocketListener() {
-            override fun onOpen(webSocket: WebSocket, response: Response) {
-                webSocket.send(gson.toJson(mapOf("setup" to setup(cfg))))
-            }
+    /** Whether this is still the live connection (checked under the lock: a callback can race open()). */
+    private fun isCurrent(webSocket: WebSocket): Boolean = synchronized(lock) { webSocket === socket }
 
-            // The Live API sends its JSON in binary frames
-            override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
-                if (webSocket === socket) handle(webSocket, bytes.utf8())
-            }
+    /** A pasted key often carries a newline, space or zero-width character, which OkHttp rejects in a header. */
+    private fun cleanKey(key: String): String =
+        key.trim().filterNot { it.isWhitespace() || it.isISOControl() || Character.getType(it) == Character.FORMAT.toInt() }
 
-            override fun onMessage(webSocket: WebSocket, text: String) {
-                if (webSocket === socket) handle(webSocket, text)
+    /** Opens a new connection for conversation [gen]; never throws (it also runs on the reconnector thread). */
+    private fun open(gen: Int) {
+        synchronized(lock) {
+            val cfg = config
+            if (gen != generation || userClosed || cfg == null) return
+            ready.set(false)
+            socketReady = false
+            // The previous connection (before a handover, or one a retry replaces) must not linger
+            socket?.let { old -> runCatching { old.close(1000, "replaced") } }
+            socket = null
+            Log.i(TAG, "Connecting to Gemini Live (${cfg.model})${if (resumeHandle != null) ", resuming" else ""}")
+            val request = try {
+                // The key goes in a header, never in the URL (URLs end up in logs)
+                Request.Builder().url(ENDPOINT).header("x-goog-api-key", cleanKey(cfg.apiKey)).build()
+            } catch (e: IllegalArgumentException) {
+                // (OkHttp's message would quote the key: not shown)
+                userClosed = true
+                handingOver = false
+                null
             }
-
-            override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
-                webSocket.close(1000, null)
+            if (request != null) {
+                socket = http.newWebSocket(request, socketListener(cfg))
+                return
             }
+        }
+        listener.onError(IllegalArgumentException("Invalid server URL or API key: the Gemini API key has characters that can't be sent; paste it again in Settings"))
+    }
 
-            override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-                if (webSocket !== socket) return // an old connection after a handover
-                ready.set(false)
-                Log.i(TAG, "Closed: $code $reason")
-                // Refused before the session even started, twice for the same reason (billing, quota,
-                // key, model…): retrying can't fix it, so stop and show Gemini's own message
-                val refusedAgain = !socketReady && reason.isNotBlank() && reason == lastRefusal
-                if (!socketReady && reason.isNotBlank()) lastRefusal = reason
-                // A refusal before setup with Google Search on: the key may lack Search quota while the
-                // rest works, so try once more without it rather than failing the conversation
-                val dropSearch = !userClosed && !socketReady && config?.search == true && !searchOff && reason.isNotBlank()
-                when {
-                    userClosed -> listener.onDisconnected(reason)
-                    dropSearch -> {
-                        // The same refusal again without Search means it wasn't Search: it then stops at once
-                        searchOff = true
-                        AgentTrace.log(AgentTrace.Kind.WARNING, "Gemini refused the session with Google Search on ($reason); continuing without Search (the research tool still works)")
-                        reconnector.execute { if (!userClosed) open() }
-                    }
-                    isFatal(code, null) || refusedAgain -> fail("Gemini refused the session ($code): $reason")
-                    else -> scheduleReconnect("closed ($code ${reason.take(120)})")
+    private fun socketListener(cfg: LiveClient.Config) = object : WebSocketListener() {
+        override fun onOpen(webSocket: WebSocket, response: Response) {
+            if (!isCurrent(webSocket)) return // replaced while it was opening
+            webSocket.send(gson.toJson(mapOf("setup" to setup(cfg))))
+        }
+
+        // The Live API sends its JSON in binary frames
+        override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
+            if (webSocket === socket) handle(webSocket, bytes.utf8())
+        }
+
+        override fun onMessage(webSocket: WebSocket, text: String) {
+            if (webSocket === socket) handle(webSocket, text)
+        }
+
+        override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
+            webSocket.close(1000, null)
+        }
+
+        override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+            if (!isCurrent(webSocket)) return // an old connection after a handover
+            ready.set(false)
+            // A handover connection that ended before its session started: what follows is an ordinary
+            // reconnect (onReconnecting, then onConnected), so the UI doesn't stay at "connecting"
+            handingOver = false
+            Log.i(TAG, "Closed: $code $reason")
+            // Refused before the session even started, twice for the same reason (billing, quota,
+            // key, model…): retrying can't fix it, so stop and show Gemini's own message
+            val refusedAgain = !socketReady && reason.isNotBlank() && reason == lastRefusal
+            if (!socketReady && reason.isNotBlank()) lastRefusal = reason
+            // A refusal before setup with Google Search on: the key may lack Search quota while the
+            // rest works, so try once more without it rather than failing the conversation
+            val dropSearch = !userClosed && !socketReady && config?.search == true && !searchOff && reason.isNotBlank()
+            when {
+                userClosed -> listener.onDisconnected(reason)
+                dropSearch -> {
+                    // The same refusal again without Search means it wasn't Search: it then stops at once
+                    searchOff = true
+                    AgentTrace.log(AgentTrace.Kind.WARNING, "Gemini refused the session with Google Search on ($reason); continuing without Search (the research tool still works)")
+                    val gen = generation
+                    reconnector.execute { open(gen) }
                 }
+                isFatal(code, null) || refusedAgain -> fail("Gemini refused the session ($code): $reason")
+                else -> scheduleReconnect("closed ($code ${reason.take(120)})")
             }
+        }
 
-            override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                if (webSocket !== socket) return
-                ready.set(false)
-                Log.w(TAG, "Failure: ${t.message} (HTTP ${response?.code})")
-                if (userClosed) return
-                if (isFatal(null, response?.code)) fail("Gemini refused the connection (HTTP ${response?.code}): check the Gemini API key and model in Settings")
-                else scheduleReconnect(t.message ?: "connection failed")
-            }
-        })
+        override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+            if (!isCurrent(webSocket)) return
+            ready.set(false)
+            handingOver = false
+            Log.w(TAG, "Failure: ${t.message} (HTTP ${response?.code})")
+            if (userClosed) return
+            if (isFatal(null, response?.code)) fail("Gemini refused the connection (HTTP ${response?.code}): check the Gemini API key and model in Settings")
+            else scheduleReconnect(t.message ?: "connection failed")
+        }
     }
 
     /** Errors no retry can fix: a wrong key or model, or a request Gemini rejects. */
@@ -223,49 +273,67 @@ class GeminiLiveClient(
         (s["required"] as? List<*>)?.takeIf { it.isNotEmpty() }?.let { put("required", it.map(Any?::toString)) }
     }
 
+    // Gson getters throw on a missing, null or differently typed field; these return null instead
+    private fun JsonObject.obj(name: String): JsonObject? = get(name)?.takeIf { it.isJsonObject }?.asJsonObject
+    private fun JsonObject.arr(name: String): JsonArray? = get(name)?.takeIf { it.isJsonArray }?.asJsonArray
+    private fun JsonObject.str(name: String): String? = get(name)?.takeIf { it.isJsonPrimitive }?.asString
+    private fun JsonObject.bool(name: String): Boolean? =
+        get(name)?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isBoolean }?.asBoolean
+    private fun JsonObject.long(name: String): Long? =
+        get(name)?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isNumber }?.asLong
+
     private fun handle(webSocket: WebSocket, json: String) {
         if (userClosed) return
-        val msg = try {
-            JsonParser.parseString(json).asJsonObject
-        } catch (e: Exception) {
-            Log.w(TAG, "Unreadable message: ${e.message}")
-            return
-        }
-        // Usage comes with many messages; the latest count is logged once per turn
-        msg.getAsJsonObject("usageMetadata")?.get("totalTokenCount")?.asLong?.let { turnTokens = it }
-        when {
-            msg.has("setupComplete") -> onReady(webSocket)
-            msg.has("serverContent") -> serverContent(msg.getAsJsonObject("serverContent"))
-            msg.has("toolCall") -> toolCall(webSocket, msg.getAsJsonObject("toolCall"))
-            msg.has("toolCallCancellation") -> Log.i(TAG, "Tool calls cancelled: ${msg.get("toolCallCancellation")}")
-            msg.has("sessionResumptionUpdate") -> {
-                val update = msg.getAsJsonObject("sessionResumptionUpdate")
-                val handle = update.get("newHandle")?.takeIf { !it.isJsonNull }?.asString
-                if (update.get("resumable")?.asBoolean == true && !handle.isNullOrBlank()) {
-                    resumeHandle = handle
-                    listener.onResumeHandle(handle)
+        // An exception here would fail the socket and start a reconnect: one odd message is skipped instead
+        try {
+            val msg = JsonParser.parseString(json).takeIf { it.isJsonObject }?.asJsonObject
+            if (msg == null) {
+                Log.w(TAG, "Unreadable message (${json.length} chars)")
+                return
+            }
+            // Usage comes with many messages; the latest count is logged once per turn
+            msg.obj("usageMetadata")?.long("totalTokenCount")?.let { turnTokens = it }
+            when {
+                msg.has("setupComplete") -> onReady(webSocket)
+                msg.has("serverContent") -> msg.obj("serverContent")?.let { serverContent(it) }
+                msg.has("toolCall") -> msg.obj("toolCall")?.let { toolCall(it) }
+                msg.has("toolCallCancellation") -> Log.i(TAG, "Tool calls cancelled: ${msg.get("toolCallCancellation")}")
+                msg.has("sessionResumptionUpdate") -> msg.obj("sessionResumptionUpdate")?.let { update ->
+                    val handle = update.str("newHandle")
+                    if (update.bool("resumable") == true && !handle.isNullOrBlank()) {
+                        resumeHandle = handle
+                        listener.onResumeHandle(handle)
+                    }
+                }
+                msg.has("goAway") -> {
+                    val left = msg.obj("goAway")?.str("timeLeft")
+                    AgentTrace.log(AgentTrace.Kind.NETWORK, "Gemini will close this connection (${left ?: "soon"}): handing over")
+                    handOver(left)
                 }
             }
-            msg.has("goAway") -> {
-                val left = msg.getAsJsonObject("goAway").get("timeLeft")?.asString
-                AgentTrace.log(AgentTrace.Kind.NETWORK, "Gemini will close this connection (${left ?: "soon"}): handing over")
-                handOver(left)
-            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Skipped a message (${json.length} chars): ${e.javaClass.simpleName}")
+            AgentTrace.log(AgentTrace.Kind.WARNING, "Skipped a Gemini message that couldn't be handled (${e.javaClass.simpleName})")
         }
     }
 
     private fun onReady(webSocket: WebSocket) {
-        ready.set(true)
-        socketReady = true
-        lastRefusal = null
-        attempts = 0
-        // Audio from before the connection was up, in ~1 s messages
-        synchronized(queued) {
-            val all = java.io.ByteArrayOutputStream(queuedBytes)
-            while (queued.isNotEmpty()) all.write(queued.removeFirst())
-            queuedBytes = 0
-            val bytes = all.toByteArray()
-            for (i in bytes.indices step 32000) webSocket.send(audioMessage(bytes, i, minOf(32000, bytes.size - i)))
+        synchronized(lock) {
+            // Replaced or disconnected meanwhile: this session isn't the live one any more
+            if (webSocket !== socket || userClosed) return
+            socketReady = true
+            lastRefusal = null
+            attempts = 0
+            // Audio from before the connection was up, in ~1 s messages. ready flips inside the same lock
+            // sendAudioChunk queues under, so live mic audio can't overtake it or be left in the queue
+            synchronized(queued) {
+                val all = java.io.ByteArrayOutputStream(queuedBytes)
+                while (queued.isNotEmpty()) all.write(queued.removeFirst())
+                queuedBytes = 0
+                val bytes = all.toByteArray()
+                for (i in bytes.indices step 32000) webSocket.send(audioMessage(bytes, i, minOf(32000, bytes.size - i)))
+                ready.set(true)
+            }
         }
         val wasHandover = handingOver
         handingOver = false
@@ -275,31 +343,32 @@ class GeminiLiveClient(
     }
 
     private fun serverContent(content: JsonObject) {
-        content.getAsJsonObject("inputTranscription")?.get("text")?.asString?.let { words ->
+        content.obj("inputTranscription")?.str("text")?.let { words ->
             synchronized(userWords) { userWords.append(words) }
             listener.onUserSpeaking()
         }
-        content.getAsJsonObject("modelTurn")?.getAsJsonArray("parts")?.forEach { part ->
-            val inline = part.asJsonObject.getAsJsonObject("inlineData") ?: return@forEach
-            if (inline.get("mimeType")?.asString?.startsWith("audio/") != true) return@forEach
+        content.obj("modelTurn")?.arr("parts")?.forEach { part ->
+            val inline = part.takeIf { it.isJsonObject }?.asJsonObject?.obj("inlineData") ?: return@forEach
+            if (inline.str("mimeType")?.startsWith("audio/") != true) return@forEach
+            val data = inline.str("data") ?: return@forEach
             flushUserWords()
             if (dropReply) return@forEach
             if (!replyStarted) {
                 replyStarted = true
                 listener.onModelAudioStart()
             }
-            audioTrackManager.enqueueAudioChunk(Base64.decode(inline.get("data").asString, Base64.DEFAULT))
+            audioTrackManager.enqueueAudioChunk(Base64.decode(data, Base64.DEFAULT))
         }
-        content.getAsJsonObject("outputTranscription")?.get("text")?.asString?.let { text ->
+        content.obj("outputTranscription")?.str("text")?.let { text ->
             flushUserWords()
             if (!dropReply && text.isNotBlank()) listener.onModelTranscript(text)
         }
-        if (content.get("interrupted")?.asBoolean == true) {
+        if (content.bool("interrupted") == true) {
             // The user talked over the reply: stop it here too
             audioTrackManager.stopAndFlush()
             AgentTrace.log(AgentTrace.Kind.REPLY, "Reply interrupted by the user")
         }
-        if (content.get("turnComplete")?.asBoolean == true) {
+        if (content.bool("turnComplete") == true) {
             flushUserWords()
             dropReply = false
             replyStarted = false
@@ -314,12 +383,12 @@ class GeminiLiveClient(
         if (text.isNotEmpty()) listener.onUserTranscript(text)
     }
 
-    private fun toolCall(webSocket: WebSocket, call: JsonObject) {
+    private fun toolCall(call: JsonObject) {
         flushUserWords()
-        call.getAsJsonArray("functionCalls")?.forEach { element ->
-            val fc = element.asJsonObject
-            val name = fc.get("name")?.asString ?: return@forEach
-            val id = fc.get("id")?.takeIf { !it.isJsonNull }?.asString
+        call.arr("functionCalls")?.forEach { element ->
+            val fc = element.takeIf { it.isJsonObject }?.asJsonObject ?: return@forEach
+            val name = fc.str("name") ?: return@forEach
+            val id = fc.str("id")
             tools.submit(name, tools.parseArgs(fc.get("args")), id) { result ->
                 val response = mapOf(
                     "toolResponse" to mapOf(
@@ -344,18 +413,34 @@ class GeminiLiveClient(
      */
     private fun handOver(timeLeft: String?) {
         val leftMs = timeLeft?.removeSuffix("s")?.toDoubleOrNull()?.times(1000)?.toLong() ?: 5000L
+        val gen = generation
+        val from = socket
         reconnector.execute {
             val deadline = System.currentTimeMillis() + maxOf(0L, leftMs - 1500)
             while (tools.isRunning() && System.currentTimeMillis() < deadline) Thread.sleep(150)
-            if (userClosed) return@execute
-            val old = socket
+            // Gemini may have closed it meanwhile and a reconnect taken over: a handover now would
+            // replace that connection and, being "silent", leave the UI at "reconnecting"
+            if (userClosed || gen != generation || socket !== from) return@execute
             handingOver = true
-            open()
-            old?.close(1000, "handover")
+            // (open closes the old connection)
+            open(gen)
         }
     }
 
     private fun scheduleReconnect(reason: String) {
+        // Only drops of a session that had started count here (failed tries are capped by attempts)
+        if (socketReady) {
+            val now = SystemClock.elapsedRealtime()
+            val tooMany = synchronized(drops) {
+                drops.addLast(now)
+                while (now - drops.first() > DROP_WINDOW_MS) drops.removeFirst()
+                drops.size > MAX_DROPS
+            }
+            if (tooMany) {
+                fail("Connection keeps dropping ($reason): it dropped more than $MAX_DROPS times in 2 min, so stopped retrying. Check the network and try again")
+                return
+            }
+        }
         attempts++
         if (attempts > MAX_RECONNECTS) {
             fail("Connection lost ($reason); gave up after $MAX_RECONNECTS tries")
@@ -369,7 +454,8 @@ class GeminiLiveClient(
         val delayMs = minOf(250L shl (attempts - 1), 6000L)
         AgentTrace.log(AgentTrace.Kind.NETWORK, "Reconnecting in $delayMs ms (attempt $attempts): $reason")
         listener.onReconnecting(attempts, reason)
-        reconnector.schedule({ if (!userClosed) open() }, delayMs, TimeUnit.MILLISECONDS)
+        val gen = generation
+        reconnector.schedule({ open(gen) }, delayMs, TimeUnit.MILLISECONDS)
     }
 
     private fun audioMessage(bytes: ByteArray, offset: Int = 0, length: Int = bytes.size): String {
@@ -378,12 +464,21 @@ class GeminiLiveClient(
     }
 
     override fun sendAudioChunk(chunk: ByteArray) {
+        // The socket is read before ready: open() clears ready before it swaps the socket
         val ws = socket
-        if (!ready.get() || ws == null) {
-            if (!userClosed) queueAudio(chunk)
+        if (ws != null && ready.get()) {
+            ws.send(audioMessage(chunk))
             return
         }
-        ws.send(audioMessage(chunk))
+        synchronized(queued) {
+            // Checked again under the lock: onReady may have just sent the queue and flipped ready
+            val now = socket
+            if (now == null || !ready.get()) {
+                if (!userClosed) queueAudio(chunk)
+                return
+            }
+            now.send(audioMessage(chunk))
+        }
     }
 
     override fun queueAudio(chunk: ByteArray) {
@@ -427,12 +522,16 @@ class GeminiLiveClient(
     }
 
     override fun disconnect() {
-        userClosed = true
-        ready.set(false)
-        resumeHandle = null
-        synchronized(queued) { queued.clear(); queuedBytes = 0 }
-        synchronized(userWords) { userWords.clear() }
-        runCatching { socket?.close(1000, "User disconnected") }
-        socket = null
+        synchronized(lock) {
+            generation++
+            userClosed = true
+            handingOver = false
+            ready.set(false)
+            resumeHandle = null
+            synchronized(queued) { queued.clear(); queuedBytes = 0 }
+            synchronized(userWords) { userWords.clear() }
+            runCatching { socket?.close(1000, "User disconnected") }
+            socket = null
+        }
     }
 }
