@@ -16,8 +16,14 @@ import android.util.Log
 import android.view.KeyEvent
 import androidx.core.content.ContextCompat
 import com.google.gson.JsonParser
+import com.nik.voiceassistant.SecurePrefs
+import com.nik.voiceassistant.data.trace.AgentTrace
+import com.nik.voiceassistant.security.ActionGuard
+import com.nik.voiceassistant.security.AgentPolicy
 import com.nik.voiceassistant.service.PaymentGuard
 import com.nik.voiceassistant.service.PhoneAgentService
+import java.util.concurrent.locks.ReentrantLock
+import kotlin.concurrent.withLock
 
 /**
  * The phone tools the voice model can call. They are generic on purpose: the model reads the
@@ -32,8 +38,10 @@ class DeviceToolExecutor(
     private val describeImage: ((ByteArray, String) -> String?)? = null,
     // show_choices: (question, options) shown as a tappable list in the app and the overlay
     private val onShowChoices: (String, List<String>) -> Unit = { _, _ -> },
-    // Whether the user said yes after the last list was shown (one use); gates send / pay / delete taps
-    private val takeConfirmation: () -> Boolean = { false },
+    // Whether the user said yes (spoken, typed or tapped) after this time; one use
+    private val confirmedSince: (Long) -> Boolean = { false },
+    // What the user themself said or typed for the current request (never screen text)
+    private val userText: () -> String = { "" },
     // research: a question -> an answer found on the web, or null on failure (blocking)
     private val research: ((String) -> String?)? = null,
     // update_plan: the model's current plan, shown as live progress
@@ -44,11 +52,11 @@ class DeviceToolExecutor(
         private const val TAG = "DeviceToolExecutor"
         private const val MAX_APPS = 60
 
-        // Only high-stakes actions: irreversible financial payments, money transfers, or destructive wipes
-        private val NEEDS_YES = Regex(
-            """(?i)\b(pay now|confirm payment|complete purchase|transfer funds|delete account|erase all|factory reset)\b|भुगतान करें|पैसे भेजें"""
-        )
-        private const val ASK_FIRST = "Not pressed: this action performs an irreversible payment or wipe, and the user hasn't confirmed yet. Say what will happen, call show_choices with \"Haan, confirm karo\", \"Nahi\", and wait for their answer before tapping it."
+        // The yes / no shown to the user when an action needs their OK (VoiceSession reads the answer)
+        const val CONFIRM_YES = "Haan, karo"
+        const val CONFIRM_NO = "Nahi"
+        // A yes counts for this long after the question was shown
+        private const val CONFIRM_WINDOW_MS = 120_000L
 
         private const val SELF_BLOCKED = "Blocked: that would stop, remove or switch off you (this assistant app) and end the task. " +
             "Skip yourself: act on the other apps, or tell the user it's the assistant itself."
@@ -179,7 +187,8 @@ class DeviceToolExecutor(
         ),
         function(
             "make_call",
-            "Places a phone call. If the user explicitly requested a call (e.g. 'Rahul ko call lagao' or 'Call 9876543210'), place the call directly and narrate 'Calling...'. If there is contact ambiguity, confirm the contact first.",
+            "Places a phone call. If the user explicitly requested a call (e.g. 'Rahul ko call lagao' or 'Call 9876543210'), place the call directly and narrate 'Calling...'. If there is contact ambiguity, confirm the contact first. " +
+                "If it returns needs_confirmation, ask the user and call it again only after they say yes.",
             required = listOf("number" to param("string", "Phone number, e.g. +919876543210")),
             optional = listOf("speaker" to param("boolean", "Put the call on speaker (default true)"))
         ),
@@ -280,14 +289,54 @@ class DeviceToolExecutor(
      * Runs one tool call and returns its result (sent back to the model). Screen actions block
      * for a moment while the UI settles, so call this off the WebSocket thread.
      */
-    fun execute(toolName: String, arguments: Map<String, Any?>?): Map<String, Any?> {
-        // Never log a PIN (unlock_phone's one-time pin argument)
-        Log.i(TAG, "Executing tool: $toolName with arguments: ${arguments?.mapValues { (k, v) -> if (k == "pin") "***" else v }}")
-        val result = run(toolName, arguments.orEmpty())
-        return withProgressCheck(toolName, arguments.orEmpty(), result)
+    // One action at a time: the model's tool thread and an automation run share the screen and the progress state
+    private val actionLock = ReentrantLock()
+
+    /**
+     * Runs one tool call. trusted: the user started it themself (an automation they ran), which
+     * counts as asking for calls / sends / deletes; payments and wipes still need their yes.
+     */
+    fun execute(toolName: String, arguments: Map<String, Any?>?, trusted: Boolean = false): Map<String, Any?> = actionLock.withLock {
+        // Arguments can hold message text and numbers: only the tool name is logged
+        Log.i(TAG, "Executing tool: $toolName")
+        val result = run(toolName, arguments.orEmpty(), trusted)
+        withProgressCheck(toolName, arguments.orEmpty(), result)
     }
 
-    private fun run(toolName: String, args: Map<String, Any?>): Map<String, Any?> {
+    // ---- Asking before actions with consequences (see ActionGuard) ----
+
+    private data class Pending(val key: String, val at: Long)
+    @Volatile private var pending: Pending? = null
+    // The last number put in the dialer: a code there (*21*…#) makes its Call button a dial code
+    @Volatile private var lastDialed: String? = null
+
+    /**
+     * Null when the action may go ahead now. Otherwise the user is shown a yes / no and the model is
+     * told to wait: once they say yes, the same call (same key) goes through, once.
+     */
+    private fun gate(risk: ActionGuard.Risk, key: String, what: String, trusted: Boolean): Map<String, Any?>? {
+        if (!ActionGuard.needsYes(risk, AgentPolicy.current.confirmLevel, userText(), trusted)) return null
+        val p = pending
+        if (p != null && p.key == key && System.currentTimeMillis() - p.at < CONFIRM_WINDOW_MS && confirmedSince(p.at)) {
+            pending = null
+            AgentTrace.log(AgentTrace.Kind.TOOL, "User confirmed: $what")
+            return null
+        }
+        pending = Pending(key, System.currentTimeMillis())
+        AgentTrace.log(AgentTrace.Kind.WARNING, "Waiting for the user's OK to $what")
+        onShowChoices("$what?", listOf(CONFIRM_YES, CONFIRM_NO))
+        return mapOf(
+            "success" to false,
+            "needs_confirmation" to what,
+            "error" to "Not done yet: this needs the user's OK first (${risk.what}), and a yes / no is now shown to them. " +
+                "Ask them in one short line (\"$what?\") and wait for the answer. If they say yes, call this same tool again " +
+                "with the same arguments; if no, don't do it."
+        )
+    }
+
+    private fun digits(number: String) = number.filter { it.isDigit() || it == '+' || it == '*' || it == '#' }
+
+    private fun run(toolName: String, args: Map<String, Any?>, trusted: Boolean): Map<String, Any?> {
         fun str(key: String) = args[key]?.toString()?.takeIf { it.isNotBlank() }
         fun int(key: String) = args[key]?.toString()?.toDoubleOrNull()?.toInt()
         fun bool(key: String) = args[key]?.toString()?.toBooleanStrictOrNull()
@@ -304,25 +353,27 @@ class DeviceToolExecutor(
             when (toolName) {
                 "read_screen" -> agent?.readScreen() ?: mapOf("error" to AGENT_OFF)
 
-                "unlock_phone" -> {
-                    if (!com.nik.voiceassistant.SecurePrefs.isAutoUnlockEnabled(context)) {
+                "unlock_phone" -> when {
+                    !SecurePrefs.isAutoUnlockEnabled(context) ->
                         mapOf("success" to false, "error" to "Auto-unlock is OFF in Settings for security. Tell the user: 'Phone locked hai, kripya pehle phone unlock karein.'")
-                    } else if (!com.nik.voiceassistant.SecurePrefs.hasPin(context)) {
+                    !SecurePrefs.hasPin(context) ->
                         mapOf("success" to false, "error" to "No PIN is saved in Settings. Tell the user: 'Phone locked hai aur PIN saved nahi hai. Kripya pehle phone unlock karein.'")
-                    } else if (agent == null) {
-                        mapOf("error" to AGENT_OFF)
-                    } else {
-                        val err = agent.unlockWithSavedPin()
-                        if (err == null) withScreen(mapOf("success" to true, "done" to "phone unlocked"))
-                        else mapOf("success" to false, "error" to err)
-                    }
+                    // Only for a request the user made themself, never for something read on the screen
+                    !trusted && userText().isBlank() ->
+                        mapOf("success" to false, "error" to "The phone is unlocked only for a request the user made. Ask the user what they want first.")
+                    agent == null -> mapOf("error" to AGENT_OFF)
+                    else -> unlock(agent)
                 }
 
                 "look_at_screen" -> if (agent == null) mapOf("error" to AGENT_OFF) else lookAtScreen(agent, str("question"))
 
                 "media_control" -> mediaControl(str("action") ?: "play_pause")
 
-                "make_call" -> makeCall(str("number"), bool("speaker") != false)
+                "make_call" -> {
+                    val number = str("number")
+                    val risk = if (ActionGuard.isDialCode(number)) ActionGuard.Risk.DIAL_CODE else ActionGuard.Risk.CALL
+                    number?.let { gate(risk, "call:${digits(it)}", "Call $it", trusted) } ?: makeCall(number, bool("speaker") != false)
+                }
 
                 "show_choices" -> {
                     // Arrays arrive as JSON text (see LiveAudioWebSocketClient.executeToolCall)
@@ -342,16 +393,18 @@ class DeviceToolExecutor(
                     agent?.readScreen() ?: mapOf("done" to "waited")
                 }
 
-                "tap" -> when {
-                    agent == null -> mapOf("error" to AGENT_OFF)
-                    harmsSelf(agent, int("element_id"), str("text")) -> mapOf("error" to SELF_BLOCKED)
-                    // Confirmation is enforced here, not left to the model: it once asked and sent without waiting
-                    agent.targetLabel(int("element_id"), str("text"))?.let { NEEDS_YES.containsMatchIn(it) } == true && !takeConfirmation() ->
-                        mapOf("error" to ASK_FIRST)
-                    else -> agent.tap(int("element_id"), str("text"), bool("long_press") == true, int("times") ?: 1)
-                }
+                "tap" -> if (agent == null) mapOf("error" to AGENT_OFF) else tap(agent, int("element_id"), str("text"), bool("long_press") == true, int("times") ?: 1, trusted)
 
-                "type_text" -> agent?.typeText(str("text") ?: "", int("element_id"), bool("submit")) ?: mapOf("error" to AGENT_OFF)
+                "type_text" -> when {
+                    agent == null -> mapOf("error" to AGENT_OFF)
+                    else -> {
+                        val text = str("text") ?: ""
+                        // Enter in a chat box sends the message; in a search box it just searches
+                        val sends = bool("submit") == true && agent.submitSends(int("element_id"))
+                        (if (sends) gate(ActionGuard.Risk.SEND, "send:${text.hashCode()}", "Send \"${text.take(60)}\"", trusted) else null)
+                            ?: agent.typeText(text, int("element_id"), bool("submit"))
+                    }
+                }
 
                 "scroll" -> agent?.scroll(str("direction") ?: "down", int("element_id"), str("until_text"), int("max_scrolls") ?: 10)
                     ?: mapOf("error" to AGENT_OFF)
@@ -395,7 +448,7 @@ class DeviceToolExecutor(
                     mapOf("success" to true, "done" to "conversation will end after your goodbye")
                 }
 
-                "launch_intent" -> launchIntent(str("action"), str("uri"), str("package"), str("extras"))
+                "launch_intent" -> launchIntent(str("action"), str("uri"), str("package"), str("extras"), trusted)
 
                 "open_website" -> openWebsite(str("url_or_search") ?: "")
 
@@ -414,6 +467,44 @@ class DeviceToolExecutor(
         } catch (e: Exception) {
             Log.e(TAG, "Error executing tool '$toolName': ${e.message}", e)
             mapOf("error" to (e.message ?: "Execution failed"))
+        }
+    }
+
+    /** A tap, after the checks: never against this app itself, and with the user's OK where it matters. */
+    private fun tap(agent: PhoneAgentService, elementId: Int?, text: String?, longPress: Boolean, times: Int, trusted: Boolean): Map<String, Any?> {
+        if (harmsSelf(agent, elementId, text)) return mapOf("error" to SELF_BLOCKED)
+        val target = agent.target(elementId, text)
+        val label = target?.label?.ifBlank { null } ?: text
+        var risk = ActionGuard.classifyTap(label, target?.viewId)
+        // The dialer's Call button with a code in it runs that code (e.g. call forwarding)
+        if (risk == ActionGuard.Risk.CALL && ActionGuard.isDialCode(lastDialed)) risk = ActionGuard.Risk.DIAL_CODE
+        if (risk != null) {
+            val what = when (risk) {
+                ActionGuard.Risk.DIAL_CODE -> "Dial ${lastDialed ?: "this code"}"
+                else -> "Press \"${label?.take(60) ?: "this button"}\""
+            }
+            gate(risk, "tap:${risk.name}:${label?.lowercase()}", what, trusted)?.let { return it }
+        }
+        // One confirmed press is one press
+        return agent.tap(elementId, text, longPress, if (risk != null) 1 else times)
+    }
+
+    private fun unlock(agent: PhoneAgentService): Map<String, Any?> = when (agent.unlockWithSavedPin()) {
+        PhoneAgentService.Unlock.DONE -> {
+            SecurePrefs.noteUnlockSuccess(context)
+            withScreen(mapOf("success" to true, "done" to "phone unlocked"))
+        }
+        PhoneAgentService.Unlock.NO_PIN -> mapOf("success" to false, "error" to "No PIN is saved. Tell the user: 'Phone locked hai, kripya pehle phone unlock karein.'")
+        PhoneAgentService.Unlock.NOT_NUMERIC -> mapOf("success" to false, "error" to "Only a numeric PIN can be entered automatically. Ask the user to unlock the phone.")
+        PhoneAgentService.Unlock.NO_KEYPAD -> mapOf("success" to false, "error" to "The lock screen's PIN pad wasn't found, so nothing was typed. Ask the user to unlock the phone.")
+        PhoneAgentService.Unlock.WRONG_PIN -> {
+            val turnedOff = SecurePrefs.noteUnlockFailure(context)
+            AgentTrace.log(AgentTrace.Kind.WARNING, if (turnedOff) "Saved PIN failed twice: auto-unlock turned off" else "Saved PIN didn't unlock the phone")
+            mapOf(
+                "success" to false,
+                "error" to if (turnedOff) "The saved PIN failed again, so auto-unlock was turned off to protect the phone. Tell the user to unlock it themself and update the PIN in Settings."
+                else "The saved PIN didn't unlock the phone (it may have changed). Don't try again; ask the user to unlock it."
+            )
         }
     }
 
@@ -687,11 +778,22 @@ class DeviceToolExecutor(
         return true
     }
 
-    private fun launchIntent(action: String?, uri: String?, pkg: String?, extrasJson: String?): Map<String, Any?> {
+    private fun launchIntent(action: String?, uri: String?, pkg: String?, extrasJson: String?, trusted: Boolean): Map<String, Any?> {
         if (action == null && uri == null && pkg == null) return mapOf("error" to "Give at least an action, uri or package")
         // Uninstalling / deleting this app itself
         val removing = action != null && (action.contains("DELETE") || action.contains("UNINSTALL"))
         if (removing && (uri?.contains(context.packageName) == true || pkg == context.packageName)) return mapOf("error" to SELF_BLOCKED)
+        // Intents that act on their own go through the same checks as the buttons that do the same
+        val tel = uri?.takeIf { it.startsWith("tel:", ignoreCase = true) }?.let { Uri.decode(it.substringAfter(':')) }
+        if (action == Intent.ACTION_DIAL && tel != null) lastDialed = tel
+        val placesCall = action != null && action.startsWith("android.intent.action.CALL")
+        when {
+            placesCall -> {
+                val risk = if (ActionGuard.isDialCode(tel)) ActionGuard.Risk.DIAL_CODE else ActionGuard.Risk.CALL
+                gate(risk, "call:${digits(tel.orEmpty())}", "Call ${tel ?: "this number"}", trusted)?.let { return it }
+            }
+            removing -> gate(ActionGuard.Risk.DELETE, "intent:$action:$uri", "Uninstall or delete ${uri ?: pkg ?: "this"}", trusted)?.let { return it }
+        }
         // Media and files must really exist: a made-up content:// or file:// URI only fails later in the other app
         val uris = listOfNotNull(uri) + Regex("(content|file)://[^\"\\s,}]+").findAll(extrasJson.orEmpty()).map { it.value }
         uris.firstOrNull { !uriExists(Uri.parse(it)) }?.let { missing ->
@@ -724,10 +826,15 @@ class DeviceToolExecutor(
         // A web link an installed app handles (wa.me, youtube.com, maps…) opens in that app, not the browser
         val app = if (pkg == null && intent.data?.scheme in setOf("http", "https")) appForWebLink(intent) else null
         app?.let { intent.setPackage(it) }
-        if (intent.resolveActivity(packageManager) == null) {
+        // Started directly (not checked with resolveActivity first): without QUERY_ALL_PACKAGES most
+        // apps are invisible to that check, but starting them still works
+        try {
+            context.startActivity(intent)
+        } catch (e: android.content.ActivityNotFoundException) {
             return mapOf("success" to false, "error" to "No app on this phone handles that intent; try another action/URI or open the app and use the screen")
+        } catch (e: SecurityException) {
+            return mapOf("success" to false, "error" to "That screen can't be opened by other apps; open it through the app's own menus instead")
         }
-        context.startActivity(intent)
         return withScreen(buildMap {
             put("success", true)
             put("launched", listOfNotNull(action, uri, pkg).joinToString(" "))
@@ -782,8 +889,11 @@ class DeviceToolExecutor(
         }
         val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).addCategory(Intent.CATEGORY_BROWSABLE).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         defaultBrowser()?.let { intent.setPackage(it) }
-        if (intent.resolveActivity(packageManager) == null) return mapOf("success" to false, "error" to "No browser found")
-        context.startActivity(intent)
+        try {
+            context.startActivity(intent)
+        } catch (e: android.content.ActivityNotFoundException) {
+            return mapOf("success" to false, "error" to "No browser found")
+        }
         return withScreen(mapOf("success" to true, "opened" to url, "browser" to intent.`package`))
     }
 
@@ -836,6 +946,7 @@ class DeviceToolExecutor(
     private fun makeCall(number: String?, speaker: Boolean): Map<String, Any?> {
         if (number.isNullOrBlank()) return mapOf("error" to "Give a phone number (use find_contact for a name)")
         val tel = Uri.fromParts("tel", number.replace(Regex("[\\s()-]"), ""), null)
+        lastDialed = null
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.CALL_PHONE) != PackageManager.PERMISSION_GRANTED) {
             // Without the permission the dialer can only be opened with the number filled in
             context.startActivity(Intent(Intent.ACTION_DIAL, tel).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
@@ -957,9 +1068,13 @@ class DeviceToolExecutor(
         val adapter = BluetoothAdapter.getDefaultAdapter() ?: return "Bluetooth hardware not supported"
 
         return try {
-            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
-                if (enabled) adapter.enable() else adapter.disable()
-                "Bluetooth ${if (enabled) "enabled" else "disabled"}"
+            // Android 12 asks for the Bluetooth permission at runtime; without it, the settings page instead
+            val allowed = Build.VERSION.SDK_INT < Build.VERSION_CODES.S ||
+                ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU && allowed) {
+                @android.annotation.SuppressLint("MissingPermission") // checked just above
+                val done = if (enabled) adapter.enable() else adapter.disable()
+                if (done) "Bluetooth ${if (enabled) "enabled" else "disabled"}" else "Bluetooth didn't switch; open Bluetooth settings and tap the switch"
             } else {
                 val intent = Intent(Settings.ACTION_BLUETOOTH_SETTINGS).apply {
                     addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
