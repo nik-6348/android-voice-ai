@@ -121,7 +121,16 @@ class VoiceAssistantViewModel(application: Application) : AndroidViewModel(appli
     fun saveSettings(
         model: String, voice: String, searchEnabled: Boolean, url: String, mode: String,
         geminiKey: String?, llmBaseUrl: String, llmKey: String?, vision: Boolean
-    ): Boolean = session.saveSettings(model, voice, searchEnabled, url, mode, geminiKey, llmBaseUrl, llmKey, vision)
+    ): VoiceSession.SaveResult = session.saveSettings(model, voice, searchEnabled, url, mode, geminiKey, llmBaseUrl, llmKey, vision)
+
+    // ---- Safety & privacy (Settings) ----
+    val policy: StateFlow<com.nik.voiceassistant.security.AgentPolicy.Settings> = com.nik.voiceassistant.security.AgentPolicy.state
+
+    fun updatePolicy(transform: (com.nik.voiceassistant.security.AgentPolicy.Settings) -> com.nik.voiceassistant.security.AgentPolicy.Settings) =
+        session.updatePolicy(transform)
+
+    /** Deletes every saved conversation (History). */
+    fun clearAllHistory() = session.clearAllHistory()
 
     // ---- History Management ----
     val historySessions: StateFlow<List<com.nik.voiceassistant.data.history.ConversationSession>> = session.historySessions

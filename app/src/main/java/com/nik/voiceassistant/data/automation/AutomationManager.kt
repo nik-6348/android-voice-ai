@@ -49,12 +49,9 @@ object AutomationManager {
                     toolName = "launch_intent",
                     args = mapOf(
                         "action" to "android.intent.action.SET_ALARM",
-                        "extras" to mapOf(
-                            "android.intent.extra.alarm.HOUR" to 5,
-                            "android.intent.extra.alarm.MINUTES" to 30,
-                            "android.intent.extra.alarm.MESSAGE" to "Subah ka alarm",
-                            "android.intent.extra.alarm.SKIP_UI" to true
-                        )
+                        // launch_intent takes extras as JSON text (a map would arrive as "{k=v}" after a save)
+                        "extras" to """{"android.intent.extra.alarm.HOUR":5,"android.intent.extra.alarm.MINUTES":30,""" +
+                            """"android.intent.extra.alarm.MESSAGE":"Subah ka alarm","android.intent.extra.alarm.SKIP_UI":true}"""
                     ),
                     description = "Set 5:30 AM alarm with auto-confirm",
                     delayMs = 1000L
@@ -91,21 +88,28 @@ object AutomationManager {
         ),
         AutomationTask(
             id = "default_device_check",
-            title = "Quick Device Status",
-            description = "Checks battery percentage, Wi-Fi, and active network.",
-            triggerPhrase = "Phone status",
+            title = "Wi-Fi Settings",
+            description = "Opens the Wi-Fi settings page.",
+            triggerPhrase = "Wifi settings",
             iconName = "bolt",
             isFavorite = false,
             steps = listOf(
                 AutomationStep(
-                    toolName = "device_status",
-                    args = emptyMap(),
-                    description = "Read battery and network state",
+                    toolName = "launch_intent",
+                    args = mapOf("action" to "android.settings.WIFI_SETTINGS"),
+                    description = "Open Wi-Fi settings",
                     delayMs = 500L
                 )
             )
         )
     )
+
+    /** Built-in automations saved by older versions that can't run (a non-existent tool, extras as a map). */
+    private fun repairDefaults(list: List<AutomationTask>): List<AutomationTask> = list.map { task ->
+        val broken = task.steps.any { it.toolName == "device_status" || (it.toolName == "launch_intent" && it.args["extras"] != null && it.args["extras"] !is String) }
+        if (!broken) task
+        else defaultAutomations.firstOrNull { it.id == task.id }?.copy(lastRunAt = task.lastRunAt, runCount = task.runCount, isFavorite = task.isFavorite) ?: task
+    }
 
     private fun getFile(context: Context): File = File(context.filesDir, FILE_NAME)
 
@@ -118,7 +122,9 @@ object AutomationManager {
         }
         return try {
             val type = object : TypeToken<List<AutomationTask>>() {}.type
-            val list: List<AutomationTask> = gson.fromJson(file.readText(), type) ?: emptyList()
+            val loaded: List<AutomationTask> = gson.fromJson(file.readText(), type) ?: emptyList()
+            val list = repairDefaults(loaded)
+            if (list != loaded) saveAll(context, list)
             if (list.isEmpty()) {
                 saveAll(context, defaultAutomations)
                 defaultAutomations
@@ -134,7 +140,13 @@ object AutomationManager {
     @Synchronized
     private fun saveAll(context: Context, tasks: List<AutomationTask>) {
         try {
-            getFile(context).writeText(gson.toJson(tasks))
+            // Written to a temp file and renamed over the old one: a crash mid-write can't lose them
+            val tmp = File(context.filesDir, "$FILE_NAME.tmp")
+            tmp.writeText(gson.toJson(tasks))
+            if (!tmp.renameTo(getFile(context))) {
+                getFile(context).writeText(gson.toJson(tasks))
+                tmp.delete()
+            }
         } catch (e: Exception) {
             Log.e(TAG, "Failed to write automations file: ${e.message}")
         }
@@ -170,7 +182,9 @@ object AutomationManager {
     }
 
     /**
-     * Executes an automation step by step via DeviceToolExecutor.
+     * Runs an automation step by step via DeviceToolExecutor. The user started it, which counts as
+     * asking for its calls / messages; a payment or wipe step still stops for their yes. Stops at the
+     * first step that fails and says which.
      */
     suspend fun executeTask(
         context: Context,
@@ -181,23 +195,26 @@ object AutomationManager {
         if (task.steps.isEmpty()) return@withContext Pair(false, "No steps defined in this automation.")
 
         val total = task.steps.size
+        var failure: String? = null
         for ((index, step) in task.steps.withIndex()) {
-            withContext(Dispatchers.Main) {
-                onStepProgress(index + 1, total, step.description.ifBlank { "Executing ${step.toolName}..." })
-            }
-            try {
-                val result = executor.execute(step.toolName, step.args)
-                Log.i(TAG, "Executed step ${step.toolName}: $result")
-                val error = result["error"]?.toString()
-                if (error != null && !error.contains("already", ignoreCase = true)) {
-                    Log.w(TAG, "Step ${step.toolName} reported warning/error: $error")
-                }
+            val desc = step.description.ifBlank { "Executing ${step.toolName}..." }
+            withContext(Dispatchers.Main) { onStepProgress(index + 1, total, desc) }
+            val result = try {
+                executor.execute(step.toolName, step.args, trusted = true)
             } catch (e: Exception) {
-                Log.e(TAG, "Error executing step ${step.toolName}: ${e.message}")
+                mapOf("error" to (e.message ?: "failed"))
             }
-            if (step.delayMs > 0) {
-                kotlinx.coroutines.delay(step.delayMs)
+            val error = result["error"]?.toString()
+            if (result["needs_confirmation"] != null) {
+                failure = "Step ${index + 1} ($desc) needs your OK: say yes, then run it again."
+                break
             }
+            if (error != null || result["success"] == false) {
+                Log.w(TAG, "Step ${index + 1} (${step.toolName}) failed")
+                failure = "Step ${index + 1} ($desc) failed: ${error ?: "it didn't work"}"
+                break
+            }
+            if (step.delayMs > 0) kotlinx.coroutines.delay(step.delayMs)
         }
 
         // Update last run time & count
@@ -205,7 +222,7 @@ object AutomationManager {
         task.runCount += 1
         saveTask(context, task)
 
-        Pair(true, "Automation '${task.title}' completed successfully!")
+        if (failure != null) Pair(false, failure) else Pair(true, "Automation '${task.title}' completed successfully!")
     }
 
     // ==========================================
@@ -232,7 +249,7 @@ object AutomationManager {
             triggerPhrase = trigger,
             title = cleanTitle
         )
-        Log.i(TAG, "Started recording automation session: '$cleanTitle' from instruction: '$instruction'")
+        Log.i(TAG, "Started recording an automation")
     }
 
     fun isRecording(): Boolean = activeRecording != null
@@ -273,14 +290,25 @@ object AutomationManager {
             else -> 600L
         }
 
+        // An element number only means something on the screen it was read from: replay by the
+        // label that was tapped instead (from the summary: tapped "Search"), else the focused field
+        val label = Regex("^(?:long-pressed|tapped) \"([^\"]+)\"").find(resultSummary)?.groupValues?.get(1)
+        val replayArgs = args.filterKeys { it != "element_id" }.let { a ->
+            if (toolName == "tap" && a["text"] == null && label != null) a + ("text" to label) else a
+        }
+        // A tap with neither left can't be replayed
+        if (toolName == "tap" && replayArgs["text"] == null) return
+        // Hidden password text can't be replayed either
+        if (replayArgs["text"]?.toString()?.startsWith("***") == true) return
+
         val step = AutomationStep(
             toolName = toolName,
-            args = args,
+            args = replayArgs,
             description = desc,
             delayMs = delay
         )
         session.steps.add(step)
-        Log.i(TAG, "Recorded automation step #${session.steps.size}: $desc ($toolName)")
+        Log.i(TAG, "Recorded automation step #${session.steps.size} ($toolName)")
     }
 
     @Synchronized
@@ -302,7 +330,7 @@ object AutomationManager {
             steps = session.steps.toList()
         )
         saveTask(context, task)
-        Log.i(TAG, "Auto-saved automation task '${task.title}' with ${task.steps.size} steps!")
+        Log.i(TAG, "Saved a recorded automation with ${task.steps.size} steps")
         return task
     }
 
@@ -324,16 +352,22 @@ object AutomationManager {
     }
 
     /**
-     * Checks if a user's prompt matches an existing saved automation.
+     * The saved automation this request asks for: the request is its trigger phrase (or title), give
+     * or take a greeting in front and a couple of words after ("Subah ka alarm laga do"). A longer
+     * request that merely contains it ("play music by Arijit on Spotify") goes to the assistant.
      */
     fun findMatchingTask(context: Context, query: String): AutomationTask? {
-        val clean = query.trim().lowercase()
+        val clean = normalize(query).replace(Regex("^(hi|hey|ok|hello)\\s+\\S+\\s+"), "")
         if (clean.isBlank()) return null
-        val all = getAllTasks(context)
-        return all.firstOrNull {
-            it.triggerPhrase.isNotBlank() && clean.contains(it.triggerPhrase.lowercase())
-        } ?: all.firstOrNull {
-            clean.contains(it.title.lowercase())
+        fun matches(phrase: String): Boolean {
+            val p = normalize(phrase)
+            if (p.isBlank() || !clean.startsWith(p)) return false
+            val rest = clean.removePrefix(p).trim()
+            return rest.isEmpty() || rest.split(" ").size <= 2
         }
+        val all = getAllTasks(context)
+        return all.firstOrNull { matches(it.triggerPhrase) } ?: all.firstOrNull { matches(it.title) }
     }
+
+    private fun normalize(s: String) = s.lowercase().replace(Regex("[^\\p{L}\\p{N}\\s]"), " ").replace(Regex("\\s+"), " ").trim()
 }
