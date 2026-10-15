@@ -1,15 +1,10 @@
 package com.nik.voiceassistant.ui.screens
 
+import android.content.Context
 import android.content.Intent
-import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
-import androidx.compose.animation.core.tween
-import androidx.compose.foundation.background
-import androidx.compose.foundation.border
+import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -18,417 +13,467 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.AccountTree
-import androidx.compose.material.icons.filled.Build
-import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.ErrorOutline
-import androidx.compose.material.icons.filled.Person
-import androidx.compose.material.icons.filled.PlayCircle
-import androidx.compose.material.icons.filled.RadioButtonUnchecked
-import androidx.compose.material.icons.filled.RecordVoiceOver
-import androidx.compose.material.icons.filled.Share
-import androidx.compose.material.icons.filled.Speed
-import androidx.compose.material.icons.filled.Token
-import androidx.compose.material.icons.filled.WarningAmber
-import androidx.compose.material.icons.filled.Wifi
-import androidx.compose.material3.AlertDialog
+import androidx.compose.material.icons.outlined.AccountTree
+import androidx.compose.material.icons.outlined.Build
+import androidx.compose.material.icons.outlined.CloudUpload
+import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.material.icons.outlined.ErrorOutline
+import androidx.compose.material.icons.outlined.Person
+import androidx.compose.material.icons.outlined.PlayCircle
+import androidx.compose.material.icons.outlined.RecordVoiceOver
+import androidx.compose.material.icons.outlined.Share
+import androidx.compose.material.icons.outlined.Speed
+import androidx.compose.material.icons.outlined.Storage
+import androidx.compose.material.icons.outlined.Timeline
+import androidx.compose.material.icons.outlined.Token
+import androidx.compose.material.icons.outlined.WarningAmber
+import androidx.compose.material.icons.outlined.Wifi
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.Switch
-import androidx.compose.material3.SwitchDefaults
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.pluralStringResource
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
+import com.nik.voiceassistant.R
 import com.nik.voiceassistant.VoiceAssistantViewModel
 import com.nik.voiceassistant.data.trace.AgentTrace
 import com.nik.voiceassistant.data.trace.AgentTrace.Kind
 import com.nik.voiceassistant.data.trace.Tracer
-import com.nik.voiceassistant.ui.theme.*
+import com.nik.voiceassistant.ui.components.ConfirmDialog
+import com.nik.voiceassistant.ui.components.EmptyState
+import com.nik.voiceassistant.ui.components.PlanCard
+import com.nik.voiceassistant.ui.components.ScreenHeader
+import com.nik.voiceassistant.ui.components.SectionCard
+import com.nik.voiceassistant.ui.theme.NikTheme
+import com.nik.voiceassistant.ui.theme.Spacing
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
+/** Shared text is capped: an Intent extra over ~1 MB crashes with TransactionTooLargeException. */
+internal const val MAX_SHARE_CHARS = 90_000
+
+internal fun shareText(context: Context, text: String, mime: String, title: String) {
+    val capped = if (text.length > MAX_SHARE_CHARS) text.takeLast(MAX_SHARE_CHARS) else text
+    runCatching {
+        context.startActivity(
+            Intent.createChooser(Intent(Intent.ACTION_SEND).setType(mime).putExtra(Intent.EXTRA_TEXT, capped), title)
+        )
+    }
+}
+
 /**
- * Live view of what the agent is doing and why: the current plan with its steps and thinking, key
- * numbers (reply latency, tool success, reconnects, tokens), and every event as it happens — the
- * user's words, plans and decisions, each tool call with its input, result and time, warnings,
- * errors and network changes. Past days are read from the trace files on the phone; they can be
- * shared, deleted one day at a time or all at once, and deleted automatically after N days.
+ * Live view of what the agent is doing and why: the current plan, key numbers (reply latency, tool
+ * success, reconnects, tokens), the traces (one per request) and every event as it happens. Saved
+ * days are read from the phone in the background; they can be shared or deleted. How long logs are
+ * kept and whether they are saved at all is set in Settings > Safety & Privacy (also offered here).
  */
 @Composable
 fun ActivityTab(viewModel: VoiceAssistantViewModel) {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     val live by AgentTrace.events.collectAsState()
     val files by AgentTrace.files.collectAsState()
-    val retention by AgentTrace.retention.collectAsState()
     val plan by viewModel.plan.collectAsState()
     val tool by viewModel.activeToolStatus.collectAsState()
-
+    val policy by viewModel.policy.collectAsState()
     val liveTraces by Tracer.traces.collectAsState()
     val otlpEndpoint by Tracer.otlpEndpoint.collectAsState()
 
     // null = live; else the name of a saved day's file
-    var day by remember { mutableStateOf<String?>(null) }
+    var day by rememberSaveable { mutableStateOf<String?>(null) }
     var dayEvents by remember { mutableStateOf<List<AgentTrace.Event>>(emptyList()) }
     var dayTraces by remember { mutableStateOf<List<Tracer.TraceData>>(emptyList()) }
-    var filter by remember { mutableStateOf(Filter.ALL) }
-    var showTraces by remember { mutableStateOf(true) }
-    var openTraceId by remember { mutableStateOf<String?>(null) }
-    var endpointInput by remember(otlpEndpoint) { mutableStateOf(otlpEndpoint) }
-    var confirmDelete by remember { mutableStateOf<String?>(null) } // a file name, or "*" for all
+    var loading by remember { mutableStateOf(false) }
+    var filter by rememberSaveable { mutableStateOf(Filter.ALL) }
+    var showTraces by rememberSaveable { mutableStateOf(true) }
+    var openTraceId by rememberSaveable { mutableStateOf<String?>(null) }
+    var confirmDelete by rememberSaveable { mutableStateOf<String?>(null) } // a file name, or "*" for all
+
+    // A saved day is read and parsed off the main thread
+    LaunchedEffect(day) {
+        val name = day
+        if (name == null) {
+            loading = false
+            return@LaunchedEffect
+        }
+        loading = true
+        dayEvents = AgentTrace.loadDay(name)
+        dayTraces = Tracer.loadDay(name)
+        loading = false
+    }
 
     val events = if (day == null) live else dayEvents
     val traces = if (day == null) liveTraces else dayTraces
-    val shown = events.filter { filter.kinds == null || it.kind in filter.kinds!! }.asReversed()
-    val metrics = AgentTrace.metrics(events)
+    val shown = remember(events, filter) { events.filter { filter.kinds?.contains(it.kind) ?: true }.asReversed() }
+    val metrics = remember(events) { AgentTrace.metrics(events) }
 
     // An opened trace (stays live while it runs)
     traces.firstOrNull { it.traceId == openTraceId }?.let { trace ->
-        androidx.activity.compose.BackHandler { openTraceId = null }
+        BackHandler { openTraceId = null }
         TraceDetail(trace) { openTraceId = null }
         return
     }
 
+    val shareTitle = stringResource(R.string.share_trace)
     LazyColumn(
-        modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp),
-        contentPadding = PaddingValues(top = 12.dp, bottom = 90.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp)
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(start = Spacing.m, end = Spacing.m, bottom = Spacing.l),
+        verticalArrangement = Arrangement.spacedBy(Spacing.s)
     ) {
         item {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("Agent Activity", color = TextPrimary, fontSize = 22.sp, fontWeight = FontWeight.Bold)
-                        if (day == null) {
-                            Spacer(Modifier.width(8.dp))
-                            LiveDot()
-                        }
-                    }
-                    Text(
-                        if (day == null) "Live: what the agent does and decides, as it happens" else "Saved trace of ${day!!.removeSuffix(".jsonl")}",
-                        color = TextSecondary, fontSize = 12.sp
-                    )
-                }
+            ScreenHeader(
+                title = stringResource(R.string.activity_title),
+                subtitle = day?.let { stringResource(R.string.activity_saved_day, it.removeSuffix(".jsonl")) }
+                    ?: stringResource(R.string.activity_live_subtitle)
+            ) {
                 IconButton(onClick = {
-                    val text = AgentTrace.export(events)
-                    context.startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, text.takeLast(90_000)), "Share trace"))
-                }) { Icon(Icons.Default.Share, "Share", tint = TextSecondary) }
+                    scope.launch {
+                        val text = withContext(Dispatchers.Default) { AgentTrace.export(events) }
+                        shareText(context, text, "text/plain", shareTitle)
+                    }
+                }) { Icon(Icons.Outlined.Share, contentDescription = stringResource(R.string.cd_share_log)) }
             }
         }
 
-        // Which trace: live, or a saved day
+        // Which log: live, or a saved day
         item {
-            Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                Chip("Live", day == null) { day = null }
-                files.forEach { f ->
-                    Chip("${f.day} · ${size(f.bytes)}", day == f.name) {
-                        day = f.name
-                        dayEvents = AgentTrace.readDay(f.name)
-                        dayTraces = Tracer.readDay(f.name)
-                    }
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(Spacing.s)) {
+                item {
+                    FilterChip(selected = day == null, onClick = { day = null }, label = { Text(stringResource(R.string.activity_live)) })
+                }
+                items(files, key = { it.name }) { f ->
+                    FilterChip(selected = day == f.name, onClick = { day = f.name }, label = { Text("${f.day} · ${size(f.bytes)}") })
                 }
             }
+        }
+
+        if (loading) item {
+            Box(Modifier.fillMaxWidth().padding(Spacing.l), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
         }
 
         // Numbers
         item {
-            Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Metric(Icons.Default.Speed, "Reply latency", metrics.avgLatencyMs?.let { "$it ms" } ?: "–", metrics.lastLatencyMs?.let { "last $it ms" })
-                val success = if (metrics.toolCalls == 0) "–" else "${(100 * (metrics.toolCalls - metrics.toolFailures)) / metrics.toolCalls}%"
-                Metric(Icons.Default.Build, "Tool success", success, "${metrics.toolCalls} calls")
-                Metric(Icons.Default.PlayCircle, "Avg tool time", metrics.avgToolMs?.let { "$it ms" } ?: "–", null)
-                Metric(Icons.Default.Wifi, "Reconnects", metrics.reconnects.toString(), "${metrics.errors} errors")
-                Metric(Icons.Default.Token, "Tokens", metrics.tokens.toString(), null)
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(Spacing.s)) {
+                item { Metric(Icons.Outlined.Speed, stringResource(R.string.metric_latency), metrics.avgLatencyMs?.let { "$it ms" } ?: "–", metrics.lastLatencyMs?.let { stringResource(R.string.metric_last, it) }) }
+                item {
+                    val success = if (metrics.toolCalls == 0) "–" else "${(100 * (metrics.toolCalls - metrics.toolFailures)) / metrics.toolCalls}%"
+                    Metric(Icons.Outlined.Build, stringResource(R.string.metric_tool_success), success, pluralStringResource(R.plurals.metric_calls, metrics.toolCalls, metrics.toolCalls))
+                }
+                item { Metric(Icons.Outlined.PlayCircle, stringResource(R.string.metric_tool_time), metrics.avgToolMs?.let { "$it ms" } ?: "–", null) }
+                item { Metric(Icons.Outlined.Wifi, stringResource(R.string.metric_reconnects), metrics.reconnects.toString(), pluralStringResource(R.plurals.metric_errors, metrics.errors, metrics.errors)) }
+                item { Metric(Icons.Outlined.Token, stringResource(R.string.metric_tokens), metrics.tokens.toString(), null) }
             }
         }
 
         // The agent's current plan and thinking (live only)
         if (day == null) plan?.let { p ->
-            item {
-                Card {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Default.AccountTree, null, tint = PurpleAccent, modifier = Modifier.size(16.dp))
-                        Spacer(Modifier.width(6.dp))
-                        Text("Current plan · ${p.status}", color = PurpleAccent, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                    }
-                    Spacer(Modifier.height(6.dp))
-                    Text(p.goal, color = TextPrimary, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
-                    p.steps.forEachIndexed { i, step ->
-                        val n = i + 1
-                        val done = n < p.currentStep || p.status == "done"
-                        val now = n == p.currentStep && p.status != "done"
-                        Row(Modifier.padding(top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Icon(
-                                if (done) Icons.Default.CheckCircle else Icons.Default.RadioButtonUnchecked, null,
-                                tint = if (done) GreenActive else if (now) CyanAccent else TextMuted, modifier = Modifier.size(14.dp)
-                            )
-                            Spacer(Modifier.width(6.dp))
-                            Text(step, color = if (now) TextPrimary else TextSecondary, fontSize = 12.sp, fontWeight = if (now) FontWeight.SemiBold else FontWeight.Normal)
-                        }
-                    }
-                    p.note?.let {
-                        Spacer(Modifier.height(6.dp))
-                        Text("💭 $it", color = if (p.status == "blocked") Color(0xFFFCD34D) else Color(0xFFC9B8F5), fontSize = 12.sp)
-                    }
-                    tool?.let {
-                        Spacer(Modifier.height(4.dp))
-                        Text("⚙ $it", color = CyanAccent, fontSize = 12.sp)
-                    }
-                    if (p.tried.isNotEmpty()) {
-                        Spacer(Modifier.height(4.dp))
-                        Text("Tried: ${p.tried.toList().joinToString(", ")}", color = TextMuted, fontSize = 11.sp)
-                    }
-                }
-            }
+            item { PlanCard(p, toolStatus = tool, showTried = true, startExpanded = true) }
         }
 
         // Traces (one per request, OpenTelemetry style) or the flat event log
-        item {
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                Chip("Traces (${traces.size})", showTraces) { showTraces = true }
-                Chip("Events (${events.size})", !showTraces) { showTraces = false }
-            }
-        }
+        item { TracesOrEvents(showTraces, traces.size, events.size) { showTraces = it } }
 
         if (showTraces) {
-            if (traces.isEmpty()) item {
-                Text(
-                    "No traces yet. Each request you make becomes a trace: the model's turns and every tool call with its input and output.",
-                    color = TextMuted, fontSize = 13.sp, modifier = Modifier.padding(vertical = 24.dp)
-                )
+            if (traces.isEmpty() && !loading) item {
+                EmptyState(Icons.Outlined.Timeline, stringResource(R.string.traces_empty_title), stringResource(R.string.traces_empty_body))
             }
-            items(traces, key = { it.traceId }) { t -> TraceCard(t) { openTraceId = t.traceId } }
+            items(traces, key = { "t-" + it.traceId }) { t -> TraceCard(t) { openTraceId = t.traceId } }
         } else {
             item {
-                Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Filter.values().forEach { f -> Chip(f.title, filter == f) { filter = f } }
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(Spacing.s)) {
+                    items(Filter.values().toList()) { f ->
+                        FilterChip(selected = filter == f, onClick = { filter = f }, label = { Text(stringResource(f.title)) })
+                    }
                 }
             }
-            if (shown.isEmpty()) item {
-                Text(
-                    if (day == null) "Nothing yet. Start a conversation and every step will show up here." else "No events in this file.",
-                    color = TextMuted, fontSize = 13.sp, modifier = Modifier.padding(vertical = 24.dp)
+            if (shown.isEmpty() && !loading) item {
+                EmptyState(
+                    Icons.Outlined.Timeline,
+                    stringResource(R.string.events_empty_title),
+                    stringResource(if (day == null) R.string.events_empty_live else R.string.events_empty_day)
                 )
             }
-            items(shown, key = { "${it.time}-${it.kind}-${it.text.hashCode()}" }) { e -> EventRow(e) }
+            // seq is unique within a list (live: running number; a saved day: line number)
+            items(shown, key = { "e-${it.seq}-${it.time}" }) { e -> EventRow(e) }
         }
 
-        // Storage: automatic deletion and deleting by hand
+        // Storage: what is kept, for how long, where it goes, and deleting
         item {
-            Card {
-                Text("Trace storage", color = TextPrimary, fontSize = 14.sp, fontWeight = FontWeight.Bold)
-                Text("Saved on this phone only (app storage). ${files.size} day(s), ${size(files.sumOf { it.bytes })}.", color = TextSecondary, fontSize = 11.sp)
-                Spacer(Modifier.height(8.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) {
-                        Text("Delete old traces automatically", color = TextPrimary, fontSize = 13.sp)
-                        Text(if (retention.autoDelete) "Keeps the last ${retention.keepDays} days" else "Keeps everything until you delete it", color = TextMuted, fontSize = 11.sp)
+            StorageCard(
+                saving = policy.saveActivityLogs,
+                keepDays = policy.logRetentionDays,
+                dayCount = files.size,
+                bytes = files.sumOf { it.bytes },
+                otlpEndpoint = otlpEndpoint,
+                day = day,
+                onKeepDays = { d -> viewModel.updatePolicy { it.copy(logRetentionDays = d) } },
+                onSaveEndpoint = { Tracer.setOtlpEndpoint(it) },
+                onShareDay = { name ->
+                    scope.launch {
+                        val text = withContext(Dispatchers.IO) { runCatching { Tracer.dayFile(name)?.readText() }.getOrNull() }
+                        if (text == null) Toast.makeText(context.applicationContext, R.string.share_nothing, Toast.LENGTH_SHORT).show()
+                        else shareText(context, text, "application/json", context.getString(R.string.share_day_otlp))
                     }
-                    Switch(
-                        checked = retention.autoDelete,
-                        onCheckedChange = { AgentTrace.setRetention(it, retention.keepDays) },
-                        colors = SwitchDefaults.colors(checkedThumbColor = BgDark, checkedTrackColor = GreenActive)
-                    )
-                }
-                if (retention.autoDelete) Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("Keep for", color = TextSecondary, fontSize = 12.sp, modifier = Modifier.weight(1f))
-                    TextButton(onClick = { AgentTrace.setRetention(true, retention.keepDays - 1) }) { Text("−", color = CyanAccent, fontSize = 18.sp) }
-                    Text("${retention.keepDays} days", color = TextPrimary, fontSize = 13.sp)
-                    TextButton(onClick = { AgentTrace.setRetention(true, retention.keepDays + 1) }) { Text("+", color = CyanAccent, fontSize = 18.sp) }
-                }
-                Spacer(Modifier.height(8.dp))
-                Text("Send traces to an OpenTelemetry collector (optional)", color = TextPrimary, fontSize = 13.sp)
-                Text("OTLP/HTTP JSON, e.g. https://collector.example.com:4318 — for Jaeger, Grafana Tempo, Honeycomb", color = TextMuted, fontSize = 11.sp)
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    androidx.compose.material3.OutlinedTextField(
-                        value = endpointInput, onValueChange = { endpointInput = it },
-                        placeholder = { Text("Off (kept on the phone only)", color = TextMuted, fontSize = 12.sp) },
-                        singleLine = true, modifier = Modifier.weight(1f),
-                        textStyle = androidx.compose.ui.text.TextStyle(color = TextPrimary, fontSize = 12.sp)
-                    )
-                    TextButton(onClick = { Tracer.setOtlpEndpoint(endpointInput) }) { Text("Save", color = CyanAccent) }
-                }
-                Spacer(Modifier.height(4.dp))
-                Row {
-                    if (day != null) TextButton(onClick = {
-                        Tracer.dayFile(day!!)?.let { f ->
-                            context.startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).setType("application/json").putExtra(Intent.EXTRA_TEXT, f.readText().takeLast(90_000)), "Share day (OTLP JSON lines)"))
-                        }
-                    }) { Text("Share day (OTLP)", color = CyanAccent, fontSize = 12.sp) }
-                    if (day != null) TextButton(onClick = { confirmDelete = day }) {
-                        Icon(Icons.Default.Delete, null, tint = RedStop, modifier = Modifier.size(16.dp))
-                        Spacer(Modifier.width(4.dp))
-                        Text("Delete this day", color = RedStop, fontSize = 12.sp)
-                    }
-                    TextButton(onClick = { confirmDelete = "*" }) {
-                        Icon(Icons.Default.Delete, null, tint = RedStop, modifier = Modifier.size(16.dp))
-                        Spacer(Modifier.width(4.dp))
-                        Text("Delete all traces", color = RedStop, fontSize = 12.sp)
-                    }
-                }
-            }
+                },
+                onDelete = { confirmDelete = it }
+            )
         }
     }
 
     confirmDelete?.let { target ->
-        AlertDialog(
-            onDismissRequest = { confirmDelete = null },
-            title = { Text(if (target == "*") "Delete all traces?" else "Delete ${target.removeSuffix(".jsonl")}?") },
-            text = { Text("This can't be undone.") },
-            confirmButton = {
-                TextButton(onClick = {
-                    if (target == "*") AgentTrace.deleteAll() else AgentTrace.deleteDay(target)
-                    if (target == "*" || target == day) { day = null; dayEvents = emptyList(); dayTraces = emptyList() }
-                    confirmDelete = null
-                }) { Text("Delete", color = RedStop) }
+        ConfirmDialog(
+            title = if (target == "*") stringResource(R.string.delete_all_logs_title) else stringResource(R.string.delete_day_title, target.removeSuffix(".jsonl")),
+            message = stringResource(R.string.cannot_undo),
+            confirmLabel = stringResource(R.string.action_delete),
+            dismissLabel = stringResource(R.string.action_cancel),
+            icon = Icons.Outlined.Delete,
+            onConfirm = {
+                if (target == "*") AgentTrace.clearAll() else AgentTrace.deleteDay(target)
+                if (target == "*" || target == day) { day = null; dayEvents = emptyList(); dayTraces = emptyList() }
+                confirmDelete = null
             },
-            dismissButton = { TextButton(onClick = { confirmDelete = null }) { Text("Cancel") } },
-            containerColor = SurfaceCard, titleContentColor = TextPrimary, textContentColor = TextSecondary
+            onDismiss = { confirmDelete = null }
         )
     }
 }
 
-private enum class Filter(val title: String, val kinds: Set<Kind>?) {
-    ALL("All", null),
-    DECISIONS("Decisions", setOf(Kind.PLAN, Kind.WARNING)),
-    TOOLS("Tools", setOf(Kind.TOOL)),
-    TALK("Conversation", setOf(Kind.USER, Kind.REPLY, Kind.LATENCY)),
-    SYSTEM("Network & errors", setOf(Kind.NETWORK, Kind.ERROR, Kind.SESSION, Kind.USAGE))
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun TracesOrEvents(showTraces: Boolean, traces: Int, events: Int, onChange: (Boolean) -> Unit) {
+    SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+        SegmentedButton(
+            selected = showTraces, onClick = { onChange(true) },
+            shape = SegmentedButtonDefaults.itemShape(0, 2)
+        ) { Text(stringResource(R.string.activity_traces, traces)) }
+        SegmentedButton(
+            selected = !showTraces, onClick = { onChange(false) },
+            shape = SegmentedButtonDefaults.itemShape(1, 2)
+        ) { Text(stringResource(R.string.activity_events, events)) }
+    }
 }
 
-private fun size(bytes: Long) = if (bytes < 1024) "$bytes B" else "${bytes / 1024} KB"
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun StorageCard(
+    saving: Boolean,
+    keepDays: Int,
+    dayCount: Int,
+    bytes: Long,
+    otlpEndpoint: String,
+    day: String?,
+    onKeepDays: (Int) -> Unit,
+    onSaveEndpoint: (String) -> Unit,
+    onShareDay: (String) -> Unit,
+    onDelete: (String) -> Unit
+) {
+    var endpointInput by rememberSaveable(otlpEndpoint) { mutableStateOf(otlpEndpoint) }
+    SectionCard(title = stringResource(R.string.storage_title), icon = Icons.Outlined.Storage) {
+        Text(
+            if (saving) stringResource(R.string.storage_saved_on_phone, dayCount, size(bytes))
+            else stringResource(R.string.storage_memory_only),
+            style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        if (otlpEndpoint.isNotBlank()) {
+            Spacer(Modifier.size(Spacing.xs))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Outlined.CloudUpload, contentDescription = null, tint = MaterialTheme.colorScheme.tertiary, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(Spacing.s))
+                Text(
+                    stringResource(R.string.storage_exported_to, otlpEndpoint),
+                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.tertiary
+                )
+            }
+        }
+        Spacer(Modifier.size(Spacing.m))
+        Text(stringResource(R.string.logs_keep_for), style = MaterialTheme.typography.labelLarge)
+        Spacer(Modifier.size(Spacing.s))
+        RetentionPicker(
+            options = listOf(1, 7, 30, 0),
+            selected = keepDays,
+            onSelect = onKeepDays
+        )
+        Spacer(Modifier.size(Spacing.m))
+        Text(stringResource(R.string.otlp_title), style = MaterialTheme.typography.labelLarge)
+        Text(stringResource(R.string.otlp_body), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Spacer(Modifier.size(Spacing.s))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            OutlinedTextField(
+                value = endpointInput, onValueChange = { endpointInput = it },
+                placeholder = { Text(stringResource(R.string.otlp_off)) },
+                label = { Text(stringResource(R.string.otlp_label)) },
+                singleLine = true, modifier = Modifier.weight(1f)
+            )
+            TextButton(onClick = { onSaveEndpoint(endpointInput) }, enabled = endpointInput.trim() != otlpEndpoint) {
+                Text(stringResource(R.string.action_save))
+            }
+        }
+        Spacer(Modifier.size(Spacing.s))
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+            if (day != null) {
+                TextButton(onClick = { onShareDay(day) }) { Text(stringResource(R.string.share_day_otlp)) }
+                TextButton(onClick = { onDelete(day) }) { Text(stringResource(R.string.delete_this_day), color = MaterialTheme.colorScheme.error) }
+            }
+            TextButton(onClick = { onDelete("*") }) { Text(stringResource(R.string.delete_all_logs), color = MaterialTheme.colorScheme.error) }
+        }
+    }
+}
+
+/** Days to keep (0 = forever) as one segmented row. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+internal fun RetentionPicker(options: List<Int>, selected: Int, onSelect: (Int) -> Unit, enabled: Boolean = true) {
+    SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+        options.forEachIndexed { i, d ->
+            SegmentedButton(
+                selected = selected == d,
+                onClick = { onSelect(d) },
+                enabled = enabled,
+                shape = SegmentedButtonDefaults.itemShape(i, options.size)
+            ) {
+                Text(
+                    when (d) {
+                        0 -> stringResource(R.string.keep_forever)
+                        1 -> stringResource(R.string.keep_one_day)
+                        else -> stringResource(R.string.keep_days, d)
+                    },
+                    maxLines = 1
+                )
+            }
+        }
+    }
+}
+
+private enum class Filter(val title: Int, val kinds: Set<Kind>?) {
+    ALL(R.string.filter_all, null),
+    DECISIONS(R.string.filter_decisions, setOf(Kind.PLAN, Kind.WARNING)),
+    TOOLS(R.string.filter_tools, setOf(Kind.TOOL)),
+    TALK(R.string.filter_conversation, setOf(Kind.USER, Kind.REPLY, Kind.LATENCY)),
+    SYSTEM(R.string.filter_system, setOf(Kind.NETWORK, Kind.ERROR, Kind.SESSION, Kind.USAGE))
+}
+
+internal fun size(bytes: Long) = if (bytes < 1024) "$bytes B" else if (bytes < 1024 * 1024) "${bytes / 1024} KB" else "%.1f MB".format(bytes / 1048576.0)
 
 private val clock = SimpleDateFormat("HH:mm:ss", Locale.US)
 
-private fun style(kind: Kind): Pair<ImageVector, Color> = when (kind) {
-    Kind.SESSION -> Icons.Default.PlayCircle to BrandCyan
-    Kind.NETWORK -> Icons.Default.Wifi to TextSecondary
-    Kind.USER -> Icons.Default.Person to Color(0xFF93C5FD)
-    Kind.REPLY -> Icons.Default.RecordVoiceOver to BrandViolet
-    Kind.LATENCY -> Icons.Default.Speed to Color(0xFF5EEAD4)
-    Kind.TOOL -> Icons.Default.Build to CyanAccent
-    Kind.PLAN -> Icons.Default.AccountTree to PurpleAccent
-    Kind.WARNING -> Icons.Default.WarningAmber to Color(0xFFFBBF24)
-    Kind.ERROR -> Icons.Default.ErrorOutline to RedStop
-    Kind.USAGE -> Icons.Default.Token to TextMuted
+@Composable
+private fun style(kind: Kind): Pair<ImageVector, Color> {
+    val scheme = MaterialTheme.colorScheme
+    val ext = NikTheme.extended
+    return when (kind) {
+        Kind.SESSION -> Icons.Outlined.PlayCircle to scheme.primary
+        Kind.NETWORK -> Icons.Outlined.Wifi to scheme.onSurfaceVariant
+        Kind.USER -> Icons.Outlined.Person to scheme.secondary
+        Kind.REPLY -> Icons.Outlined.RecordVoiceOver to scheme.tertiary
+        Kind.LATENCY -> Icons.Outlined.Speed to scheme.tertiary
+        Kind.TOOL -> Icons.Outlined.Build to scheme.primary
+        Kind.PLAN -> Icons.Outlined.AccountTree to scheme.secondary
+        Kind.WARNING -> Icons.Outlined.WarningAmber to ext.warning
+        Kind.ERROR -> Icons.Outlined.ErrorOutline to scheme.error
+        Kind.USAGE -> Icons.Outlined.Token to scheme.outline
+    }
 }
 
 @Composable
 private fun EventRow(e: AgentTrace.Event) {
-    var open by remember { mutableStateOf(false) }
+    var open by rememberSaveable(e.seq, e.time) { mutableStateOf(false) }
     val (icon, tint) = style(e.kind)
-    val color = if (e.ok == false) RedStop else tint
-    Row(
-        Modifier
+    val scheme = MaterialTheme.colorScheme
+    val color = if (e.ok == false) scheme.error else tint
+    val failed = stringResource(R.string.event_failed)
+    Card(
+        shape = MaterialTheme.shapes.medium,
+        colors = CardDefaults.cardColors(containerColor = scheme.surfaceContainerLow),
+        modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(12.dp))
-            .background(SurfaceDark)
-            .clickable { open = !open }
-            .padding(10.dp),
-        verticalAlignment = Alignment.Top
+            .clip(MaterialTheme.shapes.medium)
+            .clickable(onClickLabel = stringResource(if (open) R.string.action_collapse else R.string.action_expand)) { open = !open }
+            .semantics { if (e.ok == false) stateDescription = failed }
     ) {
-        Icon(icon, null, tint = color, modifier = Modifier.size(16.dp).padding(top = 1.dp))
-        Spacer(Modifier.width(8.dp))
-        Column(Modifier.weight(1f)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(e.kind.name.lowercase().replaceFirstChar { it.uppercase() }, color = color, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                if (e.ok == false) Text("  failed", color = RedStop, fontSize = 11.sp)
-                Spacer(Modifier.weight(1f))
-                e.ms?.takeIf { e.kind != Kind.USAGE }?.let {
-                    Text("$it ms", color = if (it > 3000) Color(0xFFFBBF24) else TextSecondary, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
-                    Spacer(Modifier.width(8.dp))
+        Row(Modifier.padding(horizontal = Spacing.m, vertical = Spacing.s + 2.dp), verticalAlignment = Alignment.Top) {
+            Icon(icon, contentDescription = null, tint = color, modifier = Modifier.padding(top = 2.dp).size(18.dp))
+            Spacer(Modifier.width(Spacing.s + 4.dp))
+            Column(Modifier.weight(1f)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(e.kind.name.lowercase().replaceFirstChar { it.uppercase() }, style = MaterialTheme.typography.labelMedium, color = color)
+                    if (e.ok == false) Text("  $failed", style = MaterialTheme.typography.labelMedium, color = scheme.error)
+                    Spacer(Modifier.weight(1f))
+                    e.ms?.takeIf { e.kind != Kind.USAGE }?.let {
+                        Text("$it ms", style = MaterialTheme.typography.labelSmall, color = if (it > 3000) NikTheme.extended.warning else scheme.onSurfaceVariant, fontFamily = FontFamily.Monospace)
+                        Spacer(Modifier.width(Spacing.s))
+                    }
+                    if (e.kind == Kind.USAGE) e.ms?.let {
+                        Text("$it tok", style = MaterialTheme.typography.labelSmall, color = scheme.onSurfaceVariant, fontFamily = FontFamily.Monospace)
+                        Spacer(Modifier.width(Spacing.s))
+                    }
+                    Text(clock.format(Date(e.time)), style = MaterialTheme.typography.labelSmall, color = scheme.outline, fontFamily = FontFamily.Monospace)
                 }
-                if (e.kind == Kind.USAGE) e.ms?.let {
-                    Text("$it tok", color = TextSecondary, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
-                    Spacer(Modifier.width(8.dp))
-                }
-                Text(clock.format(Date(e.time)), color = TextMuted, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+                Text(
+                    e.text, style = MaterialTheme.typography.bodyMedium, color = scheme.onSurface,
+                    maxLines = if (open) Int.MAX_VALUE else 3, overflow = TextOverflow.Ellipsis,
+                    fontFamily = if (e.kind == Kind.TOOL) FontFamily.Monospace else FontFamily.Default
+                )
             }
-            Text(
-                e.text, color = TextPrimary, fontSize = 12.sp, lineHeight = 16.sp,
-                maxLines = if (open) Int.MAX_VALUE else 3, overflow = TextOverflow.Ellipsis,
-                fontFamily = if (e.kind == Kind.TOOL) FontFamily.Monospace else FontFamily.Default
-            )
         }
     }
 }
 
 @Composable
 private fun Metric(icon: ImageVector, title: String, value: String, sub: String?) {
-    Column(
-        Modifier
-            .width(128.dp)
-            .clip(RoundedCornerShape(14.dp))
-            .background(SurfaceCard)
-            .border(1.dp, GlassBorder, RoundedCornerShape(14.dp))
-            .padding(10.dp)
+    Card(
+        shape = MaterialTheme.shapes.medium,
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+        modifier = Modifier.width(136.dp).semantics(mergeDescendants = true) {}
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Icon(icon, null, tint = CyanAccent, modifier = Modifier.size(14.dp))
-            Spacer(Modifier.width(4.dp))
-            Text(title, color = TextSecondary, fontSize = 11.sp, maxLines = 1)
+        Column(Modifier.padding(Spacing.m - 4.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(icon, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(Spacing.xs))
+                Text(title, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+            Spacer(Modifier.size(Spacing.xs))
+            Text(value, style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.onSurface)
+            sub?.let { Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
         }
-        Spacer(Modifier.height(4.dp))
-        Text(value, color = TextPrimary, fontSize = 18.sp, fontWeight = FontWeight.Bold)
-        sub?.let { Text(it, color = TextMuted, fontSize = 10.sp) }
     }
-}
-
-@Composable
-private fun Chip(text: String, selected: Boolean, onClick: () -> Unit) {
-    Text(
-        text, color = if (selected) BgDark else TextSecondary, fontSize = 12.sp, fontWeight = FontWeight.Medium,
-        modifier = Modifier
-            .clip(CircleShape)
-            .background(if (selected) CyanAccent else SurfaceCard)
-            .clickable(onClick = onClick)
-            .padding(horizontal = 12.dp, vertical = 6.dp)
-    )
-}
-
-@Composable
-private fun Card(content: @Composable () -> Unit) {
-    Column(
-        Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(16.dp))
-            .background(SurfaceCard)
-            .border(1.dp, GlassBorder, RoundedCornerShape(16.dp))
-            .padding(14.dp)
-    ) { content() }
-}
-
-@Composable
-private fun LiveDot() {
-    val pulse = rememberInfiniteTransition(label = "live")
-    val a by pulse.animateFloat(0.3f, 1f, infiniteRepeatable(tween(800), RepeatMode.Reverse), label = "a")
-    Box(Modifier.size(8.dp).alpha(a).clip(CircleShape).background(GreenActive))
 }

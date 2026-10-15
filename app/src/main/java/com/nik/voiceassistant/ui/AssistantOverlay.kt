@@ -4,6 +4,7 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.content.Intent
 import android.graphics.PixelFormat
+import android.graphics.RectF
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -15,8 +16,6 @@ import android.view.View
 import android.view.ViewConfiguration
 import android.view.WindowManager
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -31,6 +30,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -40,13 +40,15 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MicOff
-import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.outlined.Lightbulb
 import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -57,32 +59,44 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.drawWithCache
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Path
-import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.CompositingStrategy
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.rotate
-import androidx.compose.ui.graphics.drawscope.scale
+import androidx.compose.ui.graphics.drawscope.translate
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInteropFilter
 import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.platform.LocalConfiguration
-import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.CustomAccessibilityAction
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.customActions
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.onClick
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontStyle
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleRegistry
 import androidx.lifecycle.setViewTreeLifecycleOwner
@@ -92,53 +106,68 @@ import androidx.savedstate.SavedStateRegistryOwner
 import androidx.savedstate.setViewTreeSavedStateRegistryOwner
 import com.nik.voiceassistant.ConnectionStatus
 import com.nik.voiceassistant.MainActivity
+import com.nik.voiceassistant.R
 import com.nik.voiceassistant.VoiceSession
 import com.nik.voiceassistant.service.PhoneAgentService
+import com.nik.voiceassistant.ui.components.OrbMode
+import com.nik.voiceassistant.ui.components.VoiceBars
+import com.nik.voiceassistant.ui.components.VoiceOrb
+import com.nik.voiceassistant.ui.components.activeWithHold
+import com.nik.voiceassistant.ui.components.rememberFrameClock
+import com.nik.voiceassistant.ui.components.rememberVoiceLevel
+import com.nik.voiceassistant.ui.components.safeList
+import com.nik.voiceassistant.ui.components.safeSender
+import com.nik.voiceassistant.ui.components.safeString
+import com.nik.voiceassistant.ui.components.safeText
+import com.nik.voiceassistant.ui.theme.NikTheme
+import com.nik.voiceassistant.ui.theme.NikVoiceTheme
+import com.nik.voiceassistant.ui.theme.Spacing
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
-import kotlin.math.abs
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.hypot
 import kotlin.math.sin
 
 /**
- * Assistant panel over whatever app is open while a conversation runs and Nik's own screen isn't
- * showing, in the style of Gemini's overlay: a floating dark card with the sparkle, what the user
- * said, the reply as it is spoken, the assistant's plan and current thinking, options to pick, and
- * a bottom bar with the voice level, stop and the mic. The mic is off while the assistant works.
- * A soft Gemini-coloured glow rises from the bottom edge with the voice and while it works.
+ * Assistant panel over whatever app is open while a conversation runs and the app's own screen
+ * isn't showing: a floating card in the app's theme with the assistant's orb, what the user said,
+ * the reply as it is spoken, the plan and current thinking, options to pick, and a bottom bar with
+ * the voice level, stop and the mic. A soft glow in the theme colours rises from the bottom edge
+ * with the voice and while it works.
  *
- * The card can be dragged anywhere by its top (or the collapsed pill), and remembers where it was
- * left. Only the card takes touches, and it lets the assistant's own taps and swipes through.
+ * The card can be dragged anywhere by its top (or the mini bubble), and remembers where it was
+ * left; TalkBack users get "move" actions instead. Only the card takes touches, and it lets the
+ * assistant's own taps and swipes through. Nothing animates (no frames) while it is idle, and the
+ * screen is kept on only while the assistant is talking or working.
+ *
+ * If the system removes the windows (screen control switched off, e.g. by PaymentGuard while a
+ * payment app is open), they are noticed as gone and shown again once screen control is back.
  */
 class AssistantOverlay(private val session: VoiceSession) {
 
     companion object {
         private const val TAG = "AssistantOverlay"
-        private val BLUE = Color(0xFF4285F4)
-        private val PURPLE = Color(0xFF9B72CB)
-        private val PINK = Color(0xFFD96570)
-        private val CYAN = Color(0xFF5BC0EB)
-        private val GEMINI = listOf(BLUE, PURPLE, PINK, BLUE)
-        private val SPARKLE = listOf(Color(0xFF1C7DFF), Color(0xFF9B72CB), Color(0xFFF06C8F))
-        private val CARD_TOP = Color(0xFA232427)
-        private val CARD_BOTTOM = Color(0xFA1A1B1E)
-        private val SURFACE = Color(0xFF2D2E31)
-        private val TEXT = Color(0xFFE3E3E3)
-        private val MUTED = Color(0xFF9AA0A6)
         private const val PREF_X = "overlay_x"
         private const val PREF_Y = "overlay_y"
         private const val PREF_W = "overlay_width"
         private const val PREF_H = "overlay_reply_height"
+        private const val PREF_MINI = "overlay_mini"
         private const val MIN_WIDTH_DP = 260
         private const val MIN_REPLY_DP = 48f
         // Reply area height until the user resizes it (4 lines); fixed, so streaming text doesn't resize the window
         private const val DEFAULT_REPLY_DP = 92f
-        private const val PREF_MINI = "overlay_mini"
+        // Retry showing the windows after the system removed them (or before it is possible)
+        private const val RETRY_MS = 2_000L
+        // Keep the screen on this long after the last words / work, so short gaps don't let it sleep
+        private const val KEEP_ON_AFTER_MS = 5_000L
+        // TalkBack "move" actions shift the card by this much
+        private const val NUDGE_DP = 64
     }
 
     private val main = Handler(Looper.getMainLooper())
@@ -147,12 +176,25 @@ class AssistantOverlay(private val session: VoiceSession) {
     private var glow: ComposeView? = null
     private var panel: ComposeView? = null
     private var panelParams: WindowManager.LayoutParams? = null
+    // The window manager the views were added with (removal and updates go through it)
+    private var windows: WindowManager? = null
+    // A conversation is running and the app isn't showing: the overlay should be up
+    @Volatile private var wanted = false
+    // The panel's window was attached once (so "not attached" later means it was removed)
+    private var panelAttached = false
+    // We are removing the views ourselves (not the system)
+    private var removing = false
+    // The views were added through the accessibility service: after a removal, wait for it to return
+    private var addedViaService = false
 
     fun bind(scope: CoroutineScope, appVisible: StateFlow<Boolean>) {
         scope.launch {
             combine(session.isRecording, appVisible) { live, visible -> live && !visible }
                 .distinctUntilChanged()
-                .collect { if (it) show() else hideAll() }
+                .collect {
+                    wanted = it
+                    if (it) show() else hideAll()
+                }
         }
         PhoneAgentService.overlayPassThrough = ::setPassThrough
         PhoneAgentService.overlayHidden = ::setHidden
@@ -169,18 +211,36 @@ class AssistantOverlay(private val session: VoiceSession) {
         else -> @Suppress("DEPRECATION") WindowManager.LayoutParams.TYPE_PHONE
     }
 
-    private fun windowManager(): WindowManager? = overlayContext()?.getSystemService(WindowManager::class.java)
+    private val retryShow = Runnable {
+        if (!wanted) return@Runnable
+        // Removed with screen control: don't fall back to an app overlay over (say) a payment app
+        if (addedViaService && panel != null && PhoneAgentService.instance == null) retryLater()
+        else show()
+    }
+
+    private fun retryLater() {
+        if (!wanted) return
+        main.removeCallbacks(retryShow)
+        main.postDelayed(retryShow, RETRY_MS)
+    }
 
     private fun show() {
-        if (panel != null) return
-        val ctx = overlayContext() ?: return // neither screen control nor the overlay permission
-        val wm = windowManager() ?: return
+        main.removeCallbacks(retryShow)
+        panel?.let { existing ->
+            // Up (or still being attached): nothing to do
+            if (!panelAttached || existing.isAttachedToWindow) return
+            // Its window is gone (the system removed it): clear the old views and start over
+            hideAll()
+        }
+        val ctx = overlayContext() ?: return retryLater() // neither screen control nor the overlay permission yet
+        val wm = ctx.getSystemService(WindowManager::class.java) ?: return
+        val viaService = PhoneAgentService.instance != null
         val lifecycleOwner = OverlayOwner().also { it.start() }
 
         fun composeView(content: @Composable () -> Unit) = ComposeView(ctx).apply {
             setViewTreeLifecycleOwner(lifecycleOwner)
             setViewTreeSavedStateRegistryOwner(lifecycleOwner)
-            setContent(content)
+            setContent { NikVoiceTheme { content() } }
         }
 
         // Bottom-edge glow: never takes touches
@@ -193,12 +253,13 @@ class AssistantOverlay(private val session: VoiceSession) {
         ).apply { gravity = Gravity.BOTTOM }
 
         // The card: touchable only where it is drawn; the rest of the screen stays with the app.
-        // x / y: offset from the bottom centre, where the user last dragged it
+        // x / y: offset from the bottom centre, where the user last dragged it. No FLAG_KEEP_SCREEN_ON:
+        // the panel keeps the screen on only while the assistant talks or works (Panel).
         val panelView = composeView { Panel() }
         val params = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT, WindowManager.LayoutParams.WRAP_CONTENT, windowType(),
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
-                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON,
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
@@ -211,59 +272,87 @@ class AssistantOverlay(private val session: VoiceSession) {
             wm.addView(panelView, params)
         } catch (e: Exception) {
             Log.w(TAG, "Overlay not shown: ${e.message}")
-            runCatching { wm.removeView(glowView) }
+            runCatching { wm.removeViewImmediate(glowView) }
             lifecycleOwner.stop()
+            retryLater()
             return
         }
         owner = lifecycleOwner
         glow = glowView
         panel = panelView
         panelParams = params
+        windows = wm
+        panelAttached = false
+        addedViaService = viaService
+        panelView.addOnAttachStateChangeListener(object : View.OnAttachStateChangeListener {
+            override fun onViewAttachedToWindow(v: View) {
+                if (panel === v) panelAttached = true
+            }
+
+            override fun onViewDetachedFromWindow(v: View) {
+                // Not removed by us: the system took the window away. Show it again when possible
+                if (panel === v && !removing) retryLater()
+            }
+        })
         // A size change (expand / collapse, longer reply) must not push it off screen
         panelView.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> keepOnScreen() }
     }
 
     private fun hideAll() {
-        val wm = windowManager()
-        listOfNotNull(panel, glow).forEach { v -> runCatching { wm?.removeView(v) } }
+        main.removeCallbacks(retryShow)
+        removing = true
+        // Remove through the manager the views were added with, else the current one; a window the
+        // system already destroyed may still be registered on our side, so always try
+        val managers = listOfNotNull(windows, overlayContext()?.getSystemService(WindowManager::class.java)).distinct()
+        listOfNotNull(panel, glow).forEach { v ->
+            for (wm in managers) if (runCatching { wm.removeViewImmediate(v) }.isSuccess) break
+            runCatching { v.disposeComposition() }
+        }
+        removing = false
         panel = null
         glow = null
         panelParams = null
+        windows = null
+        panelAttached = false
         owner?.stop()
         owner = null
     }
 
-    // The panel is letting touches through for a gesture right now
-    @Volatile private var passingThrough = false
+    // Each pass-through change gets a number; a change that arrives late (after a newer one) is dropped
+    private val passSeq = AtomicInteger()
 
     /**
      * While the assistant's own gesture plays over the panel, the panel lets touches through
      * (called from the tool thread). Changing the window relayouts it, which shows as a blink, so
      * it is only done when the gesture's area actually crosses the panel; most taps and swipes don't.
      */
-    private fun setPassThrough(on: Boolean, area: android.graphics.RectF) {
+    private fun setPassThrough(on: Boolean, area: RectF) {
+        val seq = passSeq.incrementAndGet()
         if (on) {
             var crosses = false
             onMain {
+                if (seq != passSeq.get()) return@onMain
                 val view = panel ?: return@onMain
-                val params = panelParams ?: return@onMain
                 val loc = IntArray(2).also(view::getLocationOnScreen)
-                crosses = android.graphics.RectF(loc[0].toFloat(), loc[1].toFloat(), (loc[0] + view.width).toFloat(), (loc[1] + view.height).toFloat())
+                crosses = RectF(loc[0].toFloat(), loc[1].toFloat(), (loc[0] + view.width).toFloat(), (loc[1] + view.height).toFloat())
                     .intersect(area)
-                if (!crosses) return@onMain
-                params.flags = params.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
-                runCatching { windowManager()?.updateViewLayout(view, params) }
-                passingThrough = true
+                setTouchable(!crosses)
             }
             // Let the window change reach input dispatch before the gesture starts
             if (crosses) Thread.sleep(40)
-        } else if (passingThrough) onMain {
-            passingThrough = false
-            val view = panel ?: return@onMain
-            val params = panelParams ?: return@onMain
-            params.flags = params.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv()
-            runCatching { windowManager()?.updateViewLayout(view, params) }
+        } else onMain {
+            if (seq == passSeq.get()) setTouchable(true)
         }
+    }
+
+    private fun setTouchable(touchable: Boolean) {
+        val view = panel ?: return
+        val params = panelParams ?: return
+        val flags = if (touchable) params.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv()
+        else params.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+        if (flags == params.flags) return
+        params.flags = flags
+        runCatching { windows?.updateViewLayout(view, params) }
     }
 
     /** Hides the overlay for a screenshot of the screen (look_at_screen), so it shows the app only. */
@@ -286,9 +375,9 @@ class AssistantOverlay(private val session: VoiceSession) {
     private var startY = 0
     private var dragging = false
 
-    // Full card, or just the icons (mini); the user's choice is kept
+    // Full card, or just the bubble (mini); the user's choice is kept
     private var expanded by mutableStateOf(!prefs.getBoolean(PREF_MINI, false))
-    // Resizing past the smallest width: letting go turns the card into the icons
+    // Resizing past the smallest width: letting go turns the card into the bubble
     private var shrinkToMini = false
 
     private fun showFull(value: Boolean) {
@@ -299,8 +388,6 @@ class AssistantOverlay(private val session: VoiceSession) {
     // Size the user set with the corner grip: card width (px) and reply area height (dp); 0 = automatic
     private var userWidthPx = prefs.getInt(PREF_W, 0)
     private var replyHeightDp by mutableFloatStateOf(prefs.getFloat(PREF_H, 0f))
-    // Height the reply area has now, to start a resize from
-    private var shownReplyDp = DEFAULT_REPLY_DP
     private var startReplyDp = 0f
     private var lastGripTap = 0L
 
@@ -316,12 +403,21 @@ class AssistantOverlay(private val session: VoiceSession) {
         if (nx == params.x && ny == params.y) return
         params.x = nx
         params.y = ny
-        runCatching { windowManager()?.updateViewLayout(view, params) }
+        runCatching { windows?.updateViewLayout(view, params) }
+    }
+
+    /** TalkBack "move" actions: shift by a step and remember the place. */
+    private fun nudge(dxDp: Int, dyDp: Int): Boolean {
+        val params = panelParams ?: return false
+        val density = panel?.resources?.displayMetrics?.density ?: return false
+        moveTo(params.x + (dxDp * density).toInt(), params.y + (dyDp * density).toInt())
+        prefs.edit().putInt(PREF_X, params.x).putInt(PREF_Y, params.y).apply()
+        return true
     }
 
     /**
      * Expanded: the card spans the screen less a margin (a WRAP_CONTENT overlay window is first
-     * measured at the narrow "dialog width" and Compose doesn't ask for more). Collapsed: wraps the pill.
+     * measured at the narrow "dialog width" and Compose doesn't ask for more). Collapsed: wraps the bubble.
      */
     private fun setPanelWidth(expanded: Boolean) {
         val view = panel ?: return
@@ -332,7 +428,7 @@ class AssistantOverlay(private val session: VoiceSession) {
         } else WindowManager.LayoutParams.WRAP_CONTENT
         if (params.width == width) return
         params.width = width
-        runCatching { windowManager()?.updateViewLayout(view, params) }
+        runCatching { windows?.updateViewLayout(view, params) }
     }
 
     private fun keepOnScreen() {
@@ -387,7 +483,7 @@ class AssistantOverlay(private val session: VoiceSession) {
             MotionEvent.ACTION_DOWN -> {
                 downRawX = e.rawX; downRawY = e.rawY
                 startX = view.width
-                startReplyDp = replyHeightDp.takeIf { it > 0 } ?: shownReplyDp
+                startReplyDp = replyHeightDp.takeIf { it > 0 } ?: DEFAULT_REPLY_DP
                 dragging = false
                 shrinkToMini = false
                 true
@@ -399,13 +495,13 @@ class AssistantOverlay(private val session: VoiceSession) {
                 if (dragging) {
                     val minWidth = (MIN_WIDTH_DP * m.density).toInt()
                     val wanted = (startX + 2 * dx).toInt()
-                    // Pulled well past the smallest size: shows faded, and becomes just the icons on release
+                    // Pulled well past the smallest size: shows faded, and becomes the bubble on release
                     shrinkToMini = wanted < minWidth - (56 * m.density).toInt()
                     view.alpha = if (shrinkToMini) 0.55f else 1f
                     val width = wanted.coerceIn(minWidth, m.widthPixels)
                     if (width != params.width) {
                         params.width = width
-                        runCatching { windowManager()?.updateViewLayout(view, params) }
+                        runCatching { windows?.updateViewLayout(view, params) }
                     }
                     replyHeightDp = (startReplyDp - dy / m.density).coerceIn(MIN_REPLY_DP, m.heightPixels / m.density * 0.6f)
                 }
@@ -438,175 +534,210 @@ class AssistantOverlay(private val session: VoiceSession) {
         }
     }
 
+    @Composable
+    private fun moveActions(): List<CustomAccessibilityAction> {
+        val up = stringResource(R.string.overlay_move_up)
+        val down = stringResource(R.string.overlay_move_down)
+        val left = stringResource(R.string.overlay_move_left)
+        val right = stringResource(R.string.overlay_move_right)
+        return remember(up, down, left, right) {
+            listOf(
+                CustomAccessibilityAction(up) { nudge(0, NUDGE_DP) },
+                CustomAccessibilityAction(down) { nudge(0, -NUDGE_DP) },
+                CustomAccessibilityAction(left) { nudge(-NUDGE_DP, 0) },
+                CustomAccessibilityAction(right) { nudge(NUDGE_DP, 0) }
+            )
+        }
+    }
+
     /** Corner grip: two short diagonal lines in the top-right corner. */
     @Composable
     private fun ResizeGrip(modifier: Modifier) {
+        val color = MaterialTheme.colorScheme.outline
         Box(
-            modifier.size(22.dp).resizesWindow().drawBehind {
-                val c = Color.White.copy(alpha = 0.35f)
+            modifier.size(24.dp).resizesWindow().clearAndSetSemantics {}.drawBehind {
                 val w = 2.dp.toPx()
-                drawLine(c, Offset(size.width * 0.38f, size.height * 0.30f), Offset(size.width * 0.70f, size.height * 0.62f), w, androidx.compose.ui.graphics.StrokeCap.Round)
-                drawLine(c, Offset(size.width * 0.56f, size.height * 0.30f), Offset(size.width * 0.70f, size.height * 0.44f), w, androidx.compose.ui.graphics.StrokeCap.Round)
+                drawLine(color, Offset(size.width * 0.38f, size.height * 0.30f), Offset(size.width * 0.70f, size.height * 0.62f), w, StrokeCap.Round)
+                drawLine(color, Offset(size.width * 0.56f, size.height * 0.30f), Offset(size.width * 0.70f, size.height * 0.44f), w, StrokeCap.Round)
             }
         )
     }
 
     // ---- UI ----
 
-    /** Seconds since shown, every frame. Read it inside draw lambdas so frames only redraw. */
+    /** The voice level (assistant or, with the mic on, the user), for drawing only. */
     @Composable
-    private fun clock(): State<Float> {
-        val t = remember { mutableFloatStateOf(0f) }
-        LaunchedEffect(Unit) {
-            val start = withFrameNanos { it }
-            while (true) withFrameNanos { now -> t.floatValue = (now - start) / 1_000_000_000f }
+    private fun voiceLevel(): State<Float> {
+        val source = remember {
+            combine(session.micAmplitude, session.aiAmplitude, session.isMicMuted) { mic, ai, muted -> maxOf(ai, if (muted) 0f else mic) }
         }
-        return t
+        return rememberVoiceLevel(source, gain = 8f)
     }
 
-    @Composable
-    private fun voiceLevel(): Float {
-        val ai by session.aiAmplitude.collectAsState()
-        val mic by session.micAmplitude.collectAsState()
-        val muted by session.isMicMuted.collectAsState()
-        val level by animateFloatAsState(minOf(1f, maxOf(ai, if (muted) 0f else mic) * 8f), tween(140), label = "level")
-        return level
-    }
-
-    /** Gemini Live-style glow: soft colour blobs rising from the bottom edge, swaying, brighter with the voice. */
+    /** Soft colour blobs rising from the bottom edge, swaying while it works, brighter with the voice. */
     @Composable
     private fun BottomGlow() {
-        val level = voiceLevel()
         val tool by session.activeToolStatus.collectAsState()
         val busy = tool != null
-        val time = clock()
-        val strength by animateFloatAsState((if (busy) 0.55f else 0.25f) + 0.75f * level, tween(220), label = "glow")
+        val level = voiceLevel()
+        // Frames only while it works; the voice alone just redraws
+        val clock = rememberFrameClock(busy)
+        val scheme = MaterialTheme.colorScheme
+        val colors = listOf(scheme.primary, scheme.tertiary, scheme.secondary)
         Box(
             Modifier
                 .fillMaxWidth()
-                .height(150.dp)
-                .drawBehind {
-                    val t = time.value * (if (busy) 1.6f else 0.8f)
+                .height(120.dp)
+                .clearAndSetSemantics {}
+                .drawWithCache {
                     val w = size.width
                     val h = size.height
-                    val blobs = listOf(
-                        BLUE to (0.18f + 0.10f * sin(t)),
-                        PURPLE to (0.50f + 0.12f * sin(t * 0.7f + 2f)),
-                        PINK to (0.82f + 0.10f * sin(t * 0.9f + 4f)),
-                        CYAN to (0.35f + 0.25f * sin(t * 0.5f + 1f))
-                    )
-                    blobs.forEach { (color, fx) ->
-                        val r = w * (0.42f + 0.10f * strength)
-                        drawCircle(
-                            Brush.radialGradient(
-                                listOf(color.copy(alpha = 0.55f * strength), color.copy(alpha = 0f)),
-                                center = Offset(w * fx, h * 1.05f), radius = r
-                            ),
-                            radius = r, center = Offset(w * fx, h * 1.05f)
-                        )
+                    val r = w * 0.45f
+                    // Shaders made once per size, centred on the origin and moved with translate
+                    val blobs = colors.map { c -> Brush.radialGradient(listOf(c.copy(alpha = 0.5f), c.copy(alpha = 0f)), center = Offset.Zero, radius = r) }
+                    val edge = Brush.horizontalGradient(colors + colors.first())
+                    onDrawBehind {
+                        val t = clock.value * 1.4f
+                        val lv = level.value
+                        val strength = ((if (busy) 0.5f else 0.2f) + 0.8f * lv).coerceAtMost(1f)
+                        blobs.forEachIndexed { i, brush ->
+                            val fx = when (i) {
+                                0 -> 0.2f + 0.1f * sin(t)
+                                1 -> 0.5f + 0.12f * sin(t * 0.7f + 2f)
+                                else -> 0.8f + 0.1f * sin(t * 0.9f + 4f)
+                            }
+                            translate(w * fx, h * 1.05f) { drawCircle(brush, radius = r, center = Offset.Zero, alpha = strength) }
+                        }
+                        val line = 2.dp.toPx() + 3.dp.toPx() * lv
+                        drawRect(edge, topLeft = Offset(0f, h - line), size = Size(w, line), alpha = 0.5f + 0.5f * strength)
                     }
-                    // A crisp gradient line right at the edge
-                    drawRect(
-                        Brush.horizontalGradient(GEMINI, startX = -w * (t % 1f), endX = w * 2 - w * (t % 1f)),
-                        topLeft = Offset(0f, h - (2.dp.toPx() + 3.dp.toPx() * level)),
-                        size = Size(w, 2.dp.toPx() + 3.dp.toPx() * level),
-                        alpha = 0.6f + 0.4f * strength.coerceAtMost(1f)
-                    )
                 }
         )
     }
 
     @Composable
     private fun Panel() {
-        val name by session.assistantName.collectAsState()
-        val reply by session.liveReply.collectAsState()
-        val transcripts by session.transcripts.collectAsState()
-        val plan by session.plan.collectAsState()
-        val tool by session.activeToolStatus.collectAsState()
-        val muted by session.isMicMuted.collectAsState()
-        val choices by session.choices.collectAsState()
         val status by session.connectionStatus.collectAsState()
-        val ai by session.aiAmplitude.collectAsState()
+        val tool by session.activeToolStatus.collectAsState()
+        val plan by session.plan.collectAsState()
+        val muted by session.isMicMuted.collectAsState()
+        val speaking by remember { session.aiAmplitude.activeWithHold(0.01f, 600) }.collectAsState(initial = false)
         val level = voiceLevel()
-        val time = clock()
         val expanded = expanded
         LaunchedEffect(expanded) { setPanelWidth(expanded) }
 
-        val speaking = ai > 0.01f
         val working = tool != null || plan?.status == "working"
-        val userLine = transcripts.lastOrNull { it.sender == "user" }?.text?.trim().orEmpty()
-        val shownReply = reply.ifBlank { transcripts.lastOrNull { it.sender == "assistant" }?.text.orEmpty() }.trim()
-        val state = when {
-            status == ConnectionStatus.CONNECTING -> "Connecting…"
-            tool != null -> tool!!
-            speaking -> "Speaking…"
-            !muted -> "Listening…"
-            working -> "Thinking…"
-            else -> "Tap the mic to talk"
+        val connecting = status == ConnectionStatus.CONNECTING
+        // Frames only for what moves on its own: the spinning rim / orb while working or connecting,
+        // the voice bars while speaking in the full card. Idle or listening: none.
+        val clock = rememberFrameClock(working || connecting || (expanded && speaking))
+
+        // The screen stays on while it talks or works (and a moment after), not for the whole conversation
+        val view = LocalView.current
+        val busy = working || speaking || connecting
+        LaunchedEffect(busy) {
+            if (!busy) delay(KEEP_ON_AFTER_MS)
+            view.keepScreenOn = busy
         }
 
+        val orbMode = when {
+            connecting -> OrbMode.CONNECTING
+            status == ConnectionStatus.ERROR -> OrbMode.ERROR
+            working -> OrbMode.THINKING
+            speaking -> OrbMode.SPEAKING
+            !muted -> OrbMode.LISTENING
+            else -> OrbMode.MUTED
+        }
+
+        val scheme = MaterialTheme.colorScheme
         val cardWidth = LocalConfiguration.current.screenWidthDp.dp - 20.dp
         val shape = if (expanded) RoundedCornerShape(28.dp) else CircleShape
-        val borderAlpha by animateFloatAsState(if (working) 1f else if (speaking) 0.6f else 0.18f, tween(400), label = "border")
+        val rimActive = working || connecting
 
         Box(Modifier.padding(horizontal = 4.dp, vertical = 10.dp)) {
             Box(
                 Modifier
                     .then(if (expanded) Modifier.fillMaxWidth() else Modifier.widthIn(max = cardWidth))
-                    .shadow(18.dp, shape, ambientColor = PURPLE, spotColor = BLUE)
+                    .shadow(12.dp, shape)
                     .clip(shape)
-                    // Gradient rim, spinning while the assistant works; the card covers all but the edge
-                    .drawBehind {
-                        drawRect(Color(0xFF3C4043))
-                        rotate(time.value * (if (working) 200f else 50f)) {
-                            drawCircle(Brush.sweepGradient(GEMINI), radius = size.maxDimension, alpha = borderAlpha)
+                    // Rim: a turning gradient while it works, else a quiet outline
+                    .drawWithCache {
+                        val sweep = Brush.sweepGradient(listOf(scheme.primary, scheme.tertiary, scheme.secondary, scheme.primary))
+                        onDrawBehind {
+                            drawRect(scheme.outlineVariant)
+                            if (rimActive) rotate(clock.value * 200f) { drawCircle(sweep, radius = size.maxDimension) }
                         }
                     }
-                    .padding(1.2.dp)
+                    .padding(1.5.dp)
                     .clip(shape)
-                    .background(Brush.verticalGradient(listOf(CARD_TOP, CARD_BOTTOM)))
+                    .background(scheme.surfaceContainerHigh)
                 // No size animation: the window itself would resize every frame, which flickers
             ) {
-                if (expanded) Expanded(name, state, userLine, shownReply, muted, speaking, working, level, time) { showFull(false) }
-                else Mini(muted, working, level, time) { showFull(true) }
+                if (expanded) Expanded(orbMode, muted, speaking, working, connecting, level, clock) { showFull(false) }
+                else Mini(orbMode, muted, level, clock) { showFull(true) }
             }
         }
     }
 
     @Composable
     private fun Expanded(
-        name: String, state: String, userLine: String, reply: String,
-        muted: Boolean, speaking: Boolean, working: Boolean, level: Float, time: State<Float>,
-        onCollapse: () -> Unit
+        orbMode: OrbMode, muted: Boolean, speaking: Boolean, working: Boolean, connecting: Boolean,
+        level: State<Float>, clock: State<Float>, onCollapse: () -> Unit
     ) {
+        val name by session.assistantName.collectAsState()
+        val reply by session.liveReply.collectAsState()
+        val transcripts by session.transcripts.collectAsState()
         val plan by session.plan.collectAsState()
         val choices by session.choices.collectAsState()
         val tool by session.activeToolStatus.collectAsState()
+        val scheme = MaterialTheme.colorScheme
 
-        Column(Modifier.padding(start = 16.dp, end = 10.dp, bottom = 12.dp)) {
-            // Top: drag handle, sparkle + name, and the window buttons. Drag anywhere here to move it;
+        val userLine = remember(transcripts) { transcripts.lastOrNull { it.safeSender == "user" }?.safeText?.trim().orEmpty() }
+        val shownReply = reply.ifBlank { transcripts.lastOrNull { it.safeSender == "assistant" }?.safeText.orEmpty() }.trim()
+        val state = when {
+            connecting -> stringResource(R.string.status_connecting)
+            tool != null -> stringResource(R.string.status_working_on, tool.orEmpty())
+            speaking -> stringResource(R.string.status_speaking)
+            !muted -> stringResource(R.string.status_listening)
+            working -> stringResource(R.string.status_thinking)
+            else -> stringResource(R.string.overlay_tap_mic)
+        }
+        val moveLabel = stringResource(R.string.overlay_move_panel)
+        val collapseLabel = stringResource(R.string.overlay_shrink)
+        val actions = moveActions()
+
+        Column(Modifier.padding(start = Spacing.m, end = Spacing.s, bottom = Spacing.m - 4.dp)) {
+            // Top: drag handle, orb + name, and the window buttons. Drag anywhere here to move it;
             // the grip in the corner resizes it.
             Box(Modifier.fillMaxWidth()) {
                 Column(Modifier.fillMaxWidth()) {
-                    // Drag handle (moves the card)
-                    Box(Modifier.fillMaxWidth().dragsWindow().padding(top = 10.dp, bottom = 6.dp), contentAlignment = Alignment.Center) {
-                        Box(Modifier.size(width = 36.dp, height = 4.dp).clip(CircleShape).background(Color.White.copy(alpha = 0.22f)))
+                    Box(
+                        Modifier
+                            .fillMaxWidth()
+                            .dragsWindow()
+                            .semantics {
+                                contentDescription = moveLabel
+                                customActions = actions
+                            }
+                            .padding(top = 10.dp, bottom = 6.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Box(Modifier.size(width = 32.dp, height = 4.dp).clip(CircleShape).background(scheme.outlineVariant))
                     }
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        // Sparkle and name: drag to move too. Kept apart from the buttons, whose taps
+                        // Orb and name: drag to move too. Kept apart from the buttons, whose taps
                         // the drag handling would otherwise swallow.
                         Row(Modifier.weight(1f).dragsWindow(), verticalAlignment = Alignment.CenterVertically) {
-                            Sparkle(24.dp, working, level, time)
-                            Spacer(Modifier.width(10.dp))
+                            VoiceOrb(level, orbMode, Modifier.size(36.dp).clearAndSetSemantics {}, clock)
+                            Spacer(Modifier.width(Spacing.s + 2.dp))
                             Column(Modifier.weight(1f)) {
-                                Text(name, color = TEXT, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
-                                ShimmerText(state, active = working || state == "Connecting…", time = time)
+                                Text(name, style = MaterialTheme.typography.titleSmall, color = scheme.onSurface, maxLines = 1)
+                                StatusText(state, active = working || connecting, clock = clock)
                             }
                         }
-                        // Shrink to just the icons / open the full app / end the conversation
-                        IconButton(Icons.Default.KeyboardArrowDown, "Shrink to icon", onClick = onCollapse)
-                        IconButton(Icons.AutoMirrored.Filled.OpenInNew, "Open in app", size = 18.dp) { openApp() }
-                        IconButton(Icons.Default.Close, "End") { session.stop() }
+                        PanelIconButton(Icons.Filled.KeyboardArrowDown, collapseLabel, onClick = onCollapse)
+                        PanelIconButton(Icons.AutoMirrored.Filled.OpenInNew, stringResource(R.string.overlay_open_app), iconSize = 18.dp) { openApp() }
+                        PanelIconButton(Icons.Filled.Close, stringResource(R.string.cd_end_conversation)) { session.stop() }
                     }
                 }
                 ResizeGrip(Modifier.align(Alignment.TopEnd))
@@ -614,254 +745,245 @@ class AssistantOverlay(private val session: VoiceSession) {
 
             // Plan: segmented progress, current step and the assistant's thinking
             plan?.takeIf { it.status != "done" }?.let { p ->
-                Spacer(Modifier.height(12.dp))
-                Column(
-                    Modifier
-                        .padding(end = 6.dp)
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(16.dp))
-                        .background(Color.White.copy(alpha = 0.04f))
-                        .padding(horizontal = 12.dp, vertical = 10.dp)
-                ) {
-                    Text(p.goal, color = TEXT, fontSize = 13.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    val total = p.steps.size
-                    if (total > 0) {
-                        val step = p.currentStep.coerceIn(1, total)
-                        Spacer(Modifier.height(8.dp))
-                        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                            for (i in 1..total) {
-                                val done = i < step || p.status == "done"
-                                val current = i == step && p.status != "done"
-                                Box(
-                                    Modifier
-                                        .weight(1f)
-                                        .height(4.dp)
-                                        .clip(CircleShape)
-                                        .drawBehind {
-                                            when {
-                                                done -> drawRect(Brush.horizontalGradient(listOf(BLUE, PURPLE)))
-                                                current -> {
-                                                    drawRect(Color.White.copy(alpha = 0.12f))
-                                                    val pulse = 0.5f + 0.5f * sin(time.value * 4f)
-                                                    drawRect(
-                                                        if (p.status == "blocked") Color(0xFFFBBF24) else BLUE,
-                                                        size = Size(size.width * (0.35f + 0.4f * pulse), size.height)
-                                                    )
-                                                }
-                                                else -> drawRect(Color.White.copy(alpha = 0.12f))
-                                            }
-                                        }
-                                )
-                            }
-                        }
-                        Spacer(Modifier.height(6.dp))
-                        Text(
-                            "Step $step of $total · ${p.steps.getOrElse(step - 1) { "" }}",
-                            color = MUTED, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis
-                        )
-                    }
-                    // Always one line, so a new thought doesn't change the card's height
-                    (p.note?.takeIf { it.isNotBlank() } ?: "Working on it…").let { note ->
-                        Spacer(Modifier.height(6.dp))
-                        Row(verticalAlignment = Alignment.Top) {
-                            Sparkle(12.dp, spinning = true, level = 0f, time = time, modifier = Modifier.padding(top = 2.dp))
-                            Spacer(Modifier.width(6.dp))
-                            Text(
-                                note, fontSize = 12.sp, lineHeight = 16.sp, fontStyle = FontStyle.Italic, maxLines = 1, overflow = TextOverflow.Ellipsis,
-                                color = if (p.status == "blocked") Color(0xFFFCD34D) else Color(0xFFC9B8F5)
-                            )
-                        }
-                    }
-                }
+                Spacer(Modifier.height(Spacing.s + 4.dp))
+                PlanStrip(
+                    goal = safeString(p.goal),
+                    steps = safeList(p.steps),
+                    currentStep = p.currentStep,
+                    status = safeString(p.status),
+                    note = safeString(p.note),
+                    clock = clock
+                )
             }
 
             // What the user asked (bubble on the right), then the reply as it is spoken
             if (userLine.isNotEmpty()) {
-                Spacer(Modifier.height(12.dp))
-                Box(Modifier.fillMaxWidth().padding(end = 6.dp), contentAlignment = Alignment.CenterEnd) {
+                Spacer(Modifier.height(Spacing.s + 4.dp))
+                Box(Modifier.fillMaxWidth().padding(end = Spacing.s), contentAlignment = Alignment.CenterEnd) {
                     Text(
-                        userLine, color = TEXT, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                        userLine, style = MaterialTheme.typography.bodyMedium, color = scheme.onPrimaryContainer,
+                        maxLines = 1, overflow = TextOverflow.Ellipsis,
                         modifier = Modifier
                             .widthIn(max = 260.dp)
                             .clip(RoundedCornerShape(topStart = 18.dp, topEnd = 6.dp, bottomStart = 18.dp, bottomEnd = 18.dp))
-                            .background(SURFACE)
-                            .padding(horizontal = 12.dp, vertical = 8.dp)
+                            .background(scheme.primaryContainer)
+                            .padding(horizontal = Spacing.m - 4.dp, vertical = Spacing.s)
                     )
                 }
             }
             // Fixed height (the user can resize it): streaming text scrolls inside instead of growing the window
-            Spacer(Modifier.height(10.dp))
+            Spacer(Modifier.height(Spacing.s + 2.dp))
             val scroll = rememberScrollState()
-            LaunchedEffect(reply) { scroll.animateScrollTo(scroll.maxValue) }
+            LaunchedEffect(shownReply) { scroll.animateScrollTo(scroll.maxValue) }
             Text(
-                reply.ifEmpty { "…" }, color = if (reply.isEmpty()) MUTED else TEXT, fontSize = 16.sp, lineHeight = 23.sp,
+                shownReply.ifEmpty { "…" },
+                style = MaterialTheme.typography.bodyLarge,
+                color = if (shownReply.isEmpty()) scheme.onSurfaceVariant else scheme.onSurface,
                 modifier = Modifier
-                    .padding(end = 6.dp)
+                    .padding(end = Spacing.s)
                     .fillMaxWidth()
                     .height((replyHeightDp.takeIf { it > 0 } ?: DEFAULT_REPLY_DP).dp)
                     .verticalScroll(scroll)
+                    .semantics { liveRegion = LiveRegionMode.Polite }
             )
 
-            // Options to tap (show_choices), as Gemini-style chips
+            // Options to tap (show_choices)
             AnimatedVisibility(choices != null, enter = fadeIn() + expandVertically(), exit = fadeOut() + shrinkVertically()) {
-                Column(Modifier.padding(top = 10.dp, end = 6.dp)) {
+                Column(Modifier.padding(top = Spacing.s + 2.dp, end = Spacing.s)) {
                     choices?.let { c ->
-                        Text(c.question, color = MUTED, fontSize = 12.sp, fontWeight = FontWeight.Medium)
-                        c.options.forEach { option ->
+                        Text(safeString(c.question), style = MaterialTheme.typography.labelLarge, color = scheme.onSurfaceVariant)
+                        safeList<String>(c.options).forEach { option ->
                             Text(
-                                option, color = TEXT, fontSize = 14.sp, maxLines = 2, overflow = TextOverflow.Ellipsis,
+                                option, style = MaterialTheme.typography.bodyMedium, color = scheme.onSurface,
+                                maxLines = 2, overflow = TextOverflow.Ellipsis,
                                 modifier = Modifier
                                     .padding(top = 6.dp)
                                     .fillMaxWidth()
+                                    .heightIn(min = 48.dp)
                                     .clip(RoundedCornerShape(16.dp))
-                                    .background(SURFACE)
-                                    .border(1.dp, Color.White.copy(alpha = 0.08f), RoundedCornerShape(16.dp))
-                                    .clickable { session.pickChoice(option) }
-                                    .padding(horizontal = 14.dp, vertical = 10.dp)
+                                    .border(1.dp, scheme.outlineVariant, RoundedCornerShape(16.dp))
+                                    .clickable(role = Role.Button) { session.pickChoice(option) }
+                                    .padding(horizontal = 14.dp, vertical = 13.dp)
                             )
                         }
                     }
                 }
             }
 
-            // Bottom bar, like Gemini's prompt bar: voice level + hint, stop, mic
-            Spacer(Modifier.height(12.dp))
+            // Bottom bar: voice level + hint, stop, mic
+            Spacer(Modifier.height(Spacing.m - 4.dp))
             Row(
                 Modifier
-                    .padding(end = 6.dp)
+                    .padding(end = Spacing.s)
                     .fillMaxWidth()
                     .clip(CircleShape)
-                    .background(SURFACE)
-                    .padding(start = 14.dp, end = 5.dp, top = 5.dp, bottom = 5.dp),
+                    .background(scheme.surfaceContainerHighest)
+                    .padding(start = 14.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                VoiceBars(level, active = speaking || !muted, time = time)
-                Spacer(Modifier.width(10.dp))
+                VoiceBars(
+                    level = level, active = speaking || !muted, clock = clock,
+                    colors = listOf(scheme.primary, scheme.tertiary, scheme.secondary, scheme.primary),
+                    idleColor = scheme.outline,
+                    modifier = Modifier.clearAndSetSemantics {}
+                )
+                Spacer(Modifier.width(Spacing.s + 2.dp))
                 Text(
-                    when {
-                        speaking -> "Speaking"
-                        !muted -> "Listening…"
-                        working -> "Mic off · working"
-                        else -> "Tap mic to talk"
-                    },
-                    color = MUTED, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f)
+                    stringResource(
+                        when {
+                            speaking -> R.string.status_speaking
+                            !muted -> R.string.status_listening
+                            working -> R.string.overlay_mic_off_working
+                            else -> R.string.overlay_tap_mic
+                        }
+                    ),
+                    style = MaterialTheme.typography.bodyMedium, color = scheme.onSurfaceVariant,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f)
                 )
                 AnimatedVisibility(speaking, enter = fadeIn(), exit = fadeOut()) {
-                    Box(
-                        Modifier.padding(end = 6.dp).size(38.dp).clip(CircleShape).background(Color.White.copy(alpha = 0.08f))
-                            .clickable { session.interrupt() },
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(Icons.Default.Stop, "Stop reply", tint = TEXT, modifier = Modifier.size(18.dp))
+                    PanelIconButton(Icons.Filled.Stop, stringResource(R.string.cd_stop_reply), tint = scheme.onSurface) { session.interrupt() }
+                }
+                MicButton(muted, level, 44.dp)
+            }
+        }
+    }
+
+    /** The plan in one compact block: goal, segmented progress, current step, latest thought. */
+    @Composable
+    private fun PlanStrip(goal: String, steps: List<String>, currentStep: Int, status: String, note: String, clock: State<Float>) {
+        val scheme = MaterialTheme.colorScheme
+        val ext = NikTheme.extended
+        Column(
+            Modifier
+                .padding(end = Spacing.s)
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(16.dp))
+                .background(scheme.surfaceContainerHighest)
+                .padding(horizontal = Spacing.m - 4.dp, vertical = Spacing.s + 2.dp)
+        ) {
+            Text(goal, style = MaterialTheme.typography.labelLarge, color = scheme.onSurface, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            val total = steps.size
+            if (total > 0) {
+                val step = currentStep.coerceIn(1, total)
+                val blocked = status == "blocked"
+                val pulsing = status == "working"
+                val doneColor = scheme.primary
+                val track = scheme.outlineVariant
+                val nowColor = if (blocked) ext.warning else scheme.primary
+                Spacer(Modifier.height(Spacing.s))
+                Row(Modifier.clearAndSetSemantics {}, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    for (i in 1..total) {
+                        val done = i < step
+                        val current = i == step
+                        Box(
+                            Modifier
+                                .weight(1f)
+                                .height(4.dp)
+                                .clip(CircleShape)
+                                .drawBehind {
+                                    when {
+                                        done -> drawRect(doneColor)
+                                        current -> {
+                                            drawRect(track)
+                                            val pulse = if (pulsing) 0.5f + 0.5f * sin(clock.value * 4f) else 0.6f
+                                            drawRect(nowColor, size = Size(size.width * (0.35f + 0.4f * pulse), size.height))
+                                        }
+                                        else -> drawRect(track)
+                                    }
+                                }
+                        )
                     }
                 }
-                MicButton(muted, level, 42.dp, time)
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    stringResource(R.string.overlay_step, step, total, steps.getOrElse(step - 1) { "" }),
+                    style = MaterialTheme.typography.bodySmall, color = scheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis
+                )
+            }
+            // Always one line, so a new thought doesn't change the card's height
+            Spacer(Modifier.height(6.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Outlined.Lightbulb, contentDescription = null, tint = scheme.tertiary, modifier = Modifier.size(14.dp))
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    note.ifBlank { stringResource(R.string.overlay_working_on_it) },
+                    style = MaterialTheme.typography.bodySmall, fontStyle = FontStyle.Italic, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                    color = if (status == "blocked") ext.warning else scheme.onSurfaceVariant
+                )
             }
         }
     }
 
     /**
-     * Mini: just the icons. The sparkle shows what's going on (spins while working, swells with the
-     * voice); tap it to open the card again, drag it to move. The mic works as in the card.
+     * Mini: the orb and the mic. The orb shows what's going on; tap it to open the card again, drag
+     * it to move. TalkBack: double-tap opens it, and the actions menu moves it.
      */
     @Composable
-    private fun Mini(muted: Boolean, working: Boolean, level: Float, time: State<Float>, onExpand: () -> Unit) {
+    private fun Mini(orbMode: OrbMode, muted: Boolean, level: State<Float>, clock: State<Float>, onExpand: () -> Unit) {
+        val name by session.assistantName.collectAsState()
+        val expandLabel = stringResource(R.string.overlay_expand, name)
+        val openAction = stringResource(R.string.action_expand)
+        val actions = moveActions()
         Row(Modifier.padding(4.dp), verticalAlignment = Alignment.CenterVertically) {
             Box(
-                Modifier.size(42.dp).clip(CircleShape).dragsWindow(onTap = onExpand),
+                Modifier
+                    .size(48.dp)
+                    .clip(CircleShape)
+                    .dragsWindow(onTap = onExpand)
+                    .semantics {
+                        contentDescription = expandLabel
+                        role = Role.Button
+                        onClick(label = openAction) { onExpand(); true }
+                        customActions = actions
+                    },
                 contentAlignment = Alignment.Center
             ) {
-                Sparkle(24.dp, working, level, time)
+                VoiceOrb(level, orbMode, Modifier.size(44.dp), clock)
             }
             Spacer(Modifier.width(2.dp))
-            MicButton(muted, level, 38.dp, time)
+            MicButton(muted, level, 40.dp)
         }
     }
 
-    /** Gemini's four-point sparkle in its gradient: spins while working, swells with the voice. */
+    /** Status line with a light sweeping across it while something is in progress (drawn, not recomposed). */
     @Composable
-    private fun Sparkle(size: Dp, spinning: Boolean, level: Float, time: State<Float>, modifier: Modifier = Modifier) {
-        Box(
-            modifier.size(size).drawBehind {
-                val t = time.value
-                val angle = if (spinning) t * 180f else 12f * sin(t * 1.5f)
-                val s = 0.86f + 0.14f * sin(t * 2.2f) + 0.25f * level
-                rotate(angle) { scale(s) { drawSparkle(this) } }
-            }
-        )
-    }
-
-    private fun drawSparkle(scope: DrawScope) = with(scope) {
-        val w = size.width
-        val h = size.height
-        val cx = w / 2
-        val cy = h / 2
-        val path = Path().apply {
-            moveTo(cx, 0f)
-            quadraticBezierTo(cx * 1.08f, cy * 0.92f, w, cy)
-            quadraticBezierTo(cx * 1.08f, cy * 1.08f, cx, h)
-            quadraticBezierTo(cx * 0.92f, cy * 1.08f, 0f, cy)
-            quadraticBezierTo(cx * 0.92f, cy * 0.92f, cx, 0f)
-            close()
-        }
-        drawPath(path, Brush.linearGradient(SPARKLE, start = Offset(0f, h), end = Offset(w, 0f)))
-    }
-
-    /** Text with a light sweeping across it while something is in progress. */
-    @Composable
-    private fun ShimmerText(text: String, active: Boolean, time: State<Float>) {
-        if (!active) {
-            Text(text, color = MUTED, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            return
-        }
-        val x = (time.value * 0.8f) % 1f
+    private fun StatusText(text: String, active: Boolean, clock: State<Float>) {
+        val scheme = MaterialTheme.colorScheme
+        val highlight = scheme.primary
         Text(
-            text, maxLines = 1, overflow = TextOverflow.Ellipsis,
-            style = TextStyle(
-                fontSize = 12.sp,
-                brush = Brush.linearGradient(
-                    listOf(MUTED, Color.White, Color(0xFFB9A4F0), MUTED),
-                    start = Offset(900f * x - 450f, 0f), end = Offset(900f * x + 150f, 0f)
-                )
+            text, style = MaterialTheme.typography.labelMedium, color = scheme.onSurfaceVariant,
+            maxLines = 1, overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite }.then(
+                if (!active) Modifier
+                else Modifier
+                    .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
+                    .drawWithContent {
+                        drawContent()
+                        val x = (clock.value * 0.8f) % 1f
+                        val w = size.width
+                        val center = -0.3f * w + x * 1.6f * w
+                        drawRect(
+                            Brush.horizontalGradient(
+                                listOf(Color.Transparent, highlight, Color.Transparent),
+                                startX = center - w * 0.25f, endX = center + w * 0.25f
+                            ),
+                            blendMode = BlendMode.SrcAtop
+                        )
+                    }
             )
         )
     }
 
-    /** Four rounded bars that dance with the voice (Gemini Live), flat dots when quiet. */
+    /** Mic on: primary, with a ring that follows the user's voice. Mic off: quiet. */
     @Composable
-    private fun VoiceBars(level: Float, active: Boolean, time: State<Float>) {
-        val amp by animateFloatAsState(if (active) 0.25f + 0.75f * level else 0f, tween(160), label = "bars")
-        Box(
-            Modifier.size(width = 26.dp, height = 22.dp).drawBehind {
-                val bar = 3.5.dp.toPx()
-                val gap = (size.width - bar * 4) / 3
-                val colors = listOf(BLUE, PURPLE, PINK, CYAN)
-                for (i in 0 until 4) {
-                    val wave = 0.5f + 0.5f * sin(time.value * 9f + i * 1.3f)
-                    val h = bar + (size.height - bar) * amp * (0.35f + 0.65f * wave)
-                    drawRoundRect(
-                        if (active) colors[i] else MUTED,
-                        topLeft = Offset(i * (bar + gap), (size.height - h) / 2),
-                        size = Size(bar, h),
-                        cornerRadius = androidx.compose.ui.geometry.CornerRadius(bar / 2)
-                    )
-                }
-            }
-        )
-    }
-
-    /** Mic on: Gemini gradient with a ring that follows the user's voice. Mic off: calm and grey. */
-    @Composable
-    private fun MicButton(muted: Boolean, level: Float, size: Dp, time: State<Float>) {
-        val ring by animateFloatAsState(if (muted) 1f else 1.12f + 0.4f * level, tween(140), label = "ring")
+    private fun MicButton(muted: Boolean, level: State<Float>, size: Dp) {
+        val scheme = MaterialTheme.colorScheme
+        val ring = scheme.primary
         Box(Modifier.size(size + 8.dp), contentAlignment = Alignment.Center) {
             if (!muted) {
                 Box(
-                    Modifier.size(size).drawBehind {
-                        val r = size.toPx() / 2 * ring
-                        rotate(time.value * 120f) {
-                            drawCircle(Brush.sweepGradient(GEMINI), radius = r, alpha = 0.35f)
-                        }
+                    Modifier.size(size + 8.dp).clearAndSetSemantics {}.drawBehind {
+                        drawCircle(ring.copy(alpha = 0.18f + 0.3f * level.value), radius = this.size.minDimension / 2 * (0.86f + 0.14f * level.value))
                     }
                 )
             }
@@ -869,17 +991,14 @@ class AssistantOverlay(private val session: VoiceSession) {
                 Modifier
                     .size(size)
                     .clip(CircleShape)
-                    .background(
-                        if (muted) Brush.linearGradient(listOf(Color(0xFF45474A), Color(0xFF3A3B3E)))
-                        else Brush.linearGradient(listOf(BLUE, PURPLE, PINK))
-                    )
-                    .clickable { session.toggleMicMute() },
+                    .background(if (muted) scheme.surfaceContainerHigh else scheme.primary)
+                    .clickable(role = Role.Button) { session.toggleMicMute() },
                 contentAlignment = Alignment.Center
             ) {
                 Icon(
-                    if (muted) Icons.Default.MicOff else Icons.Default.Mic,
-                    contentDescription = if (muted) "Turn mic on" else "Turn mic off",
-                    tint = Color.White,
+                    if (muted) Icons.Filled.MicOff else Icons.Filled.Mic,
+                    contentDescription = stringResource(if (muted) R.string.cd_unmute else R.string.cd_mute),
+                    tint = if (muted) scheme.onSurfaceVariant else scheme.onPrimary,
                     modifier = Modifier.size(size * 0.48f)
                 )
             }
@@ -887,9 +1006,18 @@ class AssistantOverlay(private val session: VoiceSession) {
     }
 
     @Composable
-    private fun IconButton(icon: ImageVector, description: String, size: Dp = 20.dp, onClick: () -> Unit) {
-        Box(Modifier.size(36.dp).clip(CircleShape).clickable(onClick = onClick), contentAlignment = Alignment.Center) {
-            Icon(icon, contentDescription = description, tint = MUTED, modifier = Modifier.size(size))
+    private fun PanelIconButton(
+        icon: ImageVector,
+        description: String,
+        iconSize: Dp = 22.dp,
+        tint: Color = MaterialTheme.colorScheme.onSurfaceVariant,
+        onClick: () -> Unit
+    ) {
+        Box(
+            Modifier.size(48.dp).clip(CircleShape).clickable(role = Role.Button, onClick = onClick),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(icon, contentDescription = description, tint = tint, modifier = Modifier.size(iconSize))
         }
     }
 
@@ -913,7 +1041,7 @@ class AssistantOverlay(private val session: VoiceSession) {
         }
 
         fun stop() {
-            registry.currentState = Lifecycle.State.DESTROYED
+            if (registry.currentState != Lifecycle.State.INITIALIZED) registry.currentState = Lifecycle.State.DESTROYED
         }
     }
 }
