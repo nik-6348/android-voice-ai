@@ -398,6 +398,27 @@ class VoiceSession private constructor(val context: Context) {
             // Recording stops when the goal is clearly over (done or blocked-as-failed), not at the
             // AI's first spoken line: that used to end every recording before a single step ran
             if (plan != null && (plan.status == "done" || plan.status == "failed")) onRecordingMaybeDone(plan.status)
+        },
+        onCallAndTalk = { number, goal, maxMinutes ->
+            val maxDurationMs = (maxMinutes ?: 5) * 60_000L
+            endRequested = true
+            scope.launch {
+                delay(600)
+                endConversation("Placing call to $number")
+                callAgentSession.start(
+                    number = number,
+                    goal = goal,
+                    discloseAi = true,
+                    maxDurationMs = maxDurationMs,
+                    isIncoming = false
+                )
+            }
+            mapOf(
+                "success" to true,
+                "calling" to number,
+                "goal" to goal,
+                "next" to "I am placing the call and taking over to handle the conversation. Say a short line to the user and call end_conversation."
+            )
         }
     )
 
@@ -768,7 +789,7 @@ class VoiceSession private constructor(val context: Context) {
     )
 
     // Tools after which the model gets a fresh look at the screen
-    private val visualTools = setOf("tap", "type_text", "scroll", "swipe", "navigate", "launch_intent", "open_app", "open_website", "wait", "read_screen", "unlock_phone", "make_call")
+    private val visualTools = setOf("tap", "type_text", "scroll", "swipe", "navigate", "launch_intent", "open_app", "open_website", "wait", "read_screen", "unlock_phone", "make_call", "call_and_talk")
 
     /**
      * Right before a tool's result goes back: an image of the app on screen, so the model sees what
