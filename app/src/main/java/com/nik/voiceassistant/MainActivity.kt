@@ -39,13 +39,15 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // Not on a recreation (rotation, dark mode, language change): that isn't the user opening the app
-        autoStart = savedInstanceState == null && com.nik.voiceassistant.security.AgentPolicy.current.autoStartOnOpen
-        if (savedInstanceState == null) {
-            checkAndRequestPermissions()
-            // Only background "Hi Nik" listening needs this
-            if (VoiceSession.get(this).isWakeWordEnabled.value) askToSkipBatteryOptimization()
-        }
+        // Not while a conversation is already running (rotation, dark mode, language change
+        // recreate this Activity mid-call): only start one when none is active. Android can also
+        // recreate the Activity with a saved state well after the user reopens it from the launcher
+        // (the system trimmed it in the background), so savedInstanceState alone can't tell "rotated"
+        // from "genuinely reopened" — isActive can.
+        autoStart = !VoiceSession.get(this).isActive && com.nik.voiceassistant.security.AgentPolicy.current.autoStartOnOpen
+        checkAndRequestPermissions()
+        // Only background "Hi Nik" listening needs this
+        if (VoiceSession.get(this).isWakeWordEnabled.value) askToSkipBatteryOptimization()
 
         setContent {
             NikVoiceTheme {
