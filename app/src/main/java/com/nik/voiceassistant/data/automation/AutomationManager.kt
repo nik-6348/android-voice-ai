@@ -35,104 +35,29 @@ object AutomationManager {
     private const val FILE_NAME = "automations.json"
     private val gson = Gson()
 
-    private val defaultAutomations = listOf(
-        AutomationTask(
-            id = "default_alarm_morning",
-            title = "Morning 5:30 AM Alarm",
-            description = "Directly sets a recurring morning alarm at 5:30 AM.",
-            triggerPhrase = "Subah ka alarm",
-            iconName = "alarm",
-            isFavorite = true,
-            steps = listOf(
-                AutomationStep(
-                    toolName = "launch_intent",
-                    args = mapOf(
-                        "action" to "android.intent.action.SET_ALARM",
-                        // launch_intent takes extras as JSON text (a map would arrive as "{k=v}" after a save)
-                        "extras" to """{"android.intent.extra.alarm.HOUR":5,"android.intent.extra.alarm.MINUTES":30,""" +
-                            """"android.intent.extra.alarm.MESSAGE":"Subah ka alarm","android.intent.extra.alarm.SKIP_UI":true}"""
-                    ),
-                    description = "Set 5:30 AM alarm with auto-confirm",
-                    delayMs = 1000L
-                )
-            )
-        ),
-        AutomationTask(
-            id = "default_youtube_lofi",
-            title = "Play Relaxing Music",
-            description = "Opens YouTube and searches for peaceful Lofi music.",
-            triggerPhrase = "Play music",
-            iconName = "music",
-            isFavorite = true,
-            steps = listOf(
-                AutomationStep(
-                    toolName = "open_app",
-                    args = mapOf("app_name" to "YouTube"),
-                    description = "Launch YouTube",
-                    delayMs = 1500L
-                ),
-                AutomationStep(
-                    toolName = "tap",
-                    args = mapOf("text" to "Search"),
-                    description = "Tap search icon",
-                    delayMs = 800L
-                ),
-                AutomationStep(
-                    toolName = "type_text",
-                    args = mapOf("text" to "Lofi hip hop radio", "submit" to true),
-                    description = "Type and search Lofi stream",
-                    delayMs = 1200L
-                )
-            )
-        ),
-        AutomationTask(
-            id = "default_device_check",
-            title = "Wi-Fi Settings",
-            description = "Opens the Wi-Fi settings page.",
-            triggerPhrase = "Wifi settings",
-            iconName = "bolt",
-            isFavorite = false,
-            steps = listOf(
-                AutomationStep(
-                    toolName = "launch_intent",
-                    args = mapOf("action" to "android.settings.WIFI_SETTINGS"),
-                    description = "Open Wi-Fi settings",
-                    delayMs = 500L
-                )
-            )
-        )
-    )
-
-    /** Built-in automations saved by older versions that can't run (a non-existent tool, extras as a map). */
-    private fun repairDefaults(list: List<AutomationTask>): List<AutomationTask> = list.map { task ->
-        val broken = task.steps.any { it.toolName == "device_status" || (it.toolName == "launch_intent" && it.args["extras"] != null && it.args["extras"] !is String) }
-        if (!broken) task
-        else defaultAutomations.firstOrNull { it.id == task.id }?.copy(lastRunAt = task.lastRunAt, runCount = task.runCount, isFavorite = task.isFavorite) ?: task
-    }
+    // The built-in examples older versions shipped (and saved to the file): removed on load
+    private const val DEFAULT_ID_PREFIX = "default_"
 
     private fun getFile(context: Context): File = File(context.filesDir, FILE_NAME)
 
+    /** The saved automations (empty if none, or if the file can't be read). */
     @Synchronized
-    fun getAllTasks(context: Context): List<AutomationTask> {
+    fun getAllTasks(context: Context): List<AutomationTask> = load(context).orEmpty()
+
+    /** The saved automations, or null if the file exists but can't be read (then nothing may overwrite it). */
+    @Synchronized
+    private fun load(context: Context): List<AutomationTask>? {
         val file = getFile(context)
-        if (!file.exists()) {
-            saveAll(context, defaultAutomations)
-            return defaultAutomations
-        }
+        if (!file.exists()) return emptyList()
         return try {
             // An array type, not a TypeToken: its generic type survives R8 in release builds
             val loaded: List<AutomationTask> = gson.fromJson(file.readText(), Array<AutomationTask>::class.java)?.toList() ?: emptyList()
-            val list = repairDefaults(loaded)
-            if (list != loaded) saveAll(context, list)
-            if (list.isEmpty()) {
-                saveAll(context, defaultAutomations)
-                defaultAutomations
-            } else {
-                list
-            }
+            val list = loaded.filterNot { it.id.startsWith(DEFAULT_ID_PREFIX) }
+            if (list.size != loaded.size) saveAll(context, list)
+            list
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to load automations: ${e.message}")
-            defaultAutomations
+            Log.e(TAG, "Failed to load automations: ${e.javaClass.simpleName}")
+            null
         }
     }
 
@@ -153,7 +78,7 @@ object AutomationManager {
 
     @Synchronized
     fun saveTask(context: Context, task: AutomationTask) {
-        val current = getAllTasks(context).toMutableList()
+        val current = load(context)?.toMutableList() ?: return
         val index = current.indexOfFirst { it.id == task.id }
         if (index >= 0) {
             current[index] = task
@@ -165,13 +90,13 @@ object AutomationManager {
 
     @Synchronized
     fun deleteTask(context: Context, id: String) {
-        val current = getAllTasks(context).filterNot { it.id == id }
+        val current = load(context)?.filterNot { it.id == id } ?: return
         saveAll(context, current)
     }
 
     @Synchronized
     fun toggleFavorite(context: Context, id: String) {
-        val current = getAllTasks(context).toMutableList()
+        val current = load(context)?.toMutableList() ?: return
         val index = current.indexOfFirst { it.id == id }
         if (index >= 0) {
             val item = current[index]

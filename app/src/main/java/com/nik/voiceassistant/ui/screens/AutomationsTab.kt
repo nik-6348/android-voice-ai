@@ -373,7 +373,8 @@ fun CreateAutomationDialog(
                                     toolName = "launch_intent",
                                     args = mapOf(
                                         "action" to "android.intent.action.SET_ALARM",
-                                        "extras" to mapOf("android.intent.extra.alarm.HOUR" to 6, "android.intent.extra.alarm.MINUTES" to 0, "android.intent.extra.alarm.SKIP_UI" to true)
+                                        // launch_intent takes extras as JSON text
+                                        "extras" to """{"android.intent.extra.alarm.HOUR":6,"android.intent.extra.alarm.MINUTES":0,"android.intent.extra.alarm.SKIP_UI":true}"""
                                     ),
                                     description = "Set 6:00 AM Alarm"
                                 )
