@@ -262,16 +262,21 @@ fun AutomationCard(
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Row(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(Spacing.xs), verticalAlignment = Alignment.CenterVertically) {
                     if (macro.action is Action.Replay) Badge(pluralSteps(macro.stepCount))
+                    if (macro.action is Action.HandleCall) Badge("📞 AI Call", container = scheme.secondaryContainer, content = scheme.onSecondaryContainer)
                     Badge(macro.triggerSummary(), container = scheme.tertiaryContainer, content = scheme.onTertiaryContainer, modifier = Modifier.weight(1f, fill = false))
                 }
                 IconButton(onClick = onDelete) {
                     Icon(Icons.Outlined.DeleteOutline, contentDescription = stringResource(R.string.cd_delete_automation, macro.title))
                 }
-                Button(onClick = onRun, enabled = !anyRunning && macro.action is Action.Replay) {
-                    if (isRunning) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-                    else Icon(Icons.Filled.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
-                    Spacer(Modifier.width(Spacing.xs))
-                    Text(stringResource(R.string.action_run))
+                if (macro.action is Action.Replay) {
+                    Button(onClick = onRun, enabled = !anyRunning) {
+                        if (isRunning) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                        else Icon(Icons.Filled.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(Spacing.xs))
+                        Text(stringResource(R.string.action_run))
+                    }
+                } else if (macro.action is Action.HandleCall) {
+                    Badge("Auto-answers", container = scheme.surfaceContainerHigh, content = scheme.onSurfaceVariant)
                 }
             }
         }
@@ -293,8 +298,11 @@ fun CreateAutomationDialog(
     var aiInstruction by rememberSaveable { mutableStateOf("") }
     var title by rememberSaveable { mutableStateOf("") }
     var trigger by rememberSaveable { mutableStateOf("") }
-    var actionType by rememberSaveable { mutableStateOf("alarm") } // alarm, youtube, app
+    var actionType by rememberSaveable { mutableStateOf("alarm") } // alarm, youtube, app, call
     var customAppName by rememberSaveable { mutableStateOf("") }
+    var callerFilter by rememberSaveable { mutableStateOf("") }
+    var callGoal by rememberSaveable { mutableStateOf("") }
+    var callDiscloseAi by rememberSaveable { mutableStateOf(true) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -321,23 +329,12 @@ fun CreateAutomationDialog(
                         modifier = Modifier.fillMaxWidth()
                     )
                 } else {
-                    OutlinedTextField(
-                        value = title, onValueChange = { title = it },
-                        label = { Text(stringResource(R.string.automation_task_title)) },
-                        placeholder = { Text(stringResource(R.string.automation_task_title_hint)) },
-                        singleLine = true, modifier = Modifier.fillMaxWidth()
-                    )
-                    OutlinedTextField(
-                        value = trigger, onValueChange = { trigger = it },
-                        label = { Text(stringResource(R.string.automation_trigger)) },
-                        placeholder = { Text("Raat ka alarm") },
-                        singleLine = true, modifier = Modifier.fillMaxWidth()
-                    )
                     Text(stringResource(R.string.automation_action), style = MaterialTheme.typography.labelLarge)
                     val types = listOf(
                         "alarm" to stringResource(R.string.automation_action_alarm),
                         "youtube" to stringResource(R.string.automation_action_youtube),
-                        "app" to stringResource(R.string.automation_action_app)
+                        "app" to stringResource(R.string.automation_action_app),
+                        "call" to stringResource(R.string.automation_action_call)
                     )
                     SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
                         types.forEachIndexed { i, (type, label) ->
@@ -346,13 +343,50 @@ fun CreateAutomationDialog(
                             }
                         }
                     }
-                    if (actionType == "app") {
+                    if (actionType == "call") {
                         OutlinedTextField(
-                            value = customAppName, onValueChange = { customAppName = it },
-                            label = { Text(stringResource(R.string.automation_app_name)) },
-                            placeholder = { Text("WhatsApp") },
+                            value = title, onValueChange = { title = it },
+                            label = { Text(stringResource(R.string.automation_task_title)) },
+                            placeholder = { Text("e.g. Screen unknown calls") },
                             singleLine = true, modifier = Modifier.fillMaxWidth()
                         )
+                        OutlinedTextField(
+                            value = callerFilter, onValueChange = { callerFilter = it },
+                            label = { Text(stringResource(R.string.automation_call_caller)) },
+                            placeholder = { Text(stringResource(R.string.automation_call_caller_hint)) },
+                            singleLine = true, modifier = Modifier.fillMaxWidth()
+                        )
+                        OutlinedTextField(
+                            value = callGoal, onValueChange = { callGoal = it },
+                            label = { Text(stringResource(R.string.automation_call_goal)) },
+                            placeholder = { Text(stringResource(R.string.automation_call_goal_hint)) },
+                            minLines = 2, maxLines = 4, modifier = Modifier.fillMaxWidth()
+                        )
+                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                            Text(stringResource(R.string.automation_call_disclose), style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+                            Switch(checked = callDiscloseAi, onCheckedChange = { callDiscloseAi = it })
+                        }
+                    } else {
+                        OutlinedTextField(
+                            value = title, onValueChange = { title = it },
+                            label = { Text(stringResource(R.string.automation_task_title)) },
+                            placeholder = { Text(stringResource(R.string.automation_task_title_hint)) },
+                            singleLine = true, modifier = Modifier.fillMaxWidth()
+                        )
+                        OutlinedTextField(
+                            value = trigger, onValueChange = { trigger = it },
+                            label = { Text(stringResource(R.string.automation_trigger)) },
+                            placeholder = { Text("Raat ka alarm") },
+                            singleLine = true, modifier = Modifier.fillMaxWidth()
+                        )
+                        if (actionType == "app") {
+                            OutlinedTextField(
+                                value = customAppName, onValueChange = { customAppName = it },
+                                label = { Text(stringResource(R.string.automation_app_name)) },
+                                placeholder = { Text("WhatsApp") },
+                                singleLine = true, modifier = Modifier.fillMaxWidth()
+                            )
+                        }
                     }
                 }
             }
@@ -363,35 +397,53 @@ fun CreateAutomationDialog(
                     Text(stringResource(R.string.automation_do_and_record))
                 }
             } else {
+                val canSave = if (actionType == "call") callGoal.isNotBlank() else title.isNotBlank()
                 Button(
-                    enabled = title.isNotBlank(),
+                    enabled = canSave,
                     onClick = {
-                        val app = customAppName.trim().ifBlank { "Chrome" }
-                        val steps = when (actionType) {
-                            "alarm" -> listOf(
-                                RecordedStep(
-                                    toolName = "launch_intent",
-                                    args = mapOf(
-                                        "action" to "android.intent.action.SET_ALARM",
-                                        // launch_intent takes extras as JSON text
-                                        "extras" to """{"android.intent.extra.alarm.HOUR":6,"android.intent.extra.alarm.MINUTES":0,"android.intent.extra.alarm.SKIP_UI":true}"""
-                                    ),
-                                    description = "Set 6:00 AM Alarm"
+                        if (actionType == "call") {
+                            val filter = callerFilter.trim().takeIf { it.isNotBlank() }
+                            val goal = callGoal.trim()
+                            val finalTitle = title.trim().ifBlank {
+                                if (filter == null) "Screen all incoming calls" else "Call agent for $filter"
+                            }
+                            onSave(
+                                Macro(
+                                    title = finalTitle,
+                                    description = "Answers matching calls and conducts AI conversation",
+                                    triggers = listOf(Trigger.IncomingCall(contactFilter = filter, contactLabel = filter)),
+                                    instruction = goal,
+                                    action = Action.HandleCall(goal = goal, discloseAi = callDiscloseAi)
                                 )
                             )
-                            "youtube" -> listOf(RecordedStep(toolName = "open_app", args = mapOf("app_name" to "YouTube"), description = "Open YouTube"))
-                            else -> listOf(RecordedStep(toolName = "open_app", args = mapOf("app_name" to app), description = "Open $app"))
-                        }
-                        val trig = trigger.trim().takeIf { it.isNotBlank() }
-                        onSave(
-                            Macro(
-                                title = title.trim(),
-                                description = "Manual automation shortcut",
-                                triggers = listOf(trig?.let { Trigger.Phrase(it) } ?: Trigger.Manual),
-                                instruction = title.trim(),
-                                action = Action.Replay(steps)
+                        } else {
+                            val app = customAppName.trim().ifBlank { "Chrome" }
+                            val steps = when (actionType) {
+                                "alarm" -> listOf(
+                                    RecordedStep(
+                                        toolName = "launch_intent",
+                                        args = mapOf(
+                                            "action" to "android.intent.action.SET_ALARM",
+                                            // launch_intent takes extras as JSON text
+                                            "extras" to """{"android.intent.extra.alarm.HOUR":6,"android.intent.extra.alarm.MINUTES":0,"android.intent.extra.alarm.SKIP_UI":true}"""
+                                        ),
+                                        description = "Set 6:00 AM Alarm"
+                                    )
+                                )
+                                "youtube" -> listOf(RecordedStep(toolName = "open_app", args = mapOf("app_name" to "YouTube"), description = "Open YouTube"))
+                                else -> listOf(RecordedStep(toolName = "open_app", args = mapOf("app_name" to app), description = "Open $app"))
+                            }
+                            val trig = trigger.trim().takeIf { it.isNotBlank() }
+                            onSave(
+                                Macro(
+                                    title = title.trim(),
+                                    description = "Manual automation shortcut",
+                                    triggers = listOf(trig?.let { Trigger.Phrase(it) } ?: Trigger.Manual),
+                                    instruction = title.trim(),
+                                    action = Action.Replay(steps)
+                                )
                             )
-                        )
+                        }
                     }
                 ) { Text(stringResource(R.string.action_save)) }
             }

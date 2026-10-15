@@ -132,7 +132,13 @@
     <string name="automation_action_alarm">Alarm</string>
     <string name="automation_action_youtube">YouTube</string>
     <string name="automation_action_app">Open app</string>
+    <string name="automation_action_call">AI Call</string>
     <string name="automation_app_name">App name</string>
+    <string name="automation_call_caller">Caller filter (blank = any caller)</string>
+    <string name="automation_call_caller_hint">e.g. Rahul, +91..., unknown, or blank</string>
+    <string name="automation_call_goal">What should AI do on the call?</string>
+    <string name="automation_call_goal_hint">e.g. Pucho kis baare me call kiya aur bolo main busy hoon</string>
+    <string name="automation_call_disclose">Say AI assistant at start of call</string>
     <string name="automation_do_and_record">Do it and record</string>
     <string name="cd_favorite">Add %1$s to favorites</string>
     <string name="cd_unfavorite">Remove %1$s from favorites</string>
