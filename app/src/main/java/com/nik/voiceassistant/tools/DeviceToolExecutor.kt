@@ -46,7 +46,7 @@ class DeviceToolExecutor(
     private val research: ((String) -> String?)? = null,
     // update_plan: the model's current plan, shown as live progress
     private val onPlan: (TaskPlan?) -> Unit = {}
-) {
+) : ToolExecutor {
 
     companion object {
         private const val TAG = "DeviceToolExecutor"
@@ -296,7 +296,7 @@ class DeviceToolExecutor(
      * Runs one tool call. trusted: the user started it themself (an automation they ran), which
      * counts as asking for calls / sends / deletes; payments and wipes still need their yes.
      */
-    fun execute(toolName: String, arguments: Map<String, Any?>?, trusted: Boolean = false): Map<String, Any?> = actionLock.withLock {
+    override fun execute(toolName: String, arguments: Map<String, Any?>?, trusted: Boolean): Map<String, Any?> = actionLock.withLock {
         // Arguments can hold message text and numbers: only the tool name is logged
         Log.i(TAG, "Executing tool: $toolName")
         val result = run(toolName, arguments.orEmpty(), trusted)

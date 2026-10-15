@@ -761,6 +761,12 @@ class VoiceSession private constructor(val context: Context) {
     @Volatile var webSocketClient: LiveClient = if (_connectionMode.value == MODE_DIRECT) directClient else relayClient
         private set
 
+    val callAgentSession: com.nik.voiceassistant.call.CallAgentSession = com.nik.voiceassistant.call.CallAgentSession(
+        context = context,
+        assistantName = { _assistantName.value },
+        onNote = { note -> addTranscript("system", note) }
+    )
+
     // Tools after which the model gets a fresh look at the screen
     private val visualTools = setOf("tap", "type_text", "scroll", "swipe", "navigate", "launch_intent", "open_app", "open_website", "wait", "read_screen", "unlock_phone", "make_call")
 
@@ -911,6 +917,12 @@ class VoiceSession private constructor(val context: Context) {
     fun start(preroll: ByteArray? = null) {
         scope.launch {
             if (_isRecording.value) return@launch
+            if (callAgentSession.isActive) {
+                _connectionStatus.value = ConnectionStatus.DISCONNECTED
+                addTranscript("system", "📞 A phone call conversation is currently active.")
+                onConversationEnded?.invoke()
+                return@launch
+            }
             if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
                 _connectionStatus.value = ConnectionStatus.ERROR
                 addTranscript("system", "Microphone permission is off: open the app and allow the microphone.")

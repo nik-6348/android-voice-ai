@@ -40,21 +40,23 @@ class CallAudio(
 
     /**
      * Idempotent. Returns false if audio focus was refused, e.g. a phone call is on; the phone's
-     * call audio is left alone then.
+     * call audio is left alone then. allowInCall allows entering for call agent sessions where a phone call is expected.
      */
     @Synchronized
-    fun enter(): Boolean {
+    fun enter(allowInCall: Boolean = false): Boolean {
         val am = audio ?: return false
         if (active) return true
         try {
-            // A phone call owns the audio mode and routing: don't take them over
-            if (am.mode == AudioManager.MODE_IN_CALL || am.mode == AudioManager.MODE_RINGTONE) {
+            // A phone call owns the audio mode and routing: don't take them over unless explicitly intended for CallAgentSession
+            if (!allowInCall && (am.mode == AudioManager.MODE_IN_CALL || am.mode == AudioManager.MODE_RINGTONE)) {
                 Log.w(TAG, "Phone call in progress: not switching to call audio")
                 return false
             }
             active = true
             savedMode = am.mode
-            am.mode = AudioManager.MODE_IN_COMMUNICATION
+            if (!allowInCall) {
+                am.mode = AudioManager.MODE_IN_COMMUNICATION
+            }
             routeToSpeakerUnlessHeadset(am)
             // Do NOT force max volume: respect the user's chosen volume level on their device!
             // Pause / duck other audio while we listen and talk (released when the conversation ends)

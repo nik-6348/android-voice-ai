@@ -16,7 +16,7 @@ import java.util.concurrent.atomic.AtomicInteger
  * a trace of each call, and an optional step just before the result goes back (a screen image).
  */
 class ToolCallRunner(
-    private val executor: DeviceToolExecutor,
+    private val executor: ToolExecutor,
     private val listener: LiveClient.Callback,
     // (tool name, result) -> called on the tool thread right before the result is sent
     private val beforeRespond: (String, Map<String, Any?>) -> Unit = { _, _ -> }
