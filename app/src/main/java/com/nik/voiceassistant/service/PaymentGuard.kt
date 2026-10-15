@@ -41,6 +41,15 @@ object PaymentGuard {
     private const val NOTIFICATION_ID = 4711
     private const val ACTION_RESUME = "com.nik.voiceassistant.action.RESUME_SCREEN_CONTROL"
     private const val POLL_MS = 1500L
+    // Apps that open upi:// links but don't block screen-control services: pausing in them would
+    // switch the agent off in the very apps it works in most (WhatsApp messages, caller ID)
+    private val NOT_PAYMENT_APPS = setOf("com.whatsapp", "com.whatsapp.w4b", "com.truecaller")
+    // Screens a payment flow passes through on its way (UPI PIN pad, permission and chooser dialogs,
+    // Google sign-in): being on one of them isn't "left the payment app"
+    private val PAYMENT_FLOW = setOf(
+        "android", "com.android.systemui", "com.google.android.permissioncontroller", "com.android.permissioncontroller",
+        "com.google.android.gms", "com.android.intentresolver", "org.npci.upiapp"
+    )
 
     /** The payment app screen control was paused for, or null. */
     @Volatile var pausedFor: String? = null
@@ -76,7 +85,7 @@ object PaymentGuard {
         val handlers = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             pm.queryIntentActivities(upi, PackageManager.ResolveInfoFlags.of(PackageManager.MATCH_ALL.toLong()))
         } else pm.queryIntentActivities(upi, PackageManager.MATCH_ALL)
-        cachedApps = handlers.map { it.activityInfo.packageName }.toSet() - context.packageName
+        cachedApps = handlers.map { it.activityInfo.packageName }.toSet() - context.packageName - NOT_PAYMENT_APPS
         cachedAt = System.currentTimeMillis()
         return cachedApps + extraApps(context)
     }
@@ -142,16 +151,22 @@ object PaymentGuard {
         if (foregroundApp(context)?.let { it !in protectedApps(context) } != false) resume(context) else watch(context)
     }
 
-    /** Checks the app in front every POLL_MS; once it is no longer a payment app, switches back on. */
+    /**
+     * Checks the app in front every POLL_MS; once another app (not a payment app, not a screen of the
+     * payment flow) has been in front for two checks in a row, switches back on. Turning it on in the
+     * middle of a payment would make the payment app abort it.
+     */
     private fun watch(context: Context) {
         if (!canWatch(context)) return
         main.removeCallbacksAndMessages(null)
         main.postDelayed(object : Runnable {
+            var awaySince = 0
             override fun run() {
                 val paused = pausedFor ?: return
                 val front = foregroundApp(context)
-                if (front != null && front != paused && front !in protectedApps(context)) resume(context)
-                else main.postDelayed(this, POLL_MS)
+                val away = front != null && front != paused && front !in PAYMENT_FLOW && front !in protectedApps(context)
+                awaySince = if (away) awaySince + 1 else 0
+                if (awaySince >= 2) resume(context) else main.postDelayed(this, POLL_MS)
             }
         }, POLL_MS)
     }

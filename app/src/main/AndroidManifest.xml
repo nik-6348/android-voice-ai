@@ -18,17 +18,20 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
-    <!-- Hardware Control Permissions (Flashlight, Bluetooth) -->
-    <uses-permission android:name="android.permission.CAMERA" />
+    <!-- Flashlight: CameraManager.setTorchMode needs no camera permission -->
     <uses-feature android:name="android.hardware.camera" android:required="false" />
     <uses-feature android:name="android.hardware.camera.flash" android:required="false" />
 
-    <uses-permission android:name="android.permission.BLUETOOTH" />
-    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" />
+    <!-- Bluetooth on/off: the old permissions only exist up to Android 11 -->
+    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
 
     <!-- Always listening for "Hi Nik": ask to be left out of battery optimization (Moto kills it otherwise) -->
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+
+    <!-- Calls and SIM numbers are optional: the app also runs on tablets without telephony -->
+    <uses-feature android:name="android.hardware.telephony" android:required="false" />
 
     <!-- "Call X": place the call directly (make_call tool), not just open the dialer -->
     <uses-permission android:name="android.permission.CALL_PHONE" />
@@ -49,22 +52,51 @@
     <!-- Auto-start wake word listening after reboot / package update -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
-    <!-- App Launcher Permission -->
-    <uses-permission
-        android:name="android.permission.QUERY_ALL_PACKAGES"
-        tools:ignore="QueryAllPackagesPermission" />
+    <!-- Apps the agent needs to see, instead of QUERY_ALL_PACKAGES: launchable apps (open_app, list_apps),
+         apps that open web links (a wa.me / youtube.com link opens in its app), browsers, payment apps
+         (upi://pay, PaymentGuard) and the home app. Intents are started directly, so launch_intent
+         doesn't need to see the app it opens. -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.HOME" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <category android:name="android.intent.category.BROWSABLE" />
+            <data android:scheme="https" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="http" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="upi" />
+        </intent>
+        <intent>
+            <action android:name="com.android.settings.action.SETTINGS_SEARCH" />
+        </intent>
+    </queries>
 
     <!-- Screen Overlay / Draw over other apps (floating assistant UI & status) -->
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
 
     <application
-        android:allowBackup="true"
+        android:allowBackup="false"
+        android:fullBackupContent="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
         android:theme="@style/Theme.NikVoiceAssistant"
-        tools:targetApi="34">
+        tools:targetApi="34"
+        tools:ignore="DataExtractionRules">
 
         <activity
             android:name=".MainActivity"

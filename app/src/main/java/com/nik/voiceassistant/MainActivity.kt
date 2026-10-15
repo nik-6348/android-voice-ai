@@ -22,12 +22,15 @@ class MainActivity : ComponentActivity() {
 
     private val viewModel: VoiceAssistantViewModel by viewModels()
 
+    // Start listening once permissions are in: only on a fresh launch with "Start when the app opens" on
+    private var autoStart = false
+
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { permissions ->
         val audioGranted = permissions[Manifest.permission.RECORD_AUDIO] == true
         if (audioGranted) {
-            viewModel.startSession()
+            if (autoStart) viewModel.startSession()
         } else {
             Toast.makeText(this, "Microphone permission is required for voice assistant", Toast.LENGTH_LONG).show()
         }
@@ -36,8 +39,13 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        checkAndRequestPermissions()
-        askToSkipBatteryOptimization()
+        // Not on a recreation (rotation, dark mode, language change): that isn't the user opening the app
+        autoStart = savedInstanceState == null && com.nik.voiceassistant.security.AgentPolicy.current.autoStartOnOpen
+        if (savedInstanceState == null) {
+            checkAndRequestPermissions()
+            // Only background "Hi Nik" listening needs this
+            if (VoiceSession.get(this).isWakeWordEnabled.value) askToSkipBatteryOptimization()
+        }
 
         setContent {
             NikVoiceTheme {
@@ -80,7 +88,6 @@ class MainActivity : ComponentActivity() {
     private fun checkAndRequestPermissions() {
         val permissionsToRequest = mutableListOf(
             Manifest.permission.RECORD_AUDIO,
-            Manifest.permission.CAMERA,
             Manifest.permission.READ_CONTACTS,
             Manifest.permission.CALL_PHONE,
             Manifest.permission.READ_PHONE_STATE,
@@ -102,8 +109,8 @@ class MainActivity : ComponentActivity() {
         if (missing.isNotEmpty()) {
             permissionLauncher.launch(missing.toTypedArray())
         } else {
-            // Permissions already granted: auto-start session immediately for hands-free experience!
-            viewModel.startSession()
+            // Permissions already granted: start listening right away (hands-free)
+            if (autoStart) viewModel.startSession()
         }
     }
 }
