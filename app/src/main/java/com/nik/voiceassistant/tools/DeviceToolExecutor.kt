@@ -944,33 +944,18 @@ class DeviceToolExecutor(
     // ---- Calls ----
 
     private fun makeCall(number: String?, speaker: Boolean): Map<String, Any?> {
-        if (number.isNullOrBlank()) return mapOf("error" to "Give a phone number (use find_contact for a name)")
-        val tel = Uri.fromParts("tel", number.replace(Regex("[\\s()-]"), ""), null)
         lastDialed = null
-        if (ContextCompat.checkSelfPermission(context, Manifest.permission.CALL_PHONE) != PackageManager.PERMISSION_GRANTED) {
-            // Without the permission the dialer can only be opened with the number filled in
-            context.startActivity(Intent(Intent.ACTION_DIAL, tel).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        val res = CallPlacer.place(context, number, speaker)
+        if (!res.success) {
             return withScreen(mapOf(
                 "success" to false,
-                "error" to "Phone call permission is off, so only the dialer opened; tap its Call button, and tell the user to allow Phone calls for Nik's voice"
+                "error" to (res.error ?: "Call failed")
             ))
-        }
-        context.startActivity(Intent(Intent.ACTION_CALL, tel).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-        var onSpeaker = false
-        if (speaker) {
-            Thread.sleep(2500) // let the call screen come up
-            // The in-call screen's own Speaker button is what the dialer respects; the audio route is the fallback
-            onSpeaker = PhoneAgentService.instance?.switchOn(listOf("Speaker", "Speakerphone", "स्पीकर")) == true
-            if (!onSpeaker) {
-                val audio = context.getSystemService(AudioManager::class.java)
-                @Suppress("DEPRECATION")
-                runCatching { audio?.isSpeakerphoneOn = true; onSpeaker = audio?.isSpeakerphoneOn == true }
-            }
         }
         return withScreen(mapOf(
             "success" to true,
-            "calling" to number,
-            "speaker" to onSpeaker,
+            "calling" to res.calling,
+            "speaker" to res.speaker,
             "next" to "The call is on (a SIM choice may be showing: pick one if so). Say one short line, then call end_conversation."
         ))
     }

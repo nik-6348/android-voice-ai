@@ -35,6 +35,8 @@
 
     <!-- "Call X": place the call directly (make_call tool), not just open the dialer -->
     <uses-permission android:name="android.permission.CALL_PHONE" />
+    <!-- Answer incoming calls directly when a macro matches (Action.HandleCall) -->
+    <uses-permission android:name="android.permission.ANSWER_PHONE_CALLS" />
 
     <!-- Contacts lookup for "call / message <name>" (find_contact tool), and to name a caller in a
          call-triggered macro ("jab Mummy ka call aaye…") -->
