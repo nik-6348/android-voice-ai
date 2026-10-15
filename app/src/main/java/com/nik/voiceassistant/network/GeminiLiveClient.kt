@@ -66,6 +66,11 @@ class GeminiLiveClient(
     @Volatile private var attempts = 0
     @Volatile private var everConnected = false
     @Volatile private var handingOver = false
+    // Whether the current socket got as far as setupComplete, and why the last one was refused before that
+    @Volatile private var socketReady = false
+    @Volatile private var lastRefusal: String? = null
+    // Google Search was refused for this key (e.g. no grounding quota): the conversation goes on without it
+    @Volatile private var searchOff = false
 
     // The user's words arrive in pieces; sent on as one line when the model starts answering
     private val userWords = StringBuilder()
@@ -83,6 +88,8 @@ class GeminiLiveClient(
         resumeHandle = config.resumeHandle
         attempts = 0
         everConnected = false
+        lastRefusal = null
+        searchOff = false
         userClosed = false
         open()
     }
@@ -90,6 +97,7 @@ class GeminiLiveClient(
     private fun open() {
         val cfg = config ?: return
         ready.set(false)
+        socketReady = false
         Log.i(TAG, "Connecting to Gemini Live (${cfg.model})${if (resumeHandle != null) ", resuming" else ""}")
         // The key goes in a header, never in the URL (URLs end up in logs)
         val request = Request.Builder().url(ENDPOINT).header("x-goog-api-key", cfg.apiKey).build()
@@ -115,9 +123,24 @@ class GeminiLiveClient(
                 if (webSocket !== socket) return // an old connection after a handover
                 ready.set(false)
                 Log.i(TAG, "Closed: $code $reason")
-                if (userClosed) listener.onDisconnected(reason)
-                else if (isFatal(code, null)) fail("Gemini closed the session: ${reason.ifBlank { "code $code" }}")
-                else scheduleReconnect("closed ($code ${reason.take(80)})")
+                // Refused before the session even started, twice for the same reason (billing, quota,
+                // key, model…): retrying can't fix it, so stop and show Gemini's own message
+                val refusedAgain = !socketReady && reason.isNotBlank() && reason == lastRefusal
+                if (!socketReady && reason.isNotBlank()) lastRefusal = reason
+                // A refusal before setup with Google Search on: the key may lack Search quota while the
+                // rest works, so try once more without it rather than failing the conversation
+                val dropSearch = !userClosed && !socketReady && config?.search == true && !searchOff && reason.isNotBlank()
+                when {
+                    userClosed -> listener.onDisconnected(reason)
+                    dropSearch -> {
+                        searchOff = true
+                        lastRefusal = null
+                        AgentTrace.log(AgentTrace.Kind.WARNING, "Gemini refused the session with Google Search on ($reason); continuing without Search (the research tool still works)")
+                        reconnector.execute { if (!userClosed) open() }
+                    }
+                    isFatal(code, null) || refusedAgain -> fail("Gemini refused the session ($code): $reason")
+                    else -> scheduleReconnect("closed ($code ${reason.take(120)})")
+                }
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
@@ -137,7 +160,7 @@ class GeminiLiveClient(
 
     private fun fail(message: String) {
         userClosed = true
-        AgentTrace.log(AgentTrace.Kind.ERROR, message)
+        // (recorded in the trace by the session's onError)
         listener.onError(RuntimeException(message))
     }
 
@@ -153,7 +176,7 @@ class GeminiLiveClient(
             }
         }
         val toolList = buildList {
-            if (cfg.search) add(mapOf("googleSearch" to emptyMap<String, Any>()))
+            if (cfg.search && !searchOff) add(mapOf("googleSearch" to emptyMap<String, Any>()))
             if (functions.isNotEmpty()) add(mapOf("functionDeclarations" to functions))
         }
         val generation = buildMap<String, Any> {
@@ -177,7 +200,11 @@ class GeminiLiveClient(
                     )
                 )
             )
-            put("inputAudioTranscription", emptyMap<String, Any>())
+            // The languages to expect (the phone's own, plus Hindi and Indian English); without them
+            // room noise was heard as other languages and answered in them
+            val languages = (android.os.LocaleList.getDefault().let { list -> (0 until list.size()).map { list[it].toLanguageTag() } } + listOf("hi-IN", "en-IN"))
+                .distinct().take(4)
+            put("inputAudioTranscription", mapOf("languageCodes" to languages))
             put("outputAudioTranscription", emptyMap<String, Any>())
             put("contextWindowCompression", mapOf("slidingWindow" to emptyMap<String, Any>()))
             put("sessionResumption", resumeHandle?.let { mapOf("handle" to it) } ?: emptyMap<String, Any>())
@@ -229,6 +256,8 @@ class GeminiLiveClient(
 
     private fun onReady(webSocket: WebSocket) {
         ready.set(true)
+        socketReady = true
+        lastRefusal = null
         attempts = 0
         // Audio from before the connection was up, in ~1 s messages
         synchronized(queued) {

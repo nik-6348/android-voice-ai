@@ -129,9 +129,11 @@ class VoiceSession private constructor(val context: Context) {
                - at each decision point: what you see and what you'll do next ("Yahan Build number nahi dikh raha, search karke dekhta hoon");
                - when something fails: what went wrong and the new approach;
                - at the end: the verified result in one line.
-              Keep each line under ~12 words, one line per decision, not per tap; don't repeat yourself or read out element numbers. Your mic is off while you work and opens for the user by itself when you finish, so finish your turn when the task is done or you need their answer. Reply in the user's language (Hindi, Hinglish or English).
+              Keep each line under ~12 words, one line per decision, not per tap; don't repeat yourself or read out element numbers. Your mic is off while you work and opens for the user by itself when you finish, so finish your turn when the task is done or you need their answer. Reply in the user's language (Hindi, Hinglish or English). If what you hear looks like another language or doesn't make sense, it is probably background noise: ignore it, don't answer it.
 
             ASK FIRST only before an irreversible payment / money transfer or permanently deleting data. Never ask the user to scroll, look, or tap for you.
+
+            CURRENT REQUEST: what the user says now is the request. Don't pick up an earlier unfinished task on your own (a greeting or a new question is not "continue"); resume one only when the user asks, or when the app tells you the connection dropped mid-task.
 
             ENDING: keep going until the goal is reached. Call end_conversation only when the user clearly says they're done (bye, bas, band karo, that's all); a thank-you or ok is not a goodbye.
         """.trimIndent()
@@ -581,9 +583,8 @@ class VoiceSession private constructor(val context: Context) {
             override fun onError(error: Throwable) {
                 _connectionStatus.value = ConnectionStatus.ERROR
                 AgentTrace.log(AgentTrace.Kind.ERROR, error.message ?: error.toString())
-                addTranscript("system", "Network Error: ${error.localizedMessage ?: error.message}")
-                // Give the mic back to "Hi Nik"
-                scope.launch { endConversation() }
+                // Give the mic back to "Hi Nik"; the reason stays as the last line shown
+                scope.launch { endConversation("⚠️ ${error.localizedMessage ?: error.message}") }
             }
 
             override fun onUserTranscript(text: String) {
@@ -878,12 +879,12 @@ class VoiceSession private constructor(val context: Context) {
     }
 
     /** The conversation is over (bye or idle): stop and let the service listen for "Hi Nik" again. */
-    private fun endConversation() {
+    private fun endConversation(reason: String? = null) {
         if (!_isRecording.value) return
         Log.i(TAG, "Conversation ended")
         AgentTrace.log(AgentTrace.Kind.SESSION, "Conversation ended")
         shutDown()
-        addTranscript("system", if (_isWakeWordEnabled.value) "Sleeping — say \"Hi ${_assistantName.value}\" to wake me" else "Conversation ended")
+        addTranscript("system", reason ?: if (_isWakeWordEnabled.value) "Sleeping — say \"Hi ${_assistantName.value}\" to wake me" else "Conversation ended")
         onConversationEnded?.invoke()
     }
 
