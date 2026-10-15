@@ -7,6 +7,7 @@ import com.nik.voiceassistant.audio.AudioTrackManager
 import com.nik.voiceassistant.audio.CallAudio
 import com.nik.voiceassistant.audio.WakeWordManager
 import com.nik.voiceassistant.data.trace.AgentTrace
+import com.nik.voiceassistant.data.trace.Tracer
 import com.nik.voiceassistant.network.GeminiLiveClient
 import com.nik.voiceassistant.network.LiveAudioWebSocketClient
 import com.nik.voiceassistant.network.LiveClient
@@ -119,6 +120,7 @@ class VoiceSession private constructor(val context: Context) {
                - Apps: open_app with the app's full name; if it lists several matches, pick the exact one.
                - Files, photos and screenshots: never make up content:// or file:// paths; they are checked and fail. Share or attach through the app's own UI (its share button, Attach > Gallery, the screenshot preview's share).
                - The user's constraints (budget, size, rating, date, person…) are part of the goal: look further yourself (scroll a few more results, sort, filter) before asking them to relax a constraint.
+               - The user themself ("send it to me", "mujhe bhejo", "khud ko", "self"): {OWNER}
                - You are {NAME}, running as this app ({SELF}). Never stop, force-stop, uninstall, clear, disable or turn off yourself, even if asked while handling other apps: skip yourself and act on the others (these taps are blocked anyway).
 {VISION}
 
@@ -355,6 +357,9 @@ class VoiceSession private constructor(val context: Context) {
         onPlan = { plan ->
             _plan.value = plan
             plan?.let {
+                Tracer.setRequestAttribute("agent.goal", it.goal)
+                Tracer.setRequestAttribute("agent.goal.status", it.status)
+                Tracer.setRequestAttribute("agent.plan.steps", it.steps.joinToString(" → "))
                 val step = it.steps.getOrNull(it.currentStep - 1)?.let { s -> " · step ${it.currentStep}/${it.steps.size}: $s" } ?: ""
                 AgentTrace.log(AgentTrace.Kind.PLAN, "[${it.status}] ${it.goal}$step${it.note?.let { n -> " — $n" } ?: ""}")
             }
@@ -494,6 +499,52 @@ class VoiceSession private constructor(val context: Context) {
     @Volatile private var lostToolResult: String? = null
     @Volatile private var lastFrameAt = 0L
 
+    // ---- Tracing: one trace per user request (see data/trace/Tracer) ----
+
+    // The model's current reply span, and whether it has said anything yet for this request
+    @Volatile private var llmSpan: Tracer.Span? = null
+    @Volatile private var modelResponded = false
+
+    /** The user said or typed something: a new request's trace (or more words of the same one). */
+    private fun traceUserInput(text: String, mode: String) {
+        if (Tracer.hasOpenRequest() && !modelResponded) {
+            Tracer.appendToRequest(text)
+            return
+        }
+        llmSpan?.let { Tracer.end(it, Tracer.Status.UNSET, "superseded") }
+        llmSpan = null
+        modelResponded = false
+        Tracer.startRequest(
+            text, mode,
+            mapOf("gen_ai.request.model" to _selectedModel.value, "agent.transport" to if (webSocketClient === directClient) "direct" else "server")
+        )
+        llmSpan = Tracer.startSpan("chat ${_selectedModel.value}", Tracer.Kind.LLM, llmAttributes())
+    }
+
+    private fun llmAttributes() = mapOf(
+        "gen_ai.operation.name" to "chat",
+        "gen_ai.system" to "gemini",
+        "gen_ai.request.model" to _selectedModel.value,
+        "gen_ai.request.voice" to _selectedVoice.value
+    )
+
+    /** The model is producing output: make sure a reply span is open for it. */
+    private fun modelActive(): Tracer.Span {
+        modelResponded = true
+        return llmSpan ?: Tracer.startSpan("chat ${_selectedModel.value}", Tracer.Kind.LLM, llmAttributes()).also { llmSpan = it }
+    }
+
+    /** The model's turn ended: close its span, and the request too when the goal isn't still in progress. */
+    private fun traceTurnComplete(reply: String) {
+        llmSpan?.let { Tracer.end(it, Tracer.Status.OK, attributes = mapOf("gen_ai.response.text" to reply.ifBlank { null })) }
+        llmSpan = null
+        val plan = toolExecutor.plan
+        val stillWorking = plan?.status == "working" || plan?.status == "blocked" || webSocketClient.isToolRunning()
+        if (!stillWorking && Tracer.hasOpenRequest() && modelResponded) {
+            Tracer.endRequest(if (plan?.status == "failed") Tracer.Status.ERROR else Tracer.Status.OK, plan?.takeIf { it.status == "failed" }?.note)
+        }
+    }
+
     private val liveCallback: LiveClient.Callback = object : LiveClient.Callback {
             override fun onConnected() {
                 val wasReconnecting = reconnecting
@@ -543,6 +594,7 @@ class VoiceSession private constructor(val context: Context) {
                 openedByUser = false
                 replyTurnOpen = false
                 AgentTrace.log(AgentTrace.Kind.USER, text)
+                traceUserInput(text, "voice")
                 noteAnswer(text)
                 _choices.value = null // answered by voice
                 addTranscript("user", text)
@@ -560,6 +612,7 @@ class VoiceSession private constructor(val context: Context) {
 
             override fun onModelTranscript(text: String) {
                 touch()
+                modelActive()
                 autoMuteForWork(tool = false)
                 addTranscript("assistant", text)
                 _liveReply.value = if (replyTurnOpen) joinSpoken(_liveReply.value, text) else text.trim()
@@ -584,6 +637,7 @@ class VoiceSession private constructor(val context: Context) {
             }
 
             override fun onToolStart(toolName: String, statusText: String) {
+                modelResponded = true
                 touch()
                 markTaskActivity()
                 autoMuteForWork(tool = true)
@@ -591,10 +645,14 @@ class VoiceSession private constructor(val context: Context) {
             }
 
             override fun onModelAudioStart() {
+                val span = modelActive()
                 val started = lastUserInputAt
                 lastUserInputAt = 0L
                 val waited = System.currentTimeMillis() - started
-                if (started > 0 && waited in 0..20_000) AgentTrace.log(AgentTrace.Kind.LATENCY, "Reply started after the user finished", ms = waited)
+                if (started > 0 && waited in 0..20_000) {
+                    AgentTrace.log(AgentTrace.Kind.LATENCY, "Reply started after the user finished", ms = waited)
+                    Tracer.setAttribute(span, "gen_ai.response.time_to_first_audio_ms", waited)
+                }
             }
 
             override fun onToolResultLost(toolName: String, resultSummary: String) {
@@ -604,6 +662,7 @@ class VoiceSession private constructor(val context: Context) {
 
             override fun onTurnComplete() {
                 if (replyTurnOpen && _liveReply.value.isNotBlank()) AgentTrace.log(AgentTrace.Kind.REPLY, _liveReply.value)
+                traceTurnComplete(if (replyTurnOpen) _liveReply.value else "")
                 replyTurnOpen = false
                 // The watchdog opens the mic once the reply has played and no tool is running
                 reopenWhenDone = true
@@ -646,7 +705,10 @@ class VoiceSession private constructor(val context: Context) {
         val wait = FRAME_INTERVAL_MS - (System.currentTimeMillis() - lastFrameAt)
         if (wait > 0) Thread.sleep(wait)
         val jpeg = agent.appWindowJpeg() ?: return
-        if (client.sendImage(jpeg)) lastFrameAt = System.currentTimeMillis()
+        if (client.sendImage(jpeg)) {
+            lastFrameAt = System.currentTimeMillis()
+            Tracer.event("screen_image_sent", mapOf("image.bytes" to jpeg.size, "image.mime" to "image/jpeg"), toolRunner.currentSpan)
+        }
     }
 
     /**
@@ -771,6 +833,9 @@ class VoiceSession private constructor(val context: Context) {
             preroll?.let { webSocketClient.queueAudio(it) }
             val resumeHandleToUse = currentSessionResumeHandle()
             AgentTrace.log(AgentTrace.Kind.SESSION, "Conversation started (${if (direct) "direct" else "via server"}, ${_selectedModel.value})")
+            Tracer.startSession(llmAttributes() + mapOf("agent.transport" to if (direct) "direct" else "server", "agent.resuming" to (resumeHandleToUse != null)))
+            llmSpan = null
+            modelResponded = false
             lostToolResult = null
             webSocketClient.connect(
                 LiveClient.Config(
@@ -794,6 +859,9 @@ class VoiceSession private constructor(val context: Context) {
     }
 
     private fun shutDown() {
+        llmSpan?.let { Tracer.end(it, Tracer.Status.UNSET, "conversation ended") }
+        llmSpan = null
+        Tracer.endSession(if (endRequested) "user said goodbye" else "stopped")
         watchdog?.cancel()
         watchdog = null
         audioRecordManager.stopRecording()
@@ -881,6 +949,7 @@ class VoiceSession private constructor(val context: Context) {
         if (t.isEmpty()) return
         addTranscript("user", t)
         AgentTrace.log(AgentTrace.Kind.USER, "(typed) $t")
+        traceUserInput(t, "typed")
         noteAnswer(t)
         markTaskActivity()
 
@@ -1002,6 +1071,7 @@ class VoiceSession private constructor(val context: Context) {
         val base = DEFAULT_INSTRUCTIONS
             .replace("{NAME}", _assistantName.value)
             .replace("{SELF}", toolExecutor.selfDescription())
+            .replace("{OWNER}", ownerLine())
             .replace("{DEVICE}", toolExecutor.deviceProfile())
             .replace("{VISION}", vision) + "\n\n" + lockPolicy()
         if (resuming) return base
@@ -1009,6 +1079,21 @@ class VoiceSession private constructor(val context: Context) {
         if (recent.isEmpty()) return base
         val lines = recent.joinToString("\n") { (if (it.sender == "user") "User: " else "You: ") + it.text.take(300) }
         return "$base\n\nEarlier in this conversation (continue from here; don't repeat it back):\n$lines"
+    }
+
+    /**
+     * How to reach the user themself, from their own numbers (read from the SIMs at each connection).
+     * Messaging apps keep a chat with one's own number (WhatsApp: "<number> (You)", "Message yourself").
+     */
+    private fun ownerLine(): String {
+        val numbers = toolExecutor.ownNumbers()
+        if (numbers.isEmpty()) {
+            return "their own numbers aren't readable on this phone, so find their own chat on screen: in WhatsApp it is the one titled " +
+                "\"(You)\" / \"Message yourself\" (at the top of the new-chat list, or search their name); never say it doesn't exist before looking."
+        }
+        return "their own numbers are ${numbers.joinToString("; ")}. To message themself, open the chat with their own number " +
+            "(WhatsApp: launch_intent uri https://wa.me/<digits without +>?text=<the message, URL-encoded>), check the chat title " +
+            "says \"(You)\" / \"Message yourself\" (if not, it's another number: try the next one), then tap Send. Never say this chat doesn't exist."
     }
 
     /** How to handle a locked phone, from the user's settings (never includes the PIN itself). */

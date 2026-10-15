@@ -442,7 +442,7 @@ class AssistantOverlay(private val session: VoiceSession) {
     @Composable
     private fun ResizeGrip(modifier: Modifier) {
         Box(
-            modifier.size(30.dp).resizesWindow().drawBehind {
+            modifier.size(22.dp).resizesWindow().drawBehind {
                 val c = Color.White.copy(alpha = 0.35f)
                 val w = 2.dp.toPx()
                 drawLine(c, Offset(size.width * 0.38f, size.height * 0.30f), Offset(size.width * 0.70f, size.height * 0.62f), w, androidx.compose.ui.graphics.StrokeCap.Round)
@@ -587,19 +587,25 @@ class AssistantOverlay(private val session: VoiceSession) {
             // Top: drag handle, sparkle + name, and the window buttons. Drag anywhere here to move it;
             // the grip in the corner resizes it.
             Box(Modifier.fillMaxWidth()) {
-                Column(Modifier.fillMaxWidth().dragsWindow()) {
-                    Box(Modifier.fillMaxWidth().padding(top = 10.dp, bottom = 6.dp), contentAlignment = Alignment.Center) {
+                Column(Modifier.fillMaxWidth()) {
+                    // Drag handle (moves the card)
+                    Box(Modifier.fillMaxWidth().dragsWindow().padding(top = 10.dp, bottom = 6.dp), contentAlignment = Alignment.Center) {
                         Box(Modifier.size(width = 36.dp, height = 4.dp).clip(CircleShape).background(Color.White.copy(alpha = 0.22f)))
                     }
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Sparkle(24.dp, working, level, time)
-                        Spacer(Modifier.width(10.dp))
-                        Column(Modifier.weight(1f)) {
-                            Text(name, color = TEXT, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
-                            ShimmerText(state, active = working || state == "Connecting…", time = time)
+                        // Sparkle and name: drag to move too. Kept apart from the buttons, whose taps
+                        // the drag handling would otherwise swallow.
+                        Row(Modifier.weight(1f).dragsWindow(), verticalAlignment = Alignment.CenterVertically) {
+                            Sparkle(24.dp, working, level, time)
+                            Spacer(Modifier.width(10.dp))
+                            Column(Modifier.weight(1f)) {
+                                Text(name, color = TEXT, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+                                ShimmerText(state, active = working || state == "Connecting…", time = time)
+                            }
                         }
-                        IconButton(Icons.Default.KeyboardArrowDown, "Minimise", onClick = onCollapse)
-                        IconButton(Icons.AutoMirrored.Filled.OpenInNew, "Open app", size = 18.dp) { openApp() }
+                        // Shrink to just the icons / open the full app / end the conversation
+                        IconButton(Icons.Default.KeyboardArrowDown, "Shrink to icon", onClick = onCollapse)
+                        IconButton(Icons.AutoMirrored.Filled.OpenInNew, "Open in app", size = 18.dp) { openApp() }
                         IconButton(Icons.Default.Close, "End") { session.stop() }
                     }
                 }
@@ -890,7 +896,7 @@ class AssistantOverlay(private val session: VoiceSession) {
     private fun openApp() {
         val ctx = overlayContext() ?: return
         runCatching {
-            ctx.startActivity(Intent(ctx, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT))
+            ctx.startActivity(Intent(ctx, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or Intent.FLAG_ACTIVITY_SINGLE_TOP))
         }
     }
 

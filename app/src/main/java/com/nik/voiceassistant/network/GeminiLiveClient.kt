@@ -291,7 +291,7 @@ class GeminiLiveClient(
             val fc = element.asJsonObject
             val name = fc.get("name")?.asString ?: return@forEach
             val id = fc.get("id")?.takeIf { !it.isJsonNull }?.asString
-            tools.submit(name, tools.parseArgs(fc.get("args"))) { result ->
+            tools.submit(name, tools.parseArgs(fc.get("args")), id) { result ->
                 val response = mapOf(
                     "toolResponse" to mapOf(
                         "functionResponses" to listOf(buildMap {

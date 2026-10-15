@@ -437,6 +437,33 @@ class DeviceToolExecutor(
         }
     }
 
+    /**
+     * The user's own phone numbers, read from the SIMs (labelled with the SIM's name), for messages
+     * to themself. Empty without the phone-number permission or when the SIM doesn't store its number.
+     */
+    fun ownNumbers(): List<String> {
+        val granted = { p: String -> ContextCompat.checkSelfPermission(context, p) == PackageManager.PERMISSION_GRANTED }
+        if (!granted(Manifest.permission.READ_PHONE_STATE) || !granted(Manifest.permission.READ_PHONE_NUMBERS)) return emptyList()
+        return try {
+            val subs = context.getSystemService(android.telephony.SubscriptionManager::class.java)
+            subs?.activeSubscriptionInfoList.orEmpty().mapNotNull { info ->
+                @Suppress("DEPRECATION")
+                val number = (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) subs?.getPhoneNumber(info.subscriptionId) else info.number)
+                    ?.replace(Regex("[\\s()-]"), "")?.takeIf { it.length >= 6 } ?: return@mapNotNull null
+                val international = when {
+                    number.startsWith("+") -> number
+                    info.countryIso.isNullOrBlank() -> number
+                    else -> runCatching {
+                        android.telephony.PhoneNumberUtils.formatNumberToE164(number, info.countryIso.uppercase())
+                    }.getOrNull() ?: number
+                }
+                "$international (SIM ${info.simSlotIndex + 1}: ${info.displayName})"
+            }.distinct()
+        } catch (e: SecurityException) {
+            emptyList()
+        }
+    }
+
     /** Starts the plan for a new goal, or updates the current one. */
     private fun updatePlan(goal: String, steps: List<String>?, currentStep: Int?, status: String?, note: String?): Map<String, Any?> {
         if (goal.isBlank()) return mapOf("error" to "Give the goal")

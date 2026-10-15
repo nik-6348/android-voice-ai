@@ -73,6 +73,7 @@ object AgentTrace {
 
     fun init(context: Context) {
         if (dir != null) return
+        Tracer.init(context)
         dir = File(context.filesDir, "traces").apply { mkdirs() }
         prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).also {
             _retention.value = Retention(it.getBoolean("auto_delete", true), it.getInt("keep_days", DEFAULT_KEEP_DAYS))
@@ -92,11 +93,12 @@ object AgentTrace {
         val r = _retention.value
         if (!r.autoDelete) return
         val cutoff = System.currentTimeMillis() - r.keepDays * 86_400_000L
-        dir?.listFiles()?.filter { it.lastModified() < cutoff }?.forEach { it.delete() }
+        dir?.listFiles()?.filter { it.isFile && it.lastModified() < cutoff }?.forEach { it.delete() }
+        Tracer.prune(r.keepDays)
     }
 
     private fun refreshFiles() {
-        _files.value = dir?.listFiles()?.filter { it.name.endsWith(".jsonl") }?.sortedByDescending { it.name }
+        _files.value = dir?.listFiles()?.filter { it.isFile && it.name.endsWith(".jsonl") }?.sortedByDescending { it.name }
             ?.map { TraceFile(it.name, it.name.removeSuffix(".jsonl"), it.length()) }.orEmpty()
     }
 
@@ -120,6 +122,7 @@ object AgentTrace {
     fun deleteDay(name: String) {
         writer.execute {
             dir?.let { File(it, name) }?.delete()
+            Tracer.deleteDay(name)
             refreshFiles()
         }
     }
@@ -127,8 +130,9 @@ object AgentTrace {
     /** Deletes every saved trace file and clears the live list. */
     fun deleteAll() {
         clear()
+        Tracer.deleteAll()
         writer.execute {
-            dir?.listFiles()?.forEach { it.delete() }
+            dir?.listFiles()?.filter { it.isFile }?.forEach { it.delete() }
             refreshFiles()
         }
     }
@@ -137,6 +141,14 @@ object AgentTrace {
         val event = Event(System.currentTimeMillis(), kind, text.take(500), ms, ok)
         synchronized(this) { _events.value = (_events.value + event).takeLast(MAX_IN_MEMORY) }
         if (kind == Kind.ERROR || kind == Kind.WARNING) Log.w(TAG, "$kind: ${event.text}")
+        // The same moments as events on the trace of the request in progress (tools, words and the
+        // conversation's start and end have spans of their own)
+        when (kind) {
+            Kind.USAGE -> ms?.let(Tracer::addTokens)
+            Kind.NETWORK, Kind.WARNING, Kind.ERROR, Kind.PLAN, Kind.LATENCY ->
+                Tracer.event(kind.name.lowercase(), mapOf("message" to event.text, "duration_ms" to ms))
+            else -> {}
+        }
         val folder = dir ?: return
         writer.execute {
             try {

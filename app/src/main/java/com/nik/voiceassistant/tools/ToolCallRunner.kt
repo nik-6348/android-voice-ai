@@ -1,7 +1,9 @@
 package com.nik.voiceassistant.tools
 
 import android.util.Log
+import com.google.gson.GsonBuilder
 import com.nik.voiceassistant.data.trace.AgentTrace
+import com.nik.voiceassistant.data.trace.Tracer
 import com.nik.voiceassistant.network.LiveClient
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicInteger
@@ -23,13 +25,30 @@ class ToolCallRunner(
 
     private val thread = Executors.newSingleThreadExecutor()
     private val running = AtomicInteger(0)
+    private val json = GsonBuilder().disableHtmlEscaping().create()
+
+    /** The span of the call running now (screen images sent for it are recorded on it). */
+    @Volatile var currentSpan: Tracer.Span? = null
+        private set
 
     fun isRunning(): Boolean = running.get() > 0
 
     /** Runs one call; respond(result) is called with what to send back to the model. */
-    fun submit(name: String, args: Map<String, Any?>, respond: (Map<String, Any?>) -> Unit) {
+    fun submit(name: String, args: Map<String, Any?>, callId: String? = null, respond: (Map<String, Any?>) -> Unit) {
         running.incrementAndGet()
         thread.execute {
+            // Never record a PIN
+            val shownArgs = args.mapValues { (k, v) -> if (k == "pin") "***" else v }
+            val span = Tracer.startSpan(
+                "execute_tool $name", Tracer.Kind.TOOL,
+                mapOf(
+                    "gen_ai.operation.name" to "execute_tool",
+                    "gen_ai.tool.name" to name,
+                    "gen_ai.tool.call.id" to callId,
+                    "gen_ai.tool.call.arguments" to json.toJson(shownArgs)
+                )
+            )
+            currentSpan = span
             try {
                 listener.onToolStart(name, statusText(name, args))
                 val started = System.currentTimeMillis()
@@ -42,13 +61,23 @@ class ToolCallRunner(
                 // The screen listing is for the model; the transcript and trace get a one-line summary
                 val summary = summary(result)
                 val failed = result["error"] != null || result["success"] == false
-                val shownArgs = args.mapValues { (k, v) -> if (k == "pin") "***" else v }
                 AgentTrace.log(AgentTrace.Kind.TOOL, "$name $shownArgs → $summary", ms, ok = !failed)
-                (result["progress_warning"] as? String)?.let { AgentTrace.log(AgentTrace.Kind.WARNING, it) }
+                (result["progress_warning"] as? String)?.let {
+                    AgentTrace.log(AgentTrace.Kind.WARNING, it)
+                    Tracer.event("progress_warning", mapOf("message" to it, "untried_approaches" to result["untried_approaches"]), span)
+                }
                 listener.onToolExecuted(name, args, summary)
                 runCatching { beforeRespond(name, result) }.onFailure { Log.w(TAG, "Before-respond step failed: ${it.message}") }
+                Tracer.end(
+                    span, if (failed) Tracer.Status.ERROR else Tracer.Status.OK, (result["error"] as? String),
+                    mapOf("gen_ai.tool.call.result" to json.toJson(result), "agent.tool.duration_ms" to ms)
+                )
                 respond(result)
+            } catch (e: Exception) {
+                Tracer.end(span, Tracer.Status.ERROR, e.message)
+                throw e
             } finally {
+                currentSpan = null
                 running.decrementAndGet()
             }
         }

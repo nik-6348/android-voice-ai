@@ -70,6 +70,7 @@ import androidx.compose.ui.unit.sp
 import com.nik.voiceassistant.VoiceAssistantViewModel
 import com.nik.voiceassistant.data.trace.AgentTrace
 import com.nik.voiceassistant.data.trace.AgentTrace.Kind
+import com.nik.voiceassistant.data.trace.Tracer
 import com.nik.voiceassistant.ui.theme.*
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -91,15 +92,30 @@ fun ActivityTab(viewModel: VoiceAssistantViewModel) {
     val plan by viewModel.plan.collectAsState()
     val tool by viewModel.activeToolStatus.collectAsState()
 
+    val liveTraces by Tracer.traces.collectAsState()
+    val otlpEndpoint by Tracer.otlpEndpoint.collectAsState()
+
     // null = live; else the name of a saved day's file
     var day by remember { mutableStateOf<String?>(null) }
     var dayEvents by remember { mutableStateOf<List<AgentTrace.Event>>(emptyList()) }
+    var dayTraces by remember { mutableStateOf<List<Tracer.TraceData>>(emptyList()) }
     var filter by remember { mutableStateOf(Filter.ALL) }
+    var showTraces by remember { mutableStateOf(true) }
+    var openTraceId by remember { mutableStateOf<String?>(null) }
+    var endpointInput by remember(otlpEndpoint) { mutableStateOf(otlpEndpoint) }
     var confirmDelete by remember { mutableStateOf<String?>(null) } // a file name, or "*" for all
 
     val events = if (day == null) live else dayEvents
+    val traces = if (day == null) liveTraces else dayTraces
     val shown = events.filter { filter.kinds == null || it.kind in filter.kinds!! }.asReversed()
     val metrics = AgentTrace.metrics(events)
+
+    // An opened trace (stays live while it runs)
+    traces.firstOrNull { it.traceId == openTraceId }?.let { trace ->
+        androidx.activity.compose.BackHandler { openTraceId = null }
+        TraceDetail(trace) { openTraceId = null }
+        return
+    }
 
     LazyColumn(
         modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp),
@@ -136,6 +152,7 @@ fun ActivityTab(viewModel: VoiceAssistantViewModel) {
                     Chip("${f.day} · ${size(f.bytes)}", day == f.name) {
                         day = f.name
                         dayEvents = AgentTrace.readDay(f.name)
+                        dayTraces = Tracer.readDay(f.name)
                     }
                 }
             }
@@ -193,20 +210,36 @@ fun ActivityTab(viewModel: VoiceAssistantViewModel) {
             }
         }
 
-        // Filters
+        // Traces (one per request, OpenTelemetry style) or the flat event log
         item {
-            Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                Filter.values().forEach { f -> Chip(f.title, filter == f) { filter = f } }
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                Chip("Traces (${traces.size})", showTraces) { showTraces = true }
+                Chip("Events (${events.size})", !showTraces) { showTraces = false }
             }
         }
 
-        if (shown.isEmpty()) item {
-            Text(
-                if (day == null) "Nothing yet. Start a conversation and every step will show up here." else "No events in this file.",
-                color = TextMuted, fontSize = 13.sp, modifier = Modifier.padding(vertical = 24.dp)
-            )
+        if (showTraces) {
+            if (traces.isEmpty()) item {
+                Text(
+                    "No traces yet. Each request you make becomes a trace: the model's turns and every tool call with its input and output.",
+                    color = TextMuted, fontSize = 13.sp, modifier = Modifier.padding(vertical = 24.dp)
+                )
+            }
+            items(traces, key = { it.traceId }) { t -> TraceCard(t) { openTraceId = t.traceId } }
+        } else {
+            item {
+                Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Filter.values().forEach { f -> Chip(f.title, filter == f) { filter = f } }
+                }
+            }
+            if (shown.isEmpty()) item {
+                Text(
+                    if (day == null) "Nothing yet. Start a conversation and every step will show up here." else "No events in this file.",
+                    color = TextMuted, fontSize = 13.sp, modifier = Modifier.padding(vertical = 24.dp)
+                )
+            }
+            items(shown, key = { "${it.time}-${it.kind}-${it.text.hashCode()}" }) { e -> EventRow(e) }
         }
-        items(shown, key = { "${it.time}-${it.kind}-${it.text.hashCode()}" }) { e -> EventRow(e) }
 
         // Storage: automatic deletion and deleting by hand
         item {
@@ -231,8 +264,25 @@ fun ActivityTab(viewModel: VoiceAssistantViewModel) {
                     Text("${retention.keepDays} days", color = TextPrimary, fontSize = 13.sp)
                     TextButton(onClick = { AgentTrace.setRetention(true, retention.keepDays + 1) }) { Text("+", color = CyanAccent, fontSize = 18.sp) }
                 }
+                Spacer(Modifier.height(8.dp))
+                Text("Send traces to an OpenTelemetry collector (optional)", color = TextPrimary, fontSize = 13.sp)
+                Text("OTLP/HTTP JSON, e.g. https://collector.example.com:4318 — for Jaeger, Grafana Tempo, Honeycomb", color = TextMuted, fontSize = 11.sp)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    androidx.compose.material3.OutlinedTextField(
+                        value = endpointInput, onValueChange = { endpointInput = it },
+                        placeholder = { Text("Off (kept on the phone only)", color = TextMuted, fontSize = 12.sp) },
+                        singleLine = true, modifier = Modifier.weight(1f),
+                        textStyle = androidx.compose.ui.text.TextStyle(color = TextPrimary, fontSize = 12.sp)
+                    )
+                    TextButton(onClick = { Tracer.setOtlpEndpoint(endpointInput) }) { Text("Save", color = CyanAccent) }
+                }
                 Spacer(Modifier.height(4.dp))
                 Row {
+                    if (day != null) TextButton(onClick = {
+                        Tracer.dayFile(day!!)?.let { f ->
+                            context.startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).setType("application/json").putExtra(Intent.EXTRA_TEXT, f.readText().takeLast(90_000)), "Share day (OTLP JSON lines)"))
+                        }
+                    }) { Text("Share day (OTLP)", color = CyanAccent, fontSize = 12.sp) }
                     if (day != null) TextButton(onClick = { confirmDelete = day }) {
                         Icon(Icons.Default.Delete, null, tint = RedStop, modifier = Modifier.size(16.dp))
                         Spacer(Modifier.width(4.dp))
@@ -256,7 +306,7 @@ fun ActivityTab(viewModel: VoiceAssistantViewModel) {
             confirmButton = {
                 TextButton(onClick = {
                     if (target == "*") AgentTrace.deleteAll() else AgentTrace.deleteDay(target)
-                    if (target == "*" || target == day) { day = null; dayEvents = emptyList() }
+                    if (target == "*" || target == day) { day = null; dayEvents = emptyList(); dayTraces = emptyList() }
                     confirmDelete = null
                 }) { Text("Delete", color = RedStop) }
             },

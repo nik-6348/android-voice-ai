@@ -35,6 +35,9 @@
 
     <!-- Contacts lookup for "call / message <name>" (find_contact tool) -->
     <uses-permission android:name="android.permission.READ_CONTACTS" />
+    <!-- The user's own numbers (SIMs), for "send it to me" (e.g. WhatsApp's "Message yourself" chat) -->
+    <uses-permission android:name="android.permission.READ_PHONE_STATE" />
+    <uses-permission android:name="android.permission.READ_PHONE_NUMBERS" />
 
     <!-- Set alarms and timers directly via intent -->
     <uses-permission android:name="com.android.alarm.permission.SET_ALARM" />

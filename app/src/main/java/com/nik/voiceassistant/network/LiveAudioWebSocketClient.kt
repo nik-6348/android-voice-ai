@@ -308,7 +308,7 @@ class LiveAudioWebSocketClient(
                 "tool_call" -> {
                     val name = jsonObject.get("name")?.asString ?: return
                     val callId = jsonObject.get("id")?.takeIf { !it.isJsonNull }?.asString
-                    tools.submit(name, tools.parseArgs(jsonObject.get("args") ?: jsonObject.get("arguments"))) { result ->
+                    tools.submit(name, tools.parseArgs(jsonObject.get("args") ?: jsonObject.get("arguments")), callId) { result ->
                         // Always answer: Gemini waits for the tool response before it speaks again
                         if (isConnected.get()) sendJson(gson.toJson(ToolCallResponse(id = callId, name = name, result = result)))
                         else listener.onToolResultLost(name, tools.summary(result))
