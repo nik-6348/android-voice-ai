@@ -42,6 +42,8 @@ import org.json.JSONArray
 import org.json.JSONObject
 import android.util.Base64
 import com.nik.voiceassistant.data.history.ConversationHistoryManager
+import com.nik.voiceassistant.data.macro.MacroEngine
+import com.nik.voiceassistant.data.macro.MacroRecorder
 import com.nik.voiceassistant.data.history.ConversationSession
 import java.util.concurrent.TimeUnit
 import java.text.SimpleDateFormat
@@ -393,8 +395,34 @@ class VoiceSession private constructor(val context: Context) {
                 val step = it.steps.getOrNull(it.currentStep - 1)?.let { s -> " · step ${it.currentStep}/${it.steps.size}: $s" } ?: ""
                 AgentTrace.log(AgentTrace.Kind.PLAN, "[${it.status}] ${it.goal}$step${it.note?.let { n -> " — $n" } ?: ""}")
             }
+            // Recording stops when the goal is clearly over (done or blocked-as-failed), not at the
+            // AI's first spoken line: that used to end every recording before a single step ran
+            if (plan != null && (plan.status == "done" || plan.status == "failed")) onRecordingMaybeDone(plan.status)
         }
     )
+
+    /** The plan reached an end (or was cleared): if a macro was being recorded, finish and save it. */
+    private fun onRecordingMaybeDone(status: String?) {
+        val macro = MacroRecorder.note(status) ?: return
+        finishRecordedMacro(macro)
+    }
+
+    private fun finishRecordedMacro(macro: com.nik.voiceassistant.data.macro.Macro) {
+        scope.launch {
+            withContext(historyIo) { MacroEngine.saveRecorded(context, macro, recordingReplaces) }
+            recordingReplaces = null
+            val phraseTrigger = macro.triggers.firstOrNull() as? com.nik.voiceassistant.data.macro.Trigger.Phrase
+            addTranscript(
+                "system",
+                if (phraseTrigger != null) "⚡ Automation \"${macro.title}\" saved. Say \"${phraseTrigger.phrase}\" to run it directly next time."
+                else "⚡ Automation \"${macro.title}\" saved."
+            )
+        }
+    }
+
+    // Set when a replay failed and the AI is redoing it live: the fresh recording replaces this macro
+    // instead of creating a new one (self-healing)
+    @Volatile private var recordingReplaces: com.nik.voiceassistant.data.macro.Macro? = null
 
     // The user's yes to a question the phone asked (DeviceToolExecutor's confirmations). Only the
     // user's own words count: speech, typing or a tap on the list, never screen text or the model
@@ -664,13 +692,6 @@ class VoiceSession private constructor(val context: Context) {
                 _liveReply.value = if (replyTurnOpen) joinSpoken(_liveReply.value, text) else text.trim()
                 replyTurnOpen = true
 
-                // If this task was being auto-recorded, finalize and save!
-                if (com.nik.voiceassistant.data.automation.AutomationManager.isRecording()) {
-                    val saved = com.nik.voiceassistant.data.automation.AutomationManager.finishRecording(context, success = true)
-                    if (saved != null) {
-                        addTranscript("system", "⚡ Automation '${saved.title}' saved! Next time it will execute directly.")
-                    }
-                }
             }
 
             override fun onResumeHandle(handle: String?) {
@@ -726,8 +747,8 @@ class VoiceSession private constructor(val context: Context) {
                 addTranscript("tool", "Executed $toolName $args: $resultSummary")
 
                 // Dynamically record every action step executed by AI
-                if (com.nik.voiceassistant.data.automation.AutomationManager.isRecording()) {
-                    com.nik.voiceassistant.data.automation.AutomationManager.recordStep(toolName, args, resultSummary)
+                if (MacroRecorder.isRecording()) {
+                    MacroRecorder.recordStep(toolName, args, resultSummary)
                 }
             }
         }
@@ -850,6 +871,16 @@ class VoiceSession private constructor(val context: Context) {
         audioTrackManager.startPlaybackWorker(scope)
         AssistantOverlay(this).bind(scope, appVisible)
 
+        // Sensor-triggered macros (notification, call, charger, Wi-Fi): detecting and replaying runs
+        // without the AI; one with nothing recorded yet comes back here for a live turn, exactly as
+        // if the user had said it themself (this hand-off is why MacroDispatch doesn't depend on
+        // VoiceSession directly — a background listener can't otherwise reach it)
+        com.nik.voiceassistant.data.macro.MacroDispatch.onAgentGoalRequested = { instruction ->
+            scope.launch { sendText(instruction) }
+        }
+        com.nik.voiceassistant.service.CallTriggerMonitor.start(context)
+        com.nik.voiceassistant.service.ChargerAndWifiTriggerMonitor.start(context)
+
         scope.launch { loadHistory() }
     }
 
@@ -971,6 +1002,7 @@ class VoiceSession private constructor(val context: Context) {
         if (!_isRecording.value) return
         Log.i(TAG, "Conversation ended")
         AgentTrace.log(AgentTrace.Kind.SESSION, "Conversation ended")
+        MacroRecorder.finishOnConversationEnd()?.let { finishRecordedMacro(it) }
         shutDown()
         addTranscript("system", reason ?: if (_isWakeWordEnabled.value) "Sleeping — say \"Hi ${_assistantName.value}\" to wake me" else "Conversation ended")
         onConversationEnded?.invoke()
@@ -994,7 +1026,7 @@ class VoiceSession private constructor(val context: Context) {
             return true
         }
 
-        // 1. Check for explicit record instruction: e.g. "record task", "save task", "automation banao", "task save karo"
+        // 1. Explicit record instruction: "record task", "save task", "automation banao", "task save karo"
         val recordPrefixes = listOf(
             "record task", "save task", "record automation", "save automation",
             "automation banao", "automation save karo", "task save karo", "naya task banao"
@@ -1003,33 +1035,49 @@ class VoiceSession private constructor(val context: Context) {
             if (clean.startsWith(prefix)) {
                 val actualInstruction = prompt.substring(prefix.length).trim().removePrefix(":").removePrefix("-").trim()
                 if (actualInstruction.isNotBlank()) {
-                    com.nik.voiceassistant.data.automation.AutomationManager.startRecording(actualInstruction)
-                    addTranscript("system", "⏺️ Recording automation: '$actualInstruction'. AI will perform and save it.")
-                    return false // Let it continue to Gemini so AI performs the actual task!
+                    recordingReplaces = null
+                    MacroRecorder.start(actualInstruction)
+                    addTranscript("system", "⏺️ Recording: \"$actualInstruction\". Saved once the goal is done.")
+                    return false // Let it continue to Gemini so the AI performs the actual task
                 }
             }
         }
 
-        // 2. FAST SHORTCUT: If it matches any saved automation, execute directly!
-        if (!com.nik.voiceassistant.data.automation.AutomationManager.isRecording()) {
-            val matchedTask = com.nik.voiceassistant.data.automation.AutomationManager.findMatchingTask(context, prompt)
-            if (matchedTask != null && matchedTask.steps.isNotEmpty()) {
-                addTranscript("assistant", "Running '${matchedTask.title}'...")
+        // 2. A saved macro's trigger phrase: replay its recorded steps directly (fast, no AI call).
+        // A step that fails (the screen changed since it was recorded) falls back to a fresh AI run,
+        // which re-records the macro from what the AI actually did this time (self-healing).
+        if (!MacroRecorder.isRecording()) {
+            val matched = MacroEngine.findByPhrase(context, prompt)
+            if (matched != null) {
+                addTranscript("assistant", "Running \"${matched.title}\"…")
                 scope.launch {
-                    val (ok, message) = com.nik.voiceassistant.data.automation.AutomationManager.executeTask(
-                        context,
-                        matchedTask,
-                        toolExecutor
-                    ) { stepIdx, total, desc ->
+                    val result = MacroEngine.replay(context, matched, toolExecutor) { stepIdx, total, desc ->
                         addTranscript("system", "[$stepIdx/$total] $desc")
                     }
-                    addTranscript("assistant", if (ok) "Done! '${matchedTask.title}' complete." else message)
+                    if (result.ok) addTranscript("assistant", "Done! \"${matched.title}\" complete.")
+                    else retryWithAi(matched, "⚠️ ${result.message}")
                 }
                 return true
             }
         }
 
         return false
+    }
+
+    /** A replay failed partway: ask the AI to do the same instruction live, and re-record from that. */
+    private fun retryWithAi(macro: com.nik.voiceassistant.data.macro.Macro, reason: String) {
+        addTranscript("system", reason)
+        recordingReplaces = macro
+        MacroRecorder.start(macro.instruction, title = macro.title, replacingId = macro.id)
+        addTranscript("user", macro.instruction)
+        AgentTrace.log(AgentTrace.Kind.USER, "(automation retry) ${macro.instruction}")
+        traceUserInput(macro.instruction, "automation")
+        markTaskActivity()
+        if (_isRecording.value && _connectionStatus.value == ConnectionStatus.CONNECTED) sendTextNow(macro.instruction)
+        else {
+            pendingText = macro.instruction
+            start()
+        }
     }
 
     /** A typed request (or a suggestion chip): sent like speech, starting a conversation if needed. */

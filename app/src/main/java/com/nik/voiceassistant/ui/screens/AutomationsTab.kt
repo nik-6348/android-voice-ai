@@ -23,6 +23,7 @@ import androidx.compose.material.icons.filled.StarBorder
 import androidx.compose.material.icons.outlined.Alarm
 import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.Bolt
+import androidx.compose.material.icons.outlined.Call
 import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.MusicNote
 import androidx.compose.material3.AlertDialog
@@ -41,6 +42,7 @@ import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -63,14 +65,15 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.nik.voiceassistant.R
 import com.nik.voiceassistant.VoiceAssistantViewModel
-import com.nik.voiceassistant.data.automation.AutomationStep
-import com.nik.voiceassistant.data.automation.AutomationTask
+import com.nik.voiceassistant.data.macro.Action
+import com.nik.voiceassistant.data.macro.Macro
+import com.nik.voiceassistant.data.macro.MacroEngine
+import com.nik.voiceassistant.data.macro.RecordedStep
+import com.nik.voiceassistant.data.macro.Trigger
 import com.nik.voiceassistant.ui.components.Badge
 import com.nik.voiceassistant.ui.components.ConfirmDialog
 import com.nik.voiceassistant.ui.components.EmptyState
 import com.nik.voiceassistant.ui.components.ScreenHeader
-import com.nik.voiceassistant.ui.components.safeList
-import com.nik.voiceassistant.ui.components.safeString
 import com.nik.voiceassistant.ui.theme.Spacing
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.update
@@ -80,15 +83,11 @@ import kotlinx.coroutines.flow.update
  * callbacks only touch this and the application context, never the activity.
  */
 private object AutomationRun {
-    data class Running(val taskId: String, val title: String, val progress: String)
+    data class Running(val macroId: String, val title: String, val progress: String)
     val state = MutableStateFlow<Running?>(null)
 }
 
-// Automations are loaded with Gson: fields can be null at runtime
-private val AutomationTask.safeTitle get() = safeString(title)
-private val AutomationTask.safeDescription get() = safeString(description)
-private val AutomationTask.safeTrigger get() = safeString(triggerPhrase)
-private val AutomationTask.stepCount get() = safeList<AutomationStep>(steps).size
+private val Macro.stepCount get() = (action as? Action.Replay)?.steps?.size ?: 0
 
 @Composable
 fun AutomationsTab(viewModel: VoiceAssistantViewModel) {
@@ -100,8 +99,7 @@ fun AutomationsTab(viewModel: VoiceAssistantViewModel) {
     var showCreateDialog by rememberSaveable { mutableStateOf(false) }
     var deleteId by rememberSaveable { mutableStateOf<String?>(null) }
 
-    val tasks = remember(automations) { automations.filter { safeString(it.id).isNotEmpty() }.distinctBy { it.id } }
-    val shown = remember(tasks, favoritesOnly) { if (favoritesOnly) tasks.filter { it.isFavorite } else tasks }
+    val shown = remember(automations, favoritesOnly) { if (favoritesOnly) automations.filter { it.isFavorite } else automations }
     val startingText = stringResource(R.string.automation_starting)
 
     Column(Modifier.fillMaxSize().padding(horizontal = Spacing.m)) {
@@ -137,27 +135,30 @@ fun AutomationsTab(viewModel: VoiceAssistantViewModel) {
                 verticalArrangement = Arrangement.spacedBy(Spacing.s),
                 contentPadding = PaddingValues(bottom = Spacing.l)
             ) {
-                items(shown, key = { it.id }) { task ->
+                items(shown, key = { it.id }) { macro ->
                     AutomationCard(
-                        task = task,
-                        isRunning = running?.taskId == task.id,
+                        macro = macro,
+                        isRunning = running?.macroId == macro.id,
                         anyRunning = running != null,
                         onRun = {
                             val app = context.applicationContext
-                            AutomationRun.state.value = AutomationRun.Running(task.id, task.safeTitle, startingText)
-                            viewModel.executeAutomation(
-                                task = task,
+                            AutomationRun.state.value = AutomationRun.Running(macro.id, macro.title, startingText)
+                            viewModel.runAutomation(
+                                macro = macro,
                                 onProgress = { step, total, desc ->
                                     AutomationRun.state.update { it?.copy(progress = app.getString(R.string.automation_step, step, total, desc)) }
                                 },
-                                onComplete = { _, msg ->
+                                onComplete = { result: MacroEngine.ReplayResult ->
                                     AutomationRun.state.value = null
-                                    Toast.makeText(app, msg, Toast.LENGTH_SHORT).show()
+                                    Toast.makeText(app, result.message, Toast.LENGTH_SHORT).show()
+                                    // A failed replay means the screen moved on since this was recorded: offer to relearn it
+                                    if (!result.ok) viewModel.recordAndExecuteAutomation(macro.instruction)
                                 }
                             )
                         },
-                        onToggleFavorite = { viewModel.toggleFavoriteAutomation(task.id) },
-                        onDelete = { deleteId = task.id }
+                        onToggleFavorite = { viewModel.toggleFavoriteAutomation(macro.id) },
+                        onToggleEnabled = { viewModel.setAutomationEnabled(macro.id, it) },
+                        onDelete = { deleteId = macro.id }
                     )
                 }
             }
@@ -181,7 +182,7 @@ fun AutomationsTab(viewModel: VoiceAssistantViewModel) {
     }
 
     deleteId?.let { id ->
-        val title = tasks.firstOrNull { it.id == id }?.safeTitle.orEmpty()
+        val title = automations.firstOrNull { it.id == id }?.title.orEmpty()
         ConfirmDialog(
             title = stringResource(R.string.automation_delete_title),
             message = stringResource(R.string.automation_delete_body, title),
@@ -199,8 +200,8 @@ fun AutomationsTab(viewModel: VoiceAssistantViewModel) {
         CreateAutomationDialog(
             assistantName = assistantName,
             onDismiss = { showCreateDialog = false },
-            onSave = { newTask ->
-                viewModel.saveAutomation(newTask)
+            onSave = { macro ->
+                viewModel.saveAutomation(macro)
                 showCreateDialog = false
                 Toast.makeText(context.applicationContext, savedMsg, Toast.LENGTH_SHORT).show()
             },
@@ -215,21 +216,21 @@ fun AutomationsTab(viewModel: VoiceAssistantViewModel) {
 
 @Composable
 fun AutomationCard(
-    task: AutomationTask,
+    macro: Macro,
     isRunning: Boolean,
     anyRunning: Boolean,
     onRun: () -> Unit,
     onToggleFavorite: () -> Unit,
+    onToggleEnabled: (Boolean) -> Unit,
     onDelete: () -> Unit
 ) {
     val scheme = MaterialTheme.colorScheme
-    val (icon: ImageVector, container, content) = when (safeString(task.iconName)) {
-        "alarm" -> Triple(Icons.Outlined.Alarm, scheme.errorContainer, scheme.onErrorContainer)
-        "music" -> Triple(Icons.Outlined.MusicNote, scheme.tertiaryContainer, scheme.onTertiaryContainer)
+    val (icon: ImageVector, container, content) = when {
+        macro.action is Action.HandleCall -> Triple(Icons.Outlined.Call, scheme.secondaryContainer, scheme.onSecondaryContainer)
+        macro.triggers.any { it is Trigger.Scheduled } -> Triple(Icons.Outlined.Alarm, scheme.errorContainer, scheme.onErrorContainer)
+        macro.title.contains("music", true) || macro.title.contains("song", true) -> Triple(Icons.Outlined.MusicNote, scheme.tertiaryContainer, scheme.onTertiaryContainer)
         else -> Triple(Icons.Outlined.Bolt, scheme.primaryContainer, scheme.onPrimaryContainer)
     }
-    val title = task.safeTitle
-    val steps = task.stepCount
     Card(
         shape = MaterialTheme.shapes.large,
         colors = CardDefaults.cardColors(containerColor = scheme.surfaceContainerLow),
@@ -242,32 +243,31 @@ fun AutomationCard(
                 }
                 Spacer(Modifier.width(Spacing.m))
                 Column(Modifier.weight(1f)) {
-                    Text(title, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(macro.title, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     Text(
-                        task.safeDescription, style = MaterialTheme.typography.bodySmall, color = scheme.onSurfaceVariant,
+                        macro.description.ifBlank { macro.triggerSummary() }, style = MaterialTheme.typography.bodySmall, color = scheme.onSurfaceVariant,
                         maxLines = 2, overflow = TextOverflow.Ellipsis
                     )
                 }
+                Switch(checked = macro.enabled, onCheckedChange = onToggleEnabled)
                 IconButton(onClick = onToggleFavorite) {
                     Icon(
-                        if (task.isFavorite) Icons.Filled.Star else Icons.Filled.StarBorder,
-                        contentDescription = stringResource(if (task.isFavorite) R.string.cd_unfavorite else R.string.cd_favorite, title),
-                        tint = if (task.isFavorite) scheme.tertiary else scheme.onSurfaceVariant
+                        if (macro.isFavorite) Icons.Filled.Star else Icons.Filled.StarBorder,
+                        contentDescription = stringResource(if (macro.isFavorite) R.string.cd_unfavorite else R.string.cd_favorite, macro.title),
+                        tint = if (macro.isFavorite) scheme.tertiary else scheme.onSurfaceVariant
                     )
                 }
             }
             Spacer(Modifier.size(Spacing.s))
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Row(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(Spacing.xs), verticalAlignment = Alignment.CenterVertically) {
-                    Badge(pluralSteps(steps))
-                    task.safeTrigger.takeIf { it.isNotBlank() }?.let {
-                        Badge("“$it”", container = scheme.tertiaryContainer, content = scheme.onTertiaryContainer, modifier = Modifier.weight(1f, fill = false))
-                    }
+                    if (macro.action is Action.Replay) Badge(pluralSteps(macro.stepCount))
+                    Badge(macro.triggerSummary(), container = scheme.tertiaryContainer, content = scheme.onTertiaryContainer, modifier = Modifier.weight(1f, fill = false))
                 }
                 IconButton(onClick = onDelete) {
-                    Icon(Icons.Outlined.DeleteOutline, contentDescription = stringResource(R.string.cd_delete_automation, title))
+                    Icon(Icons.Outlined.DeleteOutline, contentDescription = stringResource(R.string.cd_delete_automation, macro.title))
                 }
-                Button(onClick = onRun, enabled = !anyRunning) {
+                Button(onClick = onRun, enabled = !anyRunning && macro.action is Action.Replay) {
                     if (isRunning) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
                     else Icon(Icons.Filled.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(Modifier.width(Spacing.xs))
@@ -286,7 +286,7 @@ private fun pluralSteps(n: Int): String = pluralStringResource(R.plurals.automat
 fun CreateAutomationDialog(
     assistantName: String,
     onDismiss: () -> Unit,
-    onSave: (AutomationTask) -> Unit,
+    onSave: (Macro) -> Unit,
     onRecordWithAi: (instruction: String) -> Unit
 ) {
     var aiMode by rememberSaveable { mutableStateOf(true) }
@@ -369,7 +369,7 @@ fun CreateAutomationDialog(
                         val app = customAppName.trim().ifBlank { "Chrome" }
                         val steps = when (actionType) {
                             "alarm" -> listOf(
-                                AutomationStep(
+                                RecordedStep(
                                     toolName = "launch_intent",
                                     args = mapOf(
                                         "action" to "android.intent.action.SET_ALARM",
@@ -379,16 +379,17 @@ fun CreateAutomationDialog(
                                     description = "Set 6:00 AM Alarm"
                                 )
                             )
-                            "youtube" -> listOf(AutomationStep(toolName = "open_app", args = mapOf("app_name" to "YouTube"), description = "Open YouTube"))
-                            else -> listOf(AutomationStep(toolName = "open_app", args = mapOf("app_name" to app), description = "Open $app"))
+                            "youtube" -> listOf(RecordedStep(toolName = "open_app", args = mapOf("app_name" to "YouTube"), description = "Open YouTube"))
+                            else -> listOf(RecordedStep(toolName = "open_app", args = mapOf("app_name" to app), description = "Open $app"))
                         }
+                        val trig = trigger.trim().takeIf { it.isNotBlank() }
                         onSave(
-                            AutomationTask(
+                            Macro(
                                 title = title.trim(),
                                 description = "Manual automation shortcut",
-                                triggerPhrase = trigger.trim(),
-                                iconName = if (actionType == "alarm") "alarm" else "bolt",
-                                steps = steps
+                                triggers = listOf(trig?.let { Trigger.Phrase(it) } ?: Trigger.Manual),
+                                instruction = title.trim(),
+                                action = Action.Replay(steps)
                             )
                         )
                     }

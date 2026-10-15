@@ -7,6 +7,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * The screen's view of the conversation. The conversation itself lives in VoiceSession, so it
@@ -143,52 +144,67 @@ class VoiceAssistantViewModel(application: Application) : AndroidViewModel(appli
 
     fun deleteChat(sessionId: String) = session.deleteChat(sessionId)
 
-    // ---- Automations Management ----
-    private val _automations = MutableStateFlow<List<com.nik.voiceassistant.data.automation.AutomationTask>>(
-        com.nik.voiceassistant.data.automation.AutomationManager.getAllTasks(getApplication())
-    )
-    val automations: StateFlow<List<com.nik.voiceassistant.data.automation.AutomationTask>> = _automations.asStateFlow()
+    // ---- Automations (macros) ----
+    private val _automations = MutableStateFlow<List<com.nik.voiceassistant.data.macro.Macro>>(emptyList())
+    val automations: StateFlow<List<com.nik.voiceassistant.data.macro.Macro>> = _automations.asStateFlow()
+
+    init {
+        refreshAutomations()
+    }
 
     fun refreshAutomations() {
-        _automations.value = com.nik.voiceassistant.data.automation.AutomationManager.getAllTasks(getApplication())
-    }
-
-    fun saveAutomation(task: com.nik.voiceassistant.data.automation.AutomationTask) {
-        com.nik.voiceassistant.data.automation.AutomationManager.saveTask(getApplication(), task)
-        refreshAutomations()
-    }
-
-    fun deleteAutomation(id: String) {
-        com.nik.voiceassistant.data.automation.AutomationManager.deleteTask(getApplication(), id)
-        refreshAutomations()
-    }
-
-    fun toggleFavoriteAutomation(id: String) {
-        com.nik.voiceassistant.data.automation.AutomationManager.toggleFavorite(getApplication(), id)
-        refreshAutomations()
-    }
-
-    fun executeAutomation(
-        task: com.nik.voiceassistant.data.automation.AutomationTask,
-        onProgress: (stepIndex: Int, total: Int, desc: String) -> Unit,
-        onComplete: (success: Boolean, message: String) -> Unit
-    ) {
-        viewModelScope.launch {
-            val result = com.nik.voiceassistant.data.automation.AutomationManager.executeTask(
-                getApplication(),
-                task,
-                session.getToolExecutor(),
-                onProgress
-            )
-            refreshAutomations()
-            onComplete(result.first, result.second)
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            val all = com.nik.voiceassistant.data.macro.MacroStore.getAll(getApplication())
+            withContext(kotlinx.coroutines.Dispatchers.Main) { _automations.value = all }
         }
     }
 
+    fun saveAutomation(macro: com.nik.voiceassistant.data.macro.Macro) {
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            com.nik.voiceassistant.data.macro.MacroStore.save(getApplication(), macro)
+            refreshAutomations()
+        }
+    }
+
+    fun deleteAutomation(id: String) {
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            com.nik.voiceassistant.data.macro.MacroStore.delete(getApplication(), id)
+            refreshAutomations()
+        }
+    }
+
+    fun toggleFavoriteAutomation(id: String) {
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            com.nik.voiceassistant.data.macro.MacroStore.update(getApplication(), id) { it.copy(isFavorite = !it.isFavorite) }
+            refreshAutomations()
+        }
+    }
+
+    fun setAutomationEnabled(id: String, enabled: Boolean) {
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            com.nik.voiceassistant.data.macro.MacroStore.update(getApplication(), id) { it.copy(enabled = enabled) }
+            refreshAutomations()
+        }
+    }
+
+    /** Replays a macro's recorded steps. On failure, the caller should offer to re-record it live. */
+    fun runAutomation(
+        macro: com.nik.voiceassistant.data.macro.Macro,
+        onProgress: (stepIndex: Int, total: Int, desc: String) -> Unit,
+        onComplete: (result: com.nik.voiceassistant.data.macro.MacroEngine.ReplayResult) -> Unit
+    ) {
+        viewModelScope.launch {
+            val result = com.nik.voiceassistant.data.macro.MacroEngine.replay(getApplication(), macro, session.getToolExecutor(), onProgress)
+            refreshAutomations()
+            onComplete(result)
+        }
+    }
+
+    /** Starts a brand-new macro: the AI performs `instruction` live now, and it's saved once the goal is done. */
     fun recordAndExecuteAutomation(instruction: String) {
         val clean = instruction.trim()
         if (clean.isBlank()) return
-        com.nik.voiceassistant.data.automation.AutomationManager.startRecording(clean)
+        com.nik.voiceassistant.data.macro.MacroRecorder.start(clean)
         session.sendText(clean)
     }
 }
