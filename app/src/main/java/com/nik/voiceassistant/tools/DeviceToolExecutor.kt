@@ -16,6 +16,7 @@ import android.util.Log
 import android.view.KeyEvent
 import androidx.core.content.ContextCompat
 import com.google.gson.JsonParser
+import com.nik.voiceassistant.service.PaymentGuard
 import com.nik.voiceassistant.service.PhoneAgentService
 
 /**
@@ -291,6 +292,13 @@ class DeviceToolExecutor(
         fun int(key: String) = args[key]?.toString()?.toDoubleOrNull()?.toInt()
         fun bool(key: String) = args[key]?.toString()?.toBooleanStrictOrNull()
         val agent = PhoneAgentService.instance
+        // Screen control is off while a payment app is open (they block payments otherwise)
+        PaymentGuard.pausedFor?.let { pkg ->
+            if (agent == null && toolName in setOf("read_screen", "look_at_screen", "tap", "type_text", "scroll", "swipe", "navigate", "search_settings", "unlock_phone")) {
+                return mapOf("error" to "Screen control is paused while the payment app ($pkg) is open: payment apps refuse to pay while an assistant can read the screen. " +
+                    "Let the user complete the payment themselves; screen control comes back when they leave it.")
+            }
+        }
 
         return try {
             when (toolName) {

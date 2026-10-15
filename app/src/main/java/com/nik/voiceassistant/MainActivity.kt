@@ -59,6 +59,8 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        // Back in this app: no payment app is open, so screen control can be on again
+        com.nik.voiceassistant.service.PaymentGuard.resume(this)
         // The user may have just switched screen control on in Settings > Accessibility
         viewModel.refreshAgentStatus()
     }

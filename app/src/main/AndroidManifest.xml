@@ -38,6 +38,10 @@
     <!-- The user's own numbers (SIMs), for "send it to me" (e.g. WhatsApp's "Message yourself" chat) -->
     <uses-permission android:name="android.permission.READ_PHONE_STATE" />
     <uses-permission android:name="android.permission.READ_PHONE_NUMBERS" />
+    <!-- Payment apps block payments while screen control is on: switch it off while they're open and
+         back on after (service/PaymentGuard.kt). Both granted once over adb / Settings > Usage access. -->
+    <uses-permission android:name="android.permission.WRITE_SECURE_SETTINGS" tools:ignore="ProtectedPermissions" />
+    <uses-permission android:name="android.permission.PACKAGE_USAGE_STATS" tools:ignore="ProtectedPermissions" />
 
     <!-- Set alarms and timers directly via intent -->
     <uses-permission android:name="com.android.alarm.permission.SET_ALARM" />
@@ -109,6 +113,10 @@
         </service>
 
         <!-- Restore background listening on device boot or update -->
+        <receiver
+            android:name=".service.PaymentGuard$ResumeReceiver"
+            android:exported="false" />
+
         <receiver
             android:name=".receiver.BootReceiver"
             android:enabled="true"

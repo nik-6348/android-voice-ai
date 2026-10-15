@@ -460,6 +460,40 @@ fun SettingsTab(
             }
         }
 
+        // ---- PAYMENT APPS ----
+        item {
+            var guardOn by remember { mutableStateOf(com.nik.voiceassistant.service.PaymentGuard.isEnabled(context)) }
+            val canToggle = com.nik.voiceassistant.service.PaymentGuard.canToggle(context)
+            val canWatch = com.nik.voiceassistant.service.PaymentGuard.canWatch(context)
+            val apps = remember { com.nik.voiceassistant.service.PaymentGuard.protectedAppNames(context) }
+            SettingsCard(title = "Payment Apps", icon = Icons.Default.Lock) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Step aside in payment apps", color = TextPrimary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                        Text(
+                            "PhonePe, GPay, Paytm and bank apps refuse to pay while screen control is on. It switches off while they're open and back on after.",
+                            color = TextMuted, fontSize = 11.sp
+                        )
+                    }
+                    Switch(
+                        checked = guardOn,
+                        onCheckedChange = { guardOn = it; com.nik.voiceassistant.service.PaymentGuard.setEnabled(context, it) },
+                        colors = SwitchDefaults.colors(checkedThumbColor = BgDark, checkedTrackColor = GreenActive)
+                    )
+                }
+                Spacer(modifier = Modifier.height(6.dp))
+                Text("Found on this phone: ${apps.joinToString(", ").ifEmpty { "none" }}", color = TextSecondary, fontSize = 11.sp)
+                Spacer(modifier = Modifier.height(8.dp))
+                PermissionStatusRow("Usage access (turn back on automatically)", canWatch) {
+                    context.startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS))
+                }
+                Spacer(modifier = Modifier.height(6.dp))
+                PermissionStatusRow("Switch itself off/on (one-time, over adb)", canToggle) {
+                    Toast.makeText(context, "Run once on a computer: adb shell pm grant ${context.packageName} android.permission.WRITE_SECURE_SETTINGS", Toast.LENGTH_LONG).show()
+                }
+            }
+        }
+
         // ---- 5. PERMISSIONS STATUS ----
         item {
             SettingsCard(title = "System Permissions", icon = Icons.Default.Security) {

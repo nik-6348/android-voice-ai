@@ -93,6 +93,10 @@ class PhoneAgentService : AccessibilityService() {
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         event ?: return
+        if (event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
+            event.packageName?.toString()?.let { PaymentGuard.onForeground(this, it) }
+            return
+        }
         val isToast = event.eventType == AccessibilityEvent.TYPE_NOTIFICATION_STATE_CHANGED && event.parcelableData !is android.app.Notification
         if (!isToast && event.eventType != AccessibilityEvent.TYPE_ANNOUNCEMENT) return
         val text = event.text.joinToString(" ").trim().takeIf { it.isNotEmpty() } ?: return

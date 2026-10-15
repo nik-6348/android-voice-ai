@@ -133,8 +133,8 @@ class GeminiLiveClient(
                 when {
                     userClosed -> listener.onDisconnected(reason)
                     dropSearch -> {
+                        // The same refusal again without Search means it wasn't Search: it then stops at once
                         searchOff = true
-                        lastRefusal = null
                         AgentTrace.log(AgentTrace.Kind.WARNING, "Gemini refused the session with Google Search on ($reason); continuing without Search (the research tool still works)")
                         reconnector.execute { if (!userClosed) open() }
                     }

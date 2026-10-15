@@ -790,6 +790,7 @@ class VoiceSession private constructor(val context: Context) {
     }
 
     init {
+        com.nik.voiceassistant.service.PaymentGuard.restore(context)
         audioTrackManager.startPlaybackWorker(scope)
         AssistantOverlay(this).bind(scope, appVisible)
 
