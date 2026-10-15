@@ -36,9 +36,10 @@ class AudioTrackManager(
         private const val TAIL_MS = 600L
     }
 
-    private var audioTrack: AudioTrack? = null
+    @Volatile private var audioTrack: AudioTrack? = null
     private var playbackJob: Job? = null
-    private val audioQueue = Channel<ByteArray>(Channel.UNLIMITED)
+    // Each chunk carries the flush generation it was queued in
+    private val audioQueue = Channel<Pair<Long, ByteArray>>(Channel.UNLIMITED)
     private val isPlaying = AtomicBoolean(false)
 
     // Frames written since the track was last flushed, and whether reply audio is audible now
@@ -48,6 +49,13 @@ class AudioTrackManager(
     // When the track finished everything written (0 = still playing)
     private var drainedAt = 0L
 
+    // Bumped by every flush: a chunk taken off the queue before a flush is stale and never plays
+    private val flushGeneration = AtomicLong(0)
+    // Serializes flushing, rebuilding and releasing the track (never held during a blocking write)
+    private val trackLock = Any()
+    // Last time the track was (re)built after a failure, so a broken audioserver isn't hammered
+    private var rebuiltAt = 0L
+
     /** Reply audio is coming out of the speaker now (or just stopped, within TAIL_MS). */
     fun isAudible(): Boolean = audible.get()
 
@@ -56,8 +64,13 @@ class AudioTrackManager(
     }
 
     fun initialize() {
-        if (audioTrack != null) return
+        synchronized(trackLock) {
+            if (audioTrack != null) return
+            audioTrack = buildTrack()
+        }
+    }
 
+    private fun buildTrack(): AudioTrack? {
         val minBufferSize = AudioTrack.getMinBufferSize(
             SAMPLE_RATE,
             CHANNEL_CONFIG,
@@ -79,20 +92,42 @@ class AudioTrackManager(
             .setEncoding(AUDIO_FORMAT)
             .build()
 
-        audioTrack = AudioTrack.Builder()
-            .setAudioAttributes(audioAttributes)
-            .setAudioFormat(format)
-            .setBufferSizeInBytes(bufferSize)
-            .setTransferMode(AudioTrack.MODE_STREAM)
-            .build()
+        val track = try {
+            AudioTrack.Builder()
+                .setAudioAttributes(audioAttributes)
+                .setAudioFormat(format)
+                .setBufferSizeInBytes(bufferSize)
+                .setTransferMode(AudioTrack.MODE_STREAM)
+                .build()
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to create AudioTrack: ${e.message}", e)
+            return null
+        }
 
         try {
-            audioTrack?.play()
+            track.play()
             isPlaying.set(true)
             Log.i(TAG, "AudioTrack initialized at $SAMPLE_RATE Hz, bufferSize: $bufferSize")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to start AudioTrack: ${e.message}", e)
         }
+        return track
+    }
+
+    /**
+     * Replaces a track that stopped working (audioserver restarted → ERROR_DEAD_OBJECT on every
+     * write), at most once a second. Returns the new track, or null if it can't be built right now.
+     */
+    private fun rebuildTrack(broken: AudioTrack?): AudioTrack? = synchronized(trackLock) {
+        val current = audioTrack
+        if (current != null && current !== broken) return current // someone else already rebuilt it
+        val now = System.currentTimeMillis()
+        if (now - rebuiltAt < 1000) return null
+        rebuiltAt = now
+        broken?.let { runCatching { it.release() } }
+        framesWritten.set(0)
+        audioTrack = buildTrack()
+        audioTrack
     }
 
     fun startPlaybackWorker(coroutineScope: CoroutineScope) {
@@ -101,19 +136,22 @@ class AudioTrackManager(
 
         playbackJob = coroutineScope.launch(Dispatchers.IO) {
             while (isActive) {
-                val chunk = audioQueue.tryReceive().getOrNull() ?: run {
+                val (generation, chunk) = audioQueue.tryReceive().getOrNull() ?: if (!audible.get()) {
+                    // Idle: sleep until the next reply instead of waking up every 50 ms
+                    audioQueue.receive()
+                } else {
                     // Nothing queued: report silence once the speaker has played everything written
                     val head = audioTrack?.playbackHeadPosition?.toLong() ?: Long.MAX_VALUE
-                    if (audible.get() && head >= framesWritten.get()) {
+                    if (head >= framesWritten.get()) {
                         val now = System.currentTimeMillis()
                         if (drainedAt == 0L) drainedAt = now
                         if (now - drainedAt >= TAIL_MS) setAudible(false)
                     }
                     withTimeoutOrNull(50) { audioQueue.receive() }
                 } ?: continue
-                val track = audioTrack ?: continue
-                drainedAt = 0L
-                setAudible(true)
+                // Queued before the last flush: part of the interrupted reply
+                if (flushGeneration.get() != generation) continue
+                val track = audioTrack ?: rebuildTrack(null) ?: continue
 
                 if (track.playState != AudioTrack.PLAYSTATE_PLAYING) {
                     try {
@@ -123,7 +161,24 @@ class AudioTrackManager(
                     }
                 }
 
-                val written = track.write(chunk, 0, chunk.size, AudioTrack.WRITE_BLOCKING)
+                // Flushed while this chunk was on its way: it belongs to the interrupted reply
+                if (flushGeneration.get() != generation) continue
+                drainedAt = 0L
+                setAudible(true)
+                var written = track.write(chunk, 0, chunk.size, AudioTrack.WRITE_BLOCKING)
+                if (written < 0) {
+                    Log.w(TAG, "AudioTrack write failed ($written); rebuilding the track")
+                    val fresh = rebuildTrack(track)
+                    if (fresh != null && flushGeneration.get() == generation) {
+                        written = fresh.write(chunk, 0, chunk.size, AudioTrack.WRITE_BLOCKING)
+                    }
+                }
+                if (flushGeneration.get() != generation) {
+                    // A flush landed during the blocking write, and the rest of this stale chunk went in
+                    // after it: flush again (nothing newer has been written; this is the only writer)
+                    flushTrack()
+                    continue
+                }
                 if (written > 0) {
                     framesWritten.addAndGet(written / 2L)
                     onPlaybackAmplitudeChanged?.let { callback ->
@@ -140,7 +195,7 @@ class AudioTrackManager(
      */
     fun enqueueAudioChunk(chunk: ByteArray) {
         if (chunk.isEmpty()) return
-        audioQueue.trySend(chunk)
+        audioQueue.trySend(flushGeneration.get() to chunk)
     }
 
     /**
@@ -149,45 +204,59 @@ class AudioTrackManager(
      */
     fun stopAndFlush() {
         Log.i(TAG, "Barge-in triggered: flushing audio track queue")
+        // Before draining: chunks already queued or taken by the worker are now stale and never play
+        flushGeneration.incrementAndGet()
         // Drain any pending items in channel
         while (audioQueue.tryReceive().isSuccess) {
             // drop
         }
 
-        val track = audioTrack ?: return
-        try {
-            if (track.playState == AudioTrack.PLAYSTATE_PLAYING) {
-                track.pause()
-                track.flush()
-                track.play()
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "Error while flushing AudioTrack: ${e.message}")
-        }
-        // flush() resets the playback head to 0
-        framesWritten.set(0)
+        flushTrack()
         setAudible(false)
 
         onPlaybackAmplitudeChanged?.invoke(0f)
     }
 
+    private fun flushTrack() {
+        synchronized(trackLock) {
+            val track = audioTrack ?: return
+            try {
+                if (track.playState == AudioTrack.PLAYSTATE_PLAYING) {
+                    track.pause()
+                    track.flush()
+                    track.play()
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Error while flushing AudioTrack: ${e.message}")
+            }
+            // flush() resets the playback head to 0
+            framesWritten.set(0)
+        }
+    }
+
+    /** Stops the worker and frees the track; startPlaybackWorker() builds a new one. */
     fun release() {
         playbackJob?.cancel()
         playbackJob = null
+        flushGeneration.incrementAndGet()
 
-        val track = audioTrack
-        if (track != null) {
-            try {
-                if (track.playState == AudioTrack.PLAYSTATE_PLAYING) {
-                    track.stop()
+        synchronized(trackLock) {
+            val track = audioTrack
+            if (track != null) {
+                try {
+                    if (track.playState == AudioTrack.PLAYSTATE_PLAYING) {
+                        track.stop()
+                    }
+                    track.release()
+                } catch (e: Exception) {
+                    Log.w(TAG, "Error releasing AudioTrack: ${e.message}")
                 }
-                track.release()
-            } catch (e: Exception) {
-                Log.w(TAG, "Error releasing AudioTrack: ${e.message}")
             }
+            audioTrack = null
+            framesWritten.set(0)
         }
-        audioTrack = null
         isPlaying.set(false)
+        setAudible(false)
         onPlaybackAmplitudeChanged?.invoke(0f)
     }
 

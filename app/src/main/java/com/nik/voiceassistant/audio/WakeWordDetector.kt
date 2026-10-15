@@ -10,7 +10,6 @@ import org.json.JSONObject
 import org.vosk.Model
 import org.vosk.Recognizer
 import org.vosk.android.StorageService
-import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Listens for "Hi Nik" (also Hey / Hello / Okay Nik) fully on the phone with Vosk; no audio
@@ -28,6 +27,8 @@ class WakeWordDetector(
     private val assistantNameProvider: () -> String = { "Shiv" },
     // Called once listening has started: true if Android gave a silenced (muted) mic
     private val onListening: (silenced: Boolean) -> Unit = {},
+    // Called (on the listening thread) when listening gave up on its own: mic or recognizer kept failing
+    private val onError: (reason: String) -> Unit = {},
     private val onWake: (preroll: ByteArray) -> Unit
 ) {
 
@@ -36,6 +37,10 @@ class WakeWordDetector(
         private const val SAMPLE_RATE = 16000
         private const val CHUNK_BYTES = 3200 // 100 ms
         private const val PREROLL_BYTES = SAMPLE_RATE * 2 * 4 // 4 s
+
+        // Mic failures in a row (dead audioserver, mic taken) before giving up: reopened after 0.5, 1, 2, 4, 8 s
+        private const val MAX_FAILURES = 5
+        private const val RETRY_BASE_MS = 500L
 
         private val BASE_GRAMMAR = listOf(
             // Shiv and Indian English phonetic lookalikes
@@ -50,108 +55,213 @@ class WakeWordDetector(
         )
     }
 
+    // Guards everything below. Each start()/stop()/wake bumps the generation; a listening thread only
+    // runs (and only reports) while its generation is current, so a quick stop → start never ends
+    // up with two threads holding two mics
+    private val lock = Any()
     private var model: Model? = null
+    private var loading = false
+    private var released = false
     private var thread: Thread? = null
-    private val running = AtomicBoolean(false)
+    @Volatile private var running = false
+    @Volatile private var generation = 0
 
     /** Loads the model (first run unpacks it from the APK, a few seconds) and starts listening. */
     fun start() {
-        if (running.getAndSet(true)) return
-        val loaded = model
-        if (loaded != null) {
-            listen(loaded)
-            return
+        synchronized(lock) {
+            if (running || released) return
+            running = true
+            val gen = ++generation
+            val loaded = model
+            if (loaded != null) {
+                listenLocked(gen, loaded)
+                return
+            }
+            // Already unpacking: its callback starts listening for whatever generation is current then
+            if (loading) return
+            loading = true
         }
         StorageService.unpack(context, "model-en-in", "model",
             { m ->
-                model = m
-                if (running.get()) listen(m)
+                synchronized(lock) {
+                    loading = false
+                    if (released) {
+                        m.close()
+                        return@synchronized
+                    }
+                    model = m
+                    if (running) listenLocked(generation, m)
+                }
             },
             { e ->
                 Log.e(TAG, "Wake word model failed to load: ${e.message}", e)
-                running.set(false)
+                synchronized(lock) {
+                    loading = false
+                    running = false
+                }
             })
     }
 
+    /** Doesn't wait: the listening thread lets go of the mic within one read (~100 ms). */
     fun stop() {
-        running.set(false)
-        thread?.takeIf { it !== Thread.currentThread() }?.join(500)
-        thread = null
+        synchronized(lock) {
+            running = false
+            generation++
+        }
     }
 
-    fun isListening(): Boolean = running.get()
+    /** Stops and frees the native model (tens of MB); this detector can't be started again. */
+    fun release() {
+        synchronized(lock) {
+            released = true
+            running = false
+            generation++
+            // A recognizer still running holds its own native reference to the model
+            model?.close()
+            model = null
+        }
+    }
 
-    @SuppressLint("MissingPermission")
-    private fun listen(model: Model) {
+    fun isListening(): Boolean = running
+
+    private fun isCurrent(gen: Int) = generation == gen
+
+    /** Ends this generation; false if it already ended (stopped, or a newer start). */
+    private fun finish(gen: Int): Boolean = synchronized(lock) {
+        if (generation != gen) return false
+        running = false
+        generation++
+        true
+    }
+
+    private fun listenLocked(gen: Int, model: Model) {
+        val previous = thread
         thread = Thread({
-            val currentName = assistantNameProvider().trim().lowercase()
-            val dynamicGrammar = BASE_GRAMMAR.toMutableList()
-            if (currentName.isNotBlank() && !dynamicGrammar.contains(currentName)) {
-                dynamicGrammar.add(currentName)
-                dynamicGrammar.add("hi $currentName")
-                dynamicGrammar.add("hey $currentName")
-                dynamicGrammar.add("hello $currentName")
-                dynamicGrammar.add("okay $currentName")
-                dynamicGrammar.add("ok $currentName")
+            try {
+                // A stopped listener may still hold the mic for one more read: let it go first
+                previous?.takeIf { it.isAlive }?.join(1000)
+                listen(gen, model)
+            } catch (e: Throwable) {
+                // Native recognizer / mic failure: must not take the whole app down from a raw thread
+                Log.e(TAG, "Wake word listening failed: ${e.message}", e)
+                if (finish(gen)) onError(e.message ?: e.javaClass.simpleName)
             }
-            val grammar = org.json.JSONArray(dynamicGrammar).toString()
-            val recognizer = Recognizer(model, SAMPLE_RATE.toFloat(), grammar)
-            val minBuf = AudioRecord.getMinBufferSize(SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
-            val record = AudioRecord(
-                MediaRecorder.AudioSource.VOICE_RECOGNITION, SAMPLE_RATE,
-                AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, maxOf(minBuf, CHUNK_BYTES * 4)
-            )
-            if (record.state != AudioRecord.STATE_INITIALIZED) {
-                Log.e(TAG, "Mic unavailable for wake word")
-                record.release()
-                recognizer.close()
-                running.set(false)
-                return@Thread
-            }
+        }, "wake-word").also { it.start() }
+    }
+
+    private fun listen(gen: Int, model: Model) {
+        val currentName = assistantNameProvider().trim().lowercase()
+        val dynamicGrammar = BASE_GRAMMAR.toMutableList()
+        if (currentName.isNotBlank() && !dynamicGrammar.contains(currentName)) {
+            dynamicGrammar.add(currentName)
+            dynamicGrammar.add("hi $currentName")
+            dynamicGrammar.add("hey $currentName")
+            dynamicGrammar.add("hello $currentName")
+            dynamicGrammar.add("okay $currentName")
+            dynamicGrammar.add("ok $currentName")
+        }
+        val grammar = org.json.JSONArray(dynamicGrammar).toString()
+        // Under the lock so release() can't free the model while the recognizer is taking its reference
+        val recognizer = synchronized(lock) {
+            if (!isCurrent(gen) || released) return
+            Recognizer(model, SAMPLE_RATE.toFloat(), grammar)
+        }
+        try {
             // Last few seconds of audio, handed to the conversation on a match
             val ring = ByteArray(PREROLL_BYTES)
             var ringPos = 0
             var ringFull = false
             val buf = ByteArray(CHUNK_BYTES)
-            record.startRecording()
-            Log.i(TAG, "Listening for wake word (\"Hi ${assistantNameProvider()}\")")
-            // A background-started service gets a silenced mic (all zeros): report it so the app can fix it
-            val sessionId = record.audioSessionId
-            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                val audio = context.getSystemService(android.media.AudioManager::class.java)
-                val silenced = android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q &&
-                    audio?.activeRecordingConfigurations?.any { it.clientAudioSessionId == sessionId && it.isClientSilenced } == true
-                if (silenced) Log.w(TAG, "Mic is silenced (started from the background)")
-                if (running.get()) onListening(silenced)
-            }, 1500)
-            try {
-                while (running.get()) {
-                    val n = record.read(buf, 0, buf.size)
-                    if (n <= 0) continue
-                    for (i in 0 until n) {
-                        ring[ringPos] = buf[i]
-                        ringPos = (ringPos + 1) % ring.size
-                        if (ringPos == 0) ringFull = true
+            var failures = 0
+            while (isCurrent(gen)) {
+                val record = openMic()
+                if (record != null) {
+                    try {
+                        record.startRecording()
+                        Log.i(TAG, "Listening for wake word (\"Hi ${assistantNameProvider()}\")")
+                        reportSilenced(gen, record.audioSessionId)
+                        while (isCurrent(gen)) {
+                            val n = record.read(buf, 0, buf.size)
+                            if (n <= 0) {
+                                // Dead audioserver / invalidated record: reading again would spin; reopen instead
+                                Log.w(TAG, "Mic read failed ($n); reopening")
+                                break
+                            }
+                            failures = 0
+                            for (i in 0 until n) {
+                                ring[ringPos] = buf[i]
+                                ringPos = (ringPos + 1) % ring.size
+                                if (ringPos == 0) ringFull = true
+                            }
+                            if (!recognizer.acceptWaveForm(buf, n)) continue
+                            val text = JSONObject(recognizer.result).optString("text")
+                            if (text.isBlank()) continue
+                            // Never log what was said: only that something was heard
+                            if (!isWakePhrase(text, assistantNameProvider())) {
+                                Log.d(TAG, "Heard speech (no wake word)")
+                                continue
+                            }
+                            if (!finish(gen)) return
+                            Log.i(TAG, "Wake word matched")
+                            val preroll = if (ringFull) ring.copyOfRange(ringPos, ring.size) + ring.copyOfRange(0, ringPos) else ring.copyOfRange(0, ringPos)
+                            record.stop()
+                            onWake(preroll)
+                            return
+                        }
+                    } finally {
+                        runCatching { record.stop() }
+                        record.release()
                     }
-                    if (!recognizer.acceptWaveForm(buf, n)) continue
-                    val text = JSONObject(recognizer.result).optString("text")
-                    if (text.isBlank()) continue
-                    Log.d(TAG, "Heard: $text")
-                    if (isWakePhrase(text, assistantNameProvider())) {
-                        Log.i(TAG, "Wake word matched: \"$text\"")
-                        val preroll = if (ringFull) ring.copyOfRange(ringPos, ring.size) + ring.copyOfRange(0, ringPos) else ring.copyOfRange(0, ringPos)
-                        running.set(false)
-                        record.stop()
-                        onWake(preroll)
-                        break
-                    }
+                } else {
+                    Log.e(TAG, "Mic unavailable for wake word")
                 }
-            } finally {
-                runCatching { record.stop() }
-                record.release()
-                recognizer.close()
+                if (!isCurrent(gen)) return
+                if (++failures > MAX_FAILURES) {
+                    if (finish(gen)) onError("Mic unavailable for wake word")
+                    return
+                }
+                pause(gen, RETRY_BASE_MS shl (failures - 1))
             }
-        }, "wake-word").also { it.start() }
+        } finally {
+            recognizer.close()
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun openMic(): AudioRecord? {
+        val minBuf = AudioRecord.getMinBufferSize(SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
+        val record = try {
+            AudioRecord(
+                MediaRecorder.AudioSource.VOICE_RECOGNITION, SAMPLE_RATE,
+                AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, maxOf(minBuf, CHUNK_BYTES * 4)
+            )
+        } catch (e: Exception) {
+            Log.w(TAG, "Couldn't create the mic: ${e.message}")
+            return null
+        }
+        if (record.state != AudioRecord.STATE_INITIALIZED) {
+            record.release()
+            return null
+        }
+        return record
+    }
+
+    /** A background-started service gets a silenced mic (all zeros): report it so the app can fix it. */
+    private fun reportSilenced(gen: Int, sessionId: Int) {
+        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+            if (!isCurrent(gen)) return@postDelayed
+            val audio = context.getSystemService(android.media.AudioManager::class.java)
+            val silenced = android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q &&
+                audio?.activeRecordingConfigurations?.any { it.clientAudioSessionId == sessionId && it.isClientSilenced } == true
+            if (silenced) Log.w(TAG, "Mic is silenced (started from the background, or another app is recording)")
+            onListening(silenced)
+        }, 1500)
+    }
+
+    /** Sleeps between mic retries, but wakes early once stopped. */
+    private fun pause(gen: Int, ms: Long) {
+        val until = System.currentTimeMillis() + ms
+        while (isCurrent(gen) && System.currentTimeMillis() < until) Thread.sleep(100)
     }
 
     private fun isWakePhrase(text: String, assistantName: String): Boolean {

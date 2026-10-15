@@ -21,7 +21,10 @@ import kotlin.math.sqrt
  */
 class AudioRecordManager(
     private val onAudioChunkReady: (ByteArray) -> Unit,
-    private val onAmplitudeChanged: ((Float) -> Unit)? = null
+    private val onAmplitudeChanged: ((Float) -> Unit)? = null,
+    // The mic couldn't start, or died mid-conversation (resources are already released by then).
+    // Called on the caller's thread for start failures, on the recording (IO) thread for read errors
+    private val onError: (String) -> Unit = {}
 ) {
     companion object {
         private const val TAG = "AudioRecordManager"
@@ -49,11 +52,13 @@ class AudioRecordManager(
     private var openUntil = 0L
     private var previousChunk: ByteArray? = null
 
+    /** Returns true if the mic is recording now (also when it already was); on false, onError was called. */
     @SuppressLint("MissingPermission")
-    fun startRecording(coroutineScope: CoroutineScope) {
+    @Synchronized
+    fun startRecording(coroutineScope: CoroutineScope): Boolean {
         if (isRecording.get()) {
             Log.w(TAG, "Recording is already active")
-            return
+            return true
         }
 
         val minBufferSize = AudioRecord.getMinBufferSize(
@@ -65,22 +70,21 @@ class AudioRecordManager(
 
         try {
             // VOICE_COMMUNICATION enables hardware Acoustic Echo Cancellation (AEC) & Noise Suppression (NS)
-            audioRecord = AudioRecord(
+            val record = AudioRecord(
                 MediaRecorder.AudioSource.VOICE_COMMUNICATION,
                 SAMPLE_RATE,
                 CHANNEL_CONFIG,
                 AUDIO_FORMAT,
                 bufferSize
             )
+            audioRecord = record
 
-            if (audioRecord?.state != AudioRecord.STATE_INITIALIZED) {
-                Log.e(TAG, "AudioRecord initialization failed")
-                release()
-                return
+            if (record.state != AudioRecord.STATE_INITIALIZED) {
+                return fail("AudioRecord initialization failed")
             }
 
             // On top of the VOICE_COMMUNICATION source's own processing, where the phone offers them
-            audioRecord?.audioSessionId?.let { sid ->
+            record.audioSessionId.let { sid ->
                 if (NoiseSuppressor.isAvailable()) noiseSuppressor = NoiseSuppressor.create(sid)?.apply { enabled = true }
                 if (AcousticEchoCanceler.isAvailable()) echoCanceler = AcousticEchoCanceler.create(sid)?.apply { enabled = true }
             }
@@ -88,7 +92,11 @@ class AudioRecordManager(
             openUntil = 0L
             previousChunk = null
 
-            audioRecord?.startRecording()
+            record.startRecording()
+            // e.g. another app holds the mic exclusively
+            if (record.recordingState != AudioRecord.RECORDSTATE_RECORDING) {
+                return fail("AudioRecord did not start recording")
+            }
             isRecording.set(true)
             Log.i(TAG, "AudioRecord started at $SAMPLE_RATE Hz, bufferSize: $bufferSize")
 
@@ -96,7 +104,7 @@ class AudioRecordManager(
                 val audioBuffer = ByteArray(CHUNK_SIZE_BYTES)
 
                 while (isActive && isRecording.get()) {
-                    val bytesRead = audioRecord?.read(audioBuffer, 0, CHUNK_SIZE_BYTES) ?: -1
+                    val bytesRead = record.read(audioBuffer, 0, CHUNK_SIZE_BYTES)
                     if (bytesRead > 0) {
                         val chunkCopy = audioBuffer.copyOf(bytesRead)
                         val level = calculateRms(chunkCopy, bytesRead)
@@ -105,17 +113,41 @@ class AudioRecordManager(
                         // Normalized RMS amplitude for visualization [0.0 .. 1.0]
                         onAmplitudeChanged?.invoke(level)
                     } else if (bytesRead < 0) {
-                        Log.e(TAG, "AudioRecord read error: $bytesRead")
+                        // Not after stopRecording(): that clears isRecording first. Free the dead mic and
+                        // say so, instead of leaving a conversation that silently hears nothing
+                        if (closeAfterError(record)) {
+                            Log.e(TAG, "AudioRecord read error: $bytesRead")
+                            onError("Microphone stopped working (error $bytesRead)")
+                        }
                         break
                     }
                 }
             }
+            return true
         } catch (e: Exception) {
             Log.e(TAG, "Failed to start recording: ${e.message}", e)
-            release()
+            return fail("Failed to start recording: ${e.message}")
         }
     }
 
+    private fun fail(message: String): Boolean {
+        Log.e(TAG, message)
+        release()
+        onError(message)
+        return false
+    }
+
+    /** Releases [record] if it is still the live one; false if it was already stopped (or replaced). */
+    @Synchronized
+    private fun closeAfterError(record: AudioRecord): Boolean {
+        if (audioRecord !== record || !isRecording.compareAndSet(true, false)) return false
+        recordingJob = null
+        runCatching { record.stop() }
+        release()
+        return true
+    }
+
+    @Synchronized
     fun stopRecording() {
         if (!isRecording.compareAndSet(true, false)) return
         Log.i(TAG, "Stopping audio recording")
