@@ -6,7 +6,10 @@
 
 # Gson
 -keepattributes Signature, *Annotation*, EnclosingMethod, InnerClasses
--keep class * extends com.google.gson.reflect.TypeToken
+# R8 full mode drops generic signatures that Gson reads (List<TranscriptItem> fields, TypeTokens)
+-keep class com.google.gson.reflect.TypeToken { *; }
+-keep,allowobfuscation,allowshrinking class com.google.gson.reflect.TypeToken
+-keep,allowobfuscation,allowshrinking class * extends com.google.gson.reflect.TypeToken
 -keepclassmembers class * {
     @com.google.gson.annotations.SerializedName <fields>;
 }

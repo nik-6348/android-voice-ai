@@ -3,7 +3,6 @@ package com.nik.voiceassistant.data.automation
 import android.content.Context
 import android.util.Log
 import com.google.gson.Gson
-import com.google.gson.reflect.TypeToken
 import com.nik.voiceassistant.tools.DeviceToolExecutor
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -121,8 +120,8 @@ object AutomationManager {
             return defaultAutomations
         }
         return try {
-            val type = object : TypeToken<List<AutomationTask>>() {}.type
-            val loaded: List<AutomationTask> = gson.fromJson(file.readText(), type) ?: emptyList()
+            // An array type, not a TypeToken: its generic type survives R8 in release builds
+            val loaded: List<AutomationTask> = gson.fromJson(file.readText(), Array<AutomationTask>::class.java)?.toList() ?: emptyList()
             val list = repairDefaults(loaded)
             if (list != loaded) saveAll(context, list)
             if (list.isEmpty()) {
