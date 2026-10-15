@@ -6,7 +6,11 @@ import com.nik.voiceassistant.audio.AudioRecordManager
 import com.nik.voiceassistant.audio.AudioTrackManager
 import com.nik.voiceassistant.audio.CallAudio
 import com.nik.voiceassistant.audio.WakeWordManager
+import com.nik.voiceassistant.data.trace.AgentTrace
+import com.nik.voiceassistant.network.GeminiLiveClient
 import com.nik.voiceassistant.network.LiveAudioWebSocketClient
+import com.nik.voiceassistant.network.LiveClient
+import com.nik.voiceassistant.tools.ToolCallRunner
 import com.nik.voiceassistant.service.PhoneAgentService
 import com.nik.voiceassistant.service.VoiceAssistantService
 import com.nik.voiceassistant.tools.DeviceToolExecutor
@@ -69,11 +73,25 @@ class VoiceSession private constructor(val context: Context) {
         private const val END_AFTER_SILENT_MS = 800L
         // After the assistant's turn: this long with no voice and no tool before the mic reopens
         private const val MIC_REOPEN_QUIET_MS = 700L
+        // While a task is in progress the mic stays closed, unless the agent has been idle this long
+        // (it may be waiting for the user without having said so)
+        private const val TASK_IDLE_REOPEN_MS = 8_000L
+        // Screen images after actions, at most one a second (the Live API's limit)
+        private const val FRAME_INTERVAL_MS = 1_000L
+        const val MODE_DIRECT = "direct"
+        const val MODE_SERVER = "server"
+        const val DEFAULT_LIVE_MODEL = "gemini-3.8-live"
+        const val DEFAULT_LLM_BASE_URL = "https://ai.nik6348.in"
 
         @Volatile private var instance: VoiceSession? = null
 
         fun get(context: Context): VoiceSession =
-            instance ?: synchronized(this) { instance ?: VoiceSession(context.applicationContext).also { instance = it } }
+            instance ?: synchronized(this) {
+                instance ?: run {
+                    AgentTrace.init(context.applicationContext)
+                    VoiceSession(context.applicationContext).also { instance = it }
+                }
+            }
 
         // {NAME} is replaced with the assistant's name from settings, {DEVICE} with this phone's
         // live profile (instructionsFor). No app- or phone-specific procedure lives here: the model
@@ -95,6 +113,15 @@ class VoiceSession private constructor(val context: Context) {
 
             SCROLLING: scroll's result says moved=true/false. moved=false means the end of that list: stop, change direction or approach. To find an item in a long list use scroll with until_text, or the app's search.
 
+            ACTING PRECISELY:
+               - Typing: first make sure the field is the right one for your purpose from its hint/label (e.g. the message box at the bottom of a chat, not a search bar or an AI chat entry). type_text tells you which field it typed into; check it.
+               - Search boxes and single-line forms: pass submit=true so the search actually runs (it is pressed automatically in fields that look like search).
+               - Apps: open_app with the app's full name; if it lists several matches, pick the exact one.
+               - Files, photos and screenshots: never make up content:// or file:// paths; they are checked and fail. Share or attach through the app's own UI (its share button, Attach > Gallery, the screenshot preview's share).
+               - The user's constraints (budget, size, rating, date, person…) are part of the goal: look further yourself (scroll a few more results, sort, filter) before asking them to relax a constraint.
+               - You are {NAME}, running as this app ({SELF}). Never stop, force-stop, uninstall, clear, disable or turn off yourself, even if asked while handling other apps: skip yourself and act on the others (these taps are blocked anyway).
+{VISION}
+
             SPEAKING (think out loud, briefly): the user can't see your reasoning, so tell them what you're thinking as you work, in short natural lines, while you keep acting (speak, then call the tool right away; never wait in silence):
                - at the start: what you understood and your plan ("Theek hai, pehle Settings kholta hoon, phir About phone mein Build number dhundta hoon");
                - at each decision point: what you see and what you'll do next ("Yahan Build number nahi dikh raha, search karke dekhta hoon");
@@ -113,7 +140,13 @@ class VoiceSession private constructor(val context: Context) {
 
     // ---- Settings ----
 
-    private val _selectedModel = MutableStateFlow(prefs.getString("model", "gemini-2.5-flash-native-audio-latest") ?: "gemini-2.5-flash-native-audio-latest")
+    // The Live model. Installs that still have the old default move once to the current recommended one
+    private val _selectedModel = MutableStateFlow(
+        (if (!prefs.getBoolean("model_moved_38", false)) {
+            prefs.edit().putBoolean("model_moved_38", true).apply()
+            prefs.getString("model", null)?.takeUnless { it == "gemini-2.5-flash-native-audio-latest" } ?: DEFAULT_LIVE_MODEL
+        } else prefs.getString("model", null)) ?: DEFAULT_LIVE_MODEL
+    )
     val selectedModel: StateFlow<String> = _selectedModel.asStateFlow()
 
     private val _selectedVoice = MutableStateFlow(prefs.getString("voice", "Zephyr") ?: "Zephyr")
@@ -150,9 +183,39 @@ class VoiceSession private constructor(val context: Context) {
     )
     val serverUrl: StateFlow<String> = _serverUrl.asStateFlow()
 
-    // Entered in Settings and kept only on the phone (nothing is built into the APK)
-    private val _apiKey = MutableStateFlow(prefs.getString("api_key", "") ?: "")
+    // Keys are entered in Settings and kept only on the phone, encrypted with the Android Keystore
+    // (SecurePrefs); nothing is built into the APK and nothing is stored in plain text.
+    // LLM gateway key: research, screen descriptions and the server transport. A plain copy from an
+    // older version is moved into the encrypted store.
+    private val _apiKey = MutableStateFlow(migrateLlmKey())
     val apiKey: StateFlow<String> = _apiKey.asStateFlow()
+
+    private fun migrateLlmKey(): String {
+        val plain = prefs.getString("api_key", null)
+        if (!plain.isNullOrBlank() && SecurePrefs.setSecret(context, SecurePrefs.LLM_API_KEY, plain)) prefs.edit().remove("api_key").apply()
+        return SecurePrefs.secret(context, SecurePrefs.LLM_API_KEY) ?: plain.orEmpty()
+    }
+
+    // Gemini API key for the direct Live connection (only whether one is saved is kept in memory)
+    private val _hasGeminiKey = MutableStateFlow(SecurePrefs.secret(context, SecurePrefs.GEMINI_API_KEY) != null)
+    val hasGeminiKey: StateFlow<Boolean> = _hasGeminiKey.asStateFlow()
+
+    // How to reach the model: straight to Gemini Live (fastest), or through the gateway server
+    private val _connectionMode = MutableStateFlow(
+        prefs.getString("connection_mode", null) ?: if (_hasGeminiKey.value) MODE_DIRECT else MODE_SERVER
+    )
+    val connectionMode: StateFlow<String> = _connectionMode.asStateFlow()
+
+    // The LLM gateway (OpenAI-compatible) for research and screen descriptions
+    private val _llmBaseUrl = MutableStateFlow(prefs.getString("llm_base_url", null)?.ifBlank { null } ?: DEFAULT_LLM_BASE_URL)
+    val llmBaseUrl: StateFlow<String> = _llmBaseUrl.asStateFlow()
+
+    // Screen images go to the model after each action (direct connection), so it sees what the element list misses
+    private val _visionFrames = MutableStateFlow(prefs.getBoolean("vision_frames", true))
+    val visionFrames: StateFlow<Boolean> = _visionFrames.asStateFlow()
+
+    /** Whether a conversation can start: the key the chosen connection needs is saved. */
+    fun hasCredentials(): Boolean = if (_connectionMode.value == MODE_DIRECT) _hasGeminiKey.value else _apiKey.value.isNotBlank()
 
     // "Hi Nik" listening in the background between conversations. Off by default: it keeps the mic
     // open all the time; the assistant gesture (AssistActivity) opens it only when called
@@ -289,7 +352,13 @@ class VoiceSession private constructor(val context: Context) {
         },
         takeConfirmation = ::takeConfirmation,
         research = ::research,
-        onPlan = { _plan.value = it }
+        onPlan = { plan ->
+            _plan.value = plan
+            plan?.let {
+                val step = it.steps.getOrNull(it.currentStep - 1)?.let { s -> " · step ${it.currentStep}/${it.steps.size}: $s" } ?: ""
+                AgentTrace.log(AgentTrace.Kind.PLAN, "[${it.status}] ${it.goal}$step${it.note?.let { n -> " — $n" } ?: ""}")
+            }
+        }
     )
 
     // Yes-after-asking, for buttons that send / pay / delete (see DeviceToolExecutor.NEEDS_YES)
@@ -326,7 +395,15 @@ class VoiceSession private constructor(val context: Context) {
      * What a screenshot shows, from the gateway's /v1/chat/completions (its Gemini web backend, so
      * no Gemini API key quota is used). Blocking; null on any failure. ~4 s.
      */
-    private fun describeImage(jpeg: ByteArray, prompt: String): String? = chat(prompt, jpeg, "Screen description")
+    private fun describeImage(jpeg: ByteArray, prompt: String): String? {
+        // The live model can look at the image itself: quicker and it knows the conversation
+        val client = webSocketClient
+        if (_visionFrames.value && client.supportsVision && client.sendImage(jpeg)) {
+            lastFrameAt = System.currentTimeMillis()
+            return "The screenshot was just sent to you as an image: look at it to answer."
+        }
+        return chat(prompt, jpeg, "Screen description")
+    }
 
     /**
      * An answer from the web for the model's research tool: the gateway's Gemini web backend (it
@@ -360,9 +437,11 @@ class VoiceSession private constructor(val context: Context) {
     }
 
     /** The gateway's HTTP base from the WebSocket URL in settings. */
-    private fun gatewayBase(): String = _serverUrl.value.trim().substringBefore("?")
-        .replaceFirst("wss://", "https://").replaceFirst("ws://", "http://")
-        .substringBefore("/ws/").substringBefore("/v1/")
+    private fun gatewayBase(): String = _llmBaseUrl.value.trim().trimEnd('/').removeSuffix("/v1").ifBlank {
+        _serverUrl.value.trim().substringBefore("?")
+            .replaceFirst("wss://", "https://").replaceFirst("ws://", "http://")
+            .substringBefore("/ws/").substringBefore("/v1/")
+    }
 
     /** One reply from the gateway's /v1/chat/completions, with an optional JPEG attached. */
     private fun chat(prompt: String, jpeg: ByteArray?, what: String): String? {
@@ -406,14 +485,16 @@ class VoiceSession private constructor(val context: Context) {
         }
     )
 
-    private fun sendPlayback(playing: Boolean) {
-        webSocketClient.sendJson("""{"type":"playback","playing":$playing}""")
-    }
+    private fun sendPlayback(playing: Boolean) = webSocketClient.sendPlayback(playing)
 
-    val webSocketClient: LiveAudioWebSocketClient = LiveAudioWebSocketClient(
-        audioTrackManager = audioTrackManager,
-        toolExecutor = toolExecutor,
-        listener = object : LiveAudioWebSocketClient.Callback {
+    // Set when the user's voice last passed the mic gate, and when typed text was sent: the start of
+    // the wait for the reply (response-latency metric)
+    @Volatile private var lastUserInputAt = 0L
+    // A tool result that couldn't reach the model because the connection dropped
+    @Volatile private var lostToolResult: String? = null
+    @Volatile private var lastFrameAt = 0L
+
+    private val liveCallback: LiveClient.Callback = object : LiveClient.Callback {
             override fun onConnected() {
                 val wasReconnecting = reconnecting
                 reconnecting = false
@@ -425,10 +506,14 @@ class VoiceSession private constructor(val context: Context) {
                 if (audioTrackManager.isAudible()) sendPlayback(true)
                 if (wasReconnecting) {
                     addTranscript("system", "Reconnected")
+                    AgentTrace.log(AgentTrace.Kind.NETWORK, "Reconnected")
+                    resumeTaskAfterDrop()
                     return
                 }
                 val searchStatus = if (_isSearchEnabled.value) "Web Search ON" else "Instant Low-Latency"
-                addTranscript("system", "Connected (${_selectedModel.value.substringAfter("gemini-")}, Voice: ${_selectedVoice.value}, $searchStatus)")
+                val route = if (webSocketClient === directClient) "direct" else "via server"
+                AgentTrace.log(AgentTrace.Kind.NETWORK, "Connected $route (${_selectedModel.value}, voice ${_selectedVoice.value})")
+                addTranscript("system", "Connected $route (${_selectedModel.value.substringAfter("gemini-")}, Voice: ${_selectedVoice.value}, $searchStatus)")
             }
 
             override fun onReconnecting(attempt: Int, reason: String) {
@@ -444,6 +529,7 @@ class VoiceSession private constructor(val context: Context) {
 
             override fun onError(error: Throwable) {
                 _connectionStatus.value = ConnectionStatus.ERROR
+                AgentTrace.log(AgentTrace.Kind.ERROR, error.message ?: error.toString())
                 addTranscript("system", "Network Error: ${error.localizedMessage ?: error.message}")
                 // Give the mic back to "Hi Nik"
                 scope.launch { endConversation() }
@@ -456,6 +542,7 @@ class VoiceSession private constructor(val context: Context) {
                 awaitingUser = false
                 openedByUser = false
                 replyTurnOpen = false
+                AgentTrace.log(AgentTrace.Kind.USER, text)
                 noteAnswer(text)
                 _choices.value = null // answered by voice
                 addTranscript("user", text)
@@ -503,7 +590,20 @@ class VoiceSession private constructor(val context: Context) {
                 _activeToolStatus.value = statusText
             }
 
+            override fun onModelAudioStart() {
+                val started = lastUserInputAt
+                lastUserInputAt = 0L
+                val waited = System.currentTimeMillis() - started
+                if (started > 0 && waited in 0..20_000) AgentTrace.log(AgentTrace.Kind.LATENCY, "Reply started after the user finished", ms = waited)
+            }
+
+            override fun onToolResultLost(toolName: String, resultSummary: String) {
+                lostToolResult = "$toolName → $resultSummary"
+                AgentTrace.log(AgentTrace.Kind.WARNING, "Result of $toolName didn't reach the model (connection dropped); will tell it after reconnecting")
+            }
+
             override fun onTurnComplete() {
+                if (replyTurnOpen && _liveReply.value.isNotBlank()) AgentTrace.log(AgentTrace.Kind.REPLY, _liveReply.value)
                 replyTurnOpen = false
                 // The watchdog opens the mic once the reply has played and no tool is running
                 reopenWhenDone = true
@@ -523,7 +623,49 @@ class VoiceSession private constructor(val context: Context) {
                 }
             }
         }
-    )
+
+    private val toolRunner: ToolCallRunner = ToolCallRunner(toolExecutor, liveCallback, ::beforeToolResponse)
+    private val directClient: GeminiLiveClient = GeminiLiveClient(audioTrackManager, toolRunner, { toolExecutor.declarations }, liveCallback)
+    private val relayClient: LiveAudioWebSocketClient = LiveAudioWebSocketClient(audioTrackManager, toolRunner, { toolExecutor.declarations }, liveCallback)
+
+    // The transport of the current conversation (Settings > Connection)
+    @Volatile var webSocketClient: LiveClient = if (_connectionMode.value == MODE_DIRECT) directClient else relayClient
+        private set
+
+    // Tools after which the model gets a fresh look at the screen
+    private val visualTools = setOf("tap", "type_text", "scroll", "swipe", "navigate", "launch_intent", "open_app", "open_website", "wait", "read_screen", "unlock_phone", "make_call")
+
+    /**
+     * Right before a tool's result goes back: an image of the app on screen, so the model sees what
+     * the element list can't (popups, ads, images, layout). App window only, never the overlay.
+     */
+    private fun beforeToolResponse(toolName: String, result: Map<String, Any?>) {
+        val client = webSocketClient
+        if (!_visionFrames.value || !client.supportsVision || toolName !in visualTools) return
+        val agent = PhoneAgentService.instance ?: return
+        val wait = FRAME_INTERVAL_MS - (System.currentTimeMillis() - lastFrameAt)
+        if (wait > 0) Thread.sleep(wait)
+        val jpeg = agent.appWindowJpeg() ?: return
+        if (client.sendImage(jpeg)) lastFrameAt = System.currentTimeMillis()
+    }
+
+    /**
+     * After a dropped connection comes back mid-task: tell the model to carry on by itself (and what
+     * its last action did, if that result was lost), instead of waiting for the user to speak.
+     */
+    private fun resumeTaskAfterDrop() {
+        val plan = toolExecutor.plan?.takeIf { it.status == "working" || it.status == "blocked" }
+        val lost = lostToolResult.also { lostToolResult = null }
+        if (plan == null && lost == null) return
+        val note = buildString {
+            append("(Note from the app, not the user: the connection dropped and is back. ")
+            lost?.let { append("Your last action already ran: $it. ") }
+            plan?.let { append("Carry on with the task \"${it.goal}\" from step ${it.currentStep} on your own; ") }
+            append("look at the screen first, and don't wait for the user.)")
+        }
+        AgentTrace.log(AgentTrace.Kind.NETWORK, "Resuming the task after the reconnect")
+        sendTextNow(note)
+    }
 
     private val callAudio = CallAudio(context)
 
@@ -565,6 +707,7 @@ class VoiceSession private constructor(val context: Context) {
             } else {
                 chunkRms > 0.012 || now < bargeInOpenUntil
             }
+            if (pass && chunkRms > 0.02) lastUserInputAt = now
             webSocketClient.sendAudioChunk(if (pass) chunk else ByteArray(chunk.size))
         },
         onAmplitudeChanged = { amp -> _micAmplitude.value = if (_isMicMuted.value) 0f else amp }
@@ -597,15 +740,6 @@ class VoiceSession private constructor(val context: Context) {
     val isActive: Boolean
         get() = _isRecording.value
 
-    private fun buildConnectionUrl(): String {
-        val raw = _serverUrl.value.trim()
-        val base = if (raw.contains("?")) raw.substringBefore("?") else raw
-        // setup=true: tools and instructions go in the first WebSocket message (LiveAudioWebSocketClient)
-        // transcribe: the speech-to-text model writes the user's words (better Hindi than the voice model)
-        return "$base?model=${_selectedModel.value}&voice=${_selectedVoice.value}&search=${_isSearchEnabled.value}" +
-            "&setup=true&transcribe=true&transcribe_language=hi-IN,en-IN"
-    }
-
     /**
      * Starts a conversation. preroll: mic audio from just before (the "Hi Nik, …" the wake word
      * detector heard), sent first so a request spoken in the same breath isn't lost.
@@ -613,12 +747,15 @@ class VoiceSession private constructor(val context: Context) {
     fun start(preroll: ByteArray? = null) {
         scope.launch {
             if (_isRecording.value) return@launch
-            if (_apiKey.value.isBlank()) {
+            val direct = _connectionMode.value == MODE_DIRECT
+            val key = if (direct) SecurePrefs.secret(context, SecurePrefs.GEMINI_API_KEY) else _apiKey.value.ifBlank { null }
+            if (key == null) {
                 _connectionStatus.value = ConnectionStatus.ERROR
-                addTranscript("system", "Add your API key in Settings (⚙) first, then tap the mic.")
+                addTranscript("system", if (direct) "Add your Gemini API key in Settings (⚙) first, then tap the mic." else "Add your API key in Settings (⚙) first, then tap the mic.")
                 onConversationEnded?.invoke()
                 return@launch
             }
+            webSocketClient = if (direct) directClient else relayClient
             Log.i(TAG, "Conversation starting${if (preroll != null) " (wake word, ${preroll.size} bytes preroll)" else ""}")
             _connectionStatus.value = ConnectionStatus.CONNECTING
             endRequested = false
@@ -633,7 +770,14 @@ class VoiceSession private constructor(val context: Context) {
             callAudio.enter()
             preroll?.let { webSocketClient.queueAudio(it) }
             val resumeHandleToUse = currentSessionResumeHandle()
-            webSocketClient.connect(buildConnectionUrl(), _apiKey.value, ::instructionsFor, resumeHandleToUse)
+            AgentTrace.log(AgentTrace.Kind.SESSION, "Conversation started (${if (direct) "direct" else "via server"}, ${_selectedModel.value})")
+            lostToolResult = null
+            webSocketClient.connect(
+                LiveClient.Config(
+                    serverUrl = _serverUrl.value, apiKey = key, model = _selectedModel.value, voice = _selectedVoice.value,
+                    search = _isSearchEnabled.value, instructions = ::instructionsFor, resumeHandle = resumeHandleToUse
+                )
+            )
             audioRecordManager.startRecording(scope)
             _isRecording.value = true
             startWatchdog()
@@ -669,6 +813,7 @@ class VoiceSession private constructor(val context: Context) {
     private fun endConversation() {
         if (!_isRecording.value) return
         Log.i(TAG, "Conversation ended")
+        AgentTrace.log(AgentTrace.Kind.SESSION, "Conversation ended")
         shutDown()
         addTranscript("system", if (_isWakeWordEnabled.value) "Sleeping — say \"Hi ${_assistantName.value}\" to wake me" else "Conversation ended")
         onConversationEnded?.invoke()
@@ -735,6 +880,7 @@ class VoiceSession private constructor(val context: Context) {
         val t = text.trim()
         if (t.isEmpty()) return
         addTranscript("user", t)
+        AgentTrace.log(AgentTrace.Kind.USER, "(typed) $t")
         noteAnswer(t)
         markTaskActivity()
 
@@ -750,7 +896,8 @@ class VoiceSession private constructor(val context: Context) {
     }
 
     private fun sendTextNow(text: String) {
-        webSocketClient.sendJson(JSONObject().put("type", "text").put("text", text).toString())
+        lastUserInputAt = System.currentTimeMillis()
+        webSocketClient.sendText(text)
     }
 
     fun toggle() {
@@ -770,8 +917,10 @@ class VoiceSession private constructor(val context: Context) {
                 val quietFor = if (silentSince == 0L) 0L else now - silentSince
                 val isBusy = audible || webSocketClient.isToolRunning() || now < taskInProgressUntil
                 // The assistant is done (turn over, voice quiet, no tool for a moment): the user's turn
+                // A task still in progress keeps it closed (noise can't derail the task), unless the agent has gone idle
+                val taskRunning = toolExecutor.plan?.status == "working" && now - maxOf(lastToolEnd, lastActivity) < TASK_IDLE_REOPEN_MS
                 if (reopenWhenDone && _isMicMuted.value && _autoMute.value && quietFor >= MIC_REOPEN_QUIET_MS &&
-                    !webSocketClient.isToolRunning() && now - lastToolEnd >= MIC_REOPEN_QUIET_MS && !endRequested
+                    !webSocketClient.isToolRunning() && now - lastToolEnd >= MIC_REOPEN_QUIET_MS && !endRequested && !taskRunning
                 ) openMic()
                 when {
                     // "bye" always ends, even with auto-sleep off
@@ -847,8 +996,14 @@ class VoiceSession private constructor(val context: Context) {
      * transcript) so a new session still knows what was going on.
      */
     private fun instructionsFor(resuming: Boolean): String {
-        val base = DEFAULT_INSTRUCTIONS.replace("{NAME}", _assistantName.value).replace("{DEVICE}", toolExecutor.deviceProfile()) +
-            "\n\n" + lockPolicy()
+        val vision = if (_visionFrames.value && webSocketClient.supportsVision)
+            "\n            SEEING: after each action you also get an image of the screen. Use it with the element list: it shows what the list misses (popups, ads, images, colours, where things are). Close what is in the way first."
+        else ""
+        val base = DEFAULT_INSTRUCTIONS
+            .replace("{NAME}", _assistantName.value)
+            .replace("{SELF}", toolExecutor.selfDescription())
+            .replace("{DEVICE}", toolExecutor.deviceProfile())
+            .replace("{VISION}", vision) + "\n\n" + lockPolicy()
         if (resuming) return base
         val recent = _transcripts.value.filter { it.sender == "user" || it.sender == "assistant" }.takeLast(10)
         if (recent.isEmpty()) return base
@@ -873,26 +1028,83 @@ class VoiceSession private constructor(val context: Context) {
         if (enabled) VoiceAssistantService.startListening(context) else if (!_isRecording.value) VoiceAssistantService.stop(context)
     }
 
-    fun saveSettings(model: String, voice: String, searchEnabled: Boolean, url: String, key: String) {
+    /**
+     * Saves settings and restarts a running conversation with them. Keys: null or blank keeps the
+     * saved one. Returns false if a key couldn't be stored (the encrypted store is unavailable): it
+     * is then not saved at all, never in plain text.
+     */
+    fun saveSettings(
+        model: String, voice: String, searchEnabled: Boolean, url: String, mode: String,
+        geminiKey: String?, llmBaseUrl: String, llmKey: String?, vision: Boolean
+    ): Boolean {
         val wasActive = _isRecording.value
         if (wasActive) shutDown()
+
+        var stored = true
+        geminiKey?.trim()?.takeIf { it.isNotEmpty() }?.let { k ->
+            stored = SecurePrefs.setSecret(context, SecurePrefs.GEMINI_API_KEY, k) && stored
+            _hasGeminiKey.value = SecurePrefs.secret(context, SecurePrefs.GEMINI_API_KEY) != null
+        }
+        llmKey?.trim()?.takeIf { it.isNotEmpty() }?.let { k ->
+            stored = SecurePrefs.setSecret(context, SecurePrefs.LLM_API_KEY, k) && stored
+            _apiKey.value = SecurePrefs.secret(context, SecurePrefs.LLM_API_KEY).orEmpty()
+        }
 
         _selectedModel.value = model
         _selectedVoice.value = voice
         _isSearchEnabled.value = searchEnabled
         _serverUrl.value = url.trim()
-        _apiKey.value = key.trim()
+        _connectionMode.value = mode
+        _llmBaseUrl.value = llmBaseUrl.trim().ifBlank { DEFAULT_LLM_BASE_URL }
+        _visionFrames.value = vision
 
         prefs.edit()
             .putString("model", model)
             .putString("voice", voice)
             .putBoolean("search_enabled", searchEnabled)
             .putString("server_url", url.trim())
-            .putString("api_key", key.trim())
+            .putString("connection_mode", mode)
+            .putString("llm_base_url", _llmBaseUrl.value)
+            .putBoolean("vision_frames", vision)
             .apply()
 
-        addTranscript("system", "Settings updated: $model ($voice), Search: $searchEnabled")
+        addTranscript("system", "Settings updated: $model ($voice), ${if (mode == MODE_DIRECT) "direct to Gemini" else "via server"}, Search: $searchEnabled")
         if (wasActive) start()
+        return stored
+    }
+
+    /** Removes a saved key (Settings). */
+    fun clearKey(name: String) {
+        SecurePrefs.setSecret(context, name, null)
+        if (name == SecurePrefs.GEMINI_API_KEY) _hasGeminiKey.value = false
+        if (name == SecurePrefs.LLM_API_KEY) _apiKey.value = ""
+    }
+
+    /**
+     * Live models this Gemini key can use, read from Google (models that support the Live API's
+     * bidiGenerateContent), so new models show up without an app update. Null on failure.
+     */
+    suspend fun fetchLiveModels(): List<String>? = kotlinx.coroutines.withContext(Dispatchers.IO) {
+        val key = SecurePrefs.secret(context, SecurePrefs.GEMINI_API_KEY) ?: return@withContext null
+        val request = Request.Builder()
+            .url("https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000")
+            .header("x-goog-api-key", key)
+            .build()
+        try {
+            http.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) return@use null
+                val models = JSONObject(response.body?.string().orEmpty()).optJSONArray("models") ?: return@use null
+                (0 until models.length()).mapNotNull { i ->
+                    val m = models.getJSONObject(i)
+                    val methods = m.optJSONArray("supportedGenerationMethods") ?: return@mapNotNull null
+                    val live = (0 until methods.length()).any { methods.getString(it) == "bidiGenerateContent" }
+                    if (live) m.optString("name").removePrefix("models/") else null
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Couldn't list live models: ${e.message}")
+            null
+        }
     }
 
     /** Screen control (accessibility service) is on. */

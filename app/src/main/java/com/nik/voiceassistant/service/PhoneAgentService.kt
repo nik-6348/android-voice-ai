@@ -164,11 +164,11 @@ class PhoneAgentService : AccessibilityService() {
      * The screen as a JPEG about 720 px wide, or null: Android 10 and older, an app that blocks
      * screenshots (banking, DRM video shows black), or the system refusing (too soon after the last).
      */
-    fun screenshotJpeg(): ByteArray? {
+    fun screenshotJpeg(hideOverlay: Boolean = true): ByteArray? {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return null
         val latch = CountDownLatch(1)
         var shot: Bitmap? = null
-        overlayHidden?.invoke(true)
+        if (hideOverlay) overlayHidden?.invoke(true)
         try {
             takeScreenshot(Display.DEFAULT_DISPLAY, mainExecutor, object : TakeScreenshotCallback {
                 override fun onSuccess(result: ScreenshotResult) {
@@ -184,12 +184,46 @@ class PhoneAgentService : AccessibilityService() {
             })
             latch.await(3, TimeUnit.SECONDS)
         } finally {
-            overlayHidden?.invoke(false)
+            if (hideOverlay) overlayHidden?.invoke(false)
         }
-        val full = shot ?: return null
+        return shot?.let { jpeg(it, 70) }
+    }
+
+    /**
+     * The app on screen as a JPEG, for the model to look at after each action. Android 14+ captures
+     * the app's own window (without the assistant overlay, so nothing needs hiding or flickers);
+     * older versions capture the whole screen as is. Null if not possible (secure apps show black).
+     */
+    fun appWindowJpeg(): ByteArray? {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            val window = windows.filter { it.type == AccessibilityWindowInfo.TYPE_APPLICATION }
+                .let { app -> app.firstOrNull { it.isActive } ?: app.maxByOrNull { it.layer } }
+            if (window != null) {
+                val latch = CountDownLatch(1)
+                var shot: Bitmap? = null
+                takeScreenshotOfWindow(window.id, mainExecutor, object : TakeScreenshotCallback {
+                    override fun onSuccess(result: ScreenshotResult) {
+                        shot = Bitmap.wrapHardwareBuffer(result.hardwareBuffer, result.colorSpace)?.copy(Bitmap.Config.ARGB_8888, false)
+                        result.hardwareBuffer.close()
+                        latch.countDown()
+                    }
+
+                    override fun onFailure(errorCode: Int) {
+                        Log.w(TAG, "Window screenshot failed: $errorCode")
+                        latch.countDown()
+                    }
+                })
+                latch.await(3, TimeUnit.SECONDS)
+                shot?.let { return jpeg(it, 60) }
+            }
+        }
+        return screenshotJpeg(hideOverlay = false)
+    }
+
+    private fun jpeg(full: Bitmap, quality: Int): ByteArray {
         val width = minOf(720, full.width)
         val scaled = Bitmap.createScaledBitmap(full, width, full.height * width / full.width, true)
-        return ByteArrayOutputStream().also { scaled.compress(Bitmap.CompressFormat.JPEG, 70, it) }.toByteArray()
+        return ByteArrayOutputStream().also { scaled.compress(Bitmap.CompressFormat.JPEG, quality, it) }.toByteArray()
     }
 
     private fun collect(node: AccessibilityNodeInfo?, found: MutableList<AccessibilityNodeInfo>, lines: MutableList<String>, covered: String?) {
@@ -296,18 +330,84 @@ class PhoneAgentService : AccessibilityService() {
         return after("${if (longPress) "long-pressed" else "tapped"} ${label(node)}", ok)
     }
 
-    fun typeText(text: String, elementId: Int?, submit: Boolean): Map<String, Any?> {
-        val node = (if (elementId != null) find(elementId, null) else null)
+    /**
+     * Types into a field: the given one, else the focused one, else the only one on screen. With
+     * several fields and none focused it doesn't guess: it lists them for the model to pick.
+     * submit null = press enter automatically when the field looks like a search / address box.
+     */
+    fun typeText(text: String, elementId: Int?, submit: Boolean?): Map<String, Any?> {
+        val given = elementId?.let { id ->
+            val n = find(id, null) ?: return notFound(id, null)
+            // An element inside the field, or its label: use the editable one in or around it
+            n.takeIf { it.isEditable } ?: firstMatching(n) { it.isEditable } ?: generateSequence(n.parent) { it.parent }.take(3).firstNotNullOfOrNull { p -> firstMatching(p) { it.isEditable } }
+                ?: return mapOf("error" to "Element [$id] isn't a text field; pick a field (marked edit) from the screen")
+        }
+        val node = given
             ?: rootInActiveWindow?.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)?.takeIf { it.isEditable }
-            ?: firstMatching(rootInActiveWindow) { it.isEditable && it.isVisibleToUser }
+            ?: run {
+                val fields = appRoots().flatMap { root -> allMatching(root) { it.isEditable && it.isVisibleToUser } }
+                if (fields.size > 1) {
+                    readScreenOnce()
+                    val listed = fields.map { f -> "[${elements.indexOf(f).takeIf { it >= 0 } ?: "?"}] ${fieldName(f)}" }
+                    return mapOf(
+                        "error" to "Several text fields are on screen; call type_text again with the element_id of the one you mean",
+                        "fields" to listed
+                    )
+                }
+                fields.firstOrNull()
+            }
             ?: return mapOf("error" to "No text field found; tap the field first or pass its element_id")
         if (!node.isFocused) node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
         val args = Bundle().apply { putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text) }
         val ok = node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
-        if (ok && submit && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            node.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER.id)
+        val field = fieldName(node)
+        val press = submit ?: looksLikeSearch(node)
+        var submitted = false
+        if (ok && press && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            submitted = node.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER.id)
         }
-        return after("typed \"$text\" into ${label(node)}${if (submit) " and pressed enter" else ""}", ok)
+        return after("typed \"$text\" into $field${if (submitted) " and pressed enter" else ""}", ok) +
+            buildMap {
+                put("field", field)
+                if (press && !submitted) put("note", "The enter key couldn't be pressed here: tap the search / send button")
+            }
+    }
+
+    /** How a field presents itself: its hint, label or id. */
+    private fun fieldName(node: AccessibilityNodeInfo): String {
+        val hint = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) clean(node.hintText) else null
+        return listOfNotNull(hint, clean(node.contentDescription), node.viewIdResourceName?.substringAfterLast('/'))
+            .distinct().joinToString(" / ").ifBlank { kind(node) }.let { "field \"$it\"" }
+    }
+
+    /** A single-line field that presents itself as search / address / URL (from its own hint and id). */
+    private fun looksLikeSearch(node: AccessibilityNodeInfo): Boolean {
+        if (node.isMultiLine) return false
+        val hint = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) node.hintText?.toString().orEmpty() else ""
+        val about = "$hint ${node.contentDescription ?: ""} ${node.viewIdResourceName ?: ""}"
+        return Regex("(?i)search|query|find|url|address|omnibox|खोज|सर्च").containsMatchIn(about)
+    }
+
+    /** What a tap on an element would act on, for safety checks. */
+    data class Target(val label: String, val rowLabel: String, val viewId: String?, val checkable: Boolean, val checked: Boolean, val app: String?)
+
+    fun target(elementId: Int?, text: String?): Target? {
+        val node = find(elementId, text) ?: return null
+        var clickable: AccessibilityNodeInfo? = node
+        while (clickable != null && !clickable.isClickable) clickable = clickable.parent
+        val acting = clickable ?: node
+        // The row it sits in (a list item: app name + switch), for "whose button is this"
+        val row = acting.parent
+        val label = listOfNotNull(ownLabel(node), ownLabel(acting), childText(acting)).joinToString(" ")
+        val rowLabel = listOfNotNull(label, row?.let { ownLabel(it) }, row?.let { childText(it) }).joinToString(" ")
+        val switch = listOf(node, acting).firstOrNull { it.isCheckable }
+        return Target(label, rowLabel, acting.viewIdResourceName ?: node.viewIdResourceName, switch != null, switch?.isChecked == true, rootInActiveWindow?.packageName?.toString())
+    }
+
+    /** Whether one of these names is a heading near the top of the screen (a page about that app). */
+    fun screenShowsTitle(names: List<String>): Boolean {
+        val top = allMatching(rootInActiveWindow) { it.isVisibleToUser && (ownLabel(it) != null) }.take(12)
+        return top.any { n -> ownLabel(n)?.let { label -> names.any { label.equals(it, ignoreCase = true) } } == true }
     }
 
     /**

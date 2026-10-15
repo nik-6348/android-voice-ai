@@ -15,6 +15,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.Timeline
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Icon
@@ -32,6 +33,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.nik.voiceassistant.VoiceAssistantViewModel
+import com.nik.voiceassistant.ui.screens.ActivityTab
 import com.nik.voiceassistant.ui.screens.AssistantLiveTab
 import com.nik.voiceassistant.ui.screens.AutomationsTab
 import com.nik.voiceassistant.ui.screens.HistoryTab
@@ -42,16 +44,16 @@ enum class NavTab(val title: String, val icon: ImageVector) {
     ASSISTANT("Assistant", Icons.Default.Mic),
     AUTOMATIONS("Automations", Icons.Default.Bolt),
     HISTORY("History", Icons.Default.History),
+    ACTIVITY("Activity", Icons.Default.Timeline),
     SETTINGS("Settings", Icons.Default.Settings)
 }
 
 @Composable
 fun VoiceAssistantScreen(viewModel: VoiceAssistantViewModel) {
-    val currentApiKey by viewModel.apiKey.collectAsState()
-    
+ 
     // Default to Assistant tab, or Settings if API key is not yet set
     var selectedTab by remember {
-        mutableStateOf(if (currentApiKey.isBlank()) NavTab.SETTINGS else NavTab.ASSISTANT)
+        mutableStateOf(if (!viewModel.hasCredentials()) NavTab.SETTINGS else NavTab.ASSISTANT)
     }
 
     Box(
@@ -111,6 +113,7 @@ fun VoiceAssistantScreen(viewModel: VoiceAssistantViewModel) {
                             viewModel = viewModel,
                             onNavigateToAssistant = { selectedTab = NavTab.ASSISTANT }
                         )
+                        NavTab.ACTIVITY -> ActivityTab(viewModel)
                         NavTab.SETTINGS -> SettingsTab(
                             viewModel = viewModel
                         )

@@ -27,6 +27,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.nik.voiceassistant.VoiceAssistantViewModel
 import com.nik.voiceassistant.service.PhoneAgentService
+import com.nik.voiceassistant.SecurePrefs
+import com.nik.voiceassistant.VoiceSession
 import com.nik.voiceassistant.ui.theme.*
 
 @Composable
@@ -39,6 +41,12 @@ fun SettingsTab(
     val isSearchEnabled by viewModel.isSearchEnabled.collectAsState()
     val currentServerUrl by viewModel.serverUrl.collectAsState()
     val currentApiKey by viewModel.apiKey.collectAsState()
+    val hasGeminiKey by viewModel.hasGeminiKey.collectAsState()
+    val currentMode by viewModel.connectionMode.collectAsState()
+    val currentLlmBase by viewModel.llmBaseUrl.collectAsState()
+    val currentVision by viewModel.visionFrames.collectAsState()
+    val models by viewModel.availableModels.collectAsState()
+    val modelsLoading by viewModel.modelsLoading.collectAsState()
     val isWakeWordEnabled by viewModel.isWakeWordEnabled.collectAsState()
     val assistantName by viewModel.assistantName.collectAsState()
     val autoSleep by viewModel.autoSleep.collectAsState()
@@ -48,8 +56,13 @@ fun SettingsTab(
     var voice by remember { mutableStateOf(currentVoice) }
     var searchEnabled by remember { mutableStateOf(isSearchEnabled) }
     var serverUrl by remember { mutableStateOf(currentServerUrl) }
-    var apiKey by remember { mutableStateOf(currentApiKey) }
+    // Key fields start empty: a saved key is never shown again; typing a new one replaces it
+    var apiKey by remember { mutableStateOf("") }
+    var geminiKey by remember { mutableStateOf("") }
     var showApiKey by remember { mutableStateOf(false) }
+    var mode by remember { mutableStateOf(currentMode) }
+    var llmBase by remember { mutableStateOf(currentLlmBase) }
+    var vision by remember { mutableStateOf(currentVision) }
 
     var nameInput by remember { mutableStateOf(assistantName) }
     var pinInput by remember { mutableStateOf("") }
@@ -312,10 +325,21 @@ fun SettingsTab(
         // ---- 3. AI MODEL & SEARCH ----
         item {
             SettingsCard(title = "AI Model & Search", icon = Icons.Default.Psychology) {
-                Text("Gemini Live Audio Model", color = TextPrimary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Gemini Live Model", color = TextPrimary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+                    if (hasGeminiKey) {
+                        TextButton(onClick = {
+                            viewModel.refreshLiveModels { ok ->
+                                Toast.makeText(context, if (ok) "Models updated from Google" else "Couldn't load models (check the Gemini key)", Toast.LENGTH_SHORT).show()
+                            }
+                        }) {
+                            Text(if (modelsLoading) "Loading…" else "Refresh from Google", color = CyanAccent, fontSize = 12.sp)
+                        }
+                    }
+                }
                 Spacer(modifier = Modifier.height(8.dp))
 
-                viewModel.availableModels.forEach { opt ->
+                models.forEach { opt ->
                     val sel = model == opt.id
                     Card(
                         modifier = Modifier
@@ -369,45 +393,70 @@ fun SettingsTab(
             }
         }
 
-        // ---- 4. SERVER & API KEY ----
+        // ---- 4. CONNECTION & KEYS ----
         item {
-            SettingsCard(title = "Connection & API Key", icon = Icons.Default.Cloud) {
-                OutlinedTextField(
-                    value = serverUrl,
-                    onValueChange = { serverUrl = it },
-                    label = { Text("WebSocket Server URL", color = TextSecondary) },
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(12.dp),
-                    singleLine = true,
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedTextColor = TextPrimary, unfocusedTextColor = TextPrimary,
-                        focusedBorderColor = CyanAccent, unfocusedBorderColor = GlassBorder,
-                        focusedContainerColor = SurfaceDark, unfocusedContainerColor = SurfaceDark
-                    )
-                )
+            SettingsCard(title = "Connection & Keys", icon = Icons.Default.Cloud) {
+                Text("How to reach the AI", color = TextPrimary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                Spacer(modifier = Modifier.height(8.dp))
+                listOf(
+                    Triple(VoiceSession.MODE_DIRECT, "Direct to Gemini Live", "Fastest: the phone talks to Google itself. Needs a Gemini API key. Sends screen images to the AI."),
+                    Triple(VoiceSession.MODE_SERVER, "Through your server", "Via the WebSocket server below (its own Hindi speech-to-text). Uses the LLM key.")
+                ).forEach { (id, title, desc) ->
+                    val sel = mode == id
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 4.dp)
+                            .border(1.dp, if (sel) CyanAccent else GlassBorder, RoundedCornerShape(12.dp))
+                            .clickable { mode = id },
+                        shape = RoundedCornerShape(12.dp),
+                        colors = CardDefaults.cardColors(containerColor = if (sel) CyanAccent.copy(alpha = 0.1f) else SurfaceDark)
+                    ) {
+                        Column(modifier = Modifier.padding(10.dp)) {
+                            Text(title, color = if (sel) CyanAccent else TextPrimary, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                            Text(desc, color = TextSecondary, fontSize = 11.sp, lineHeight = 14.sp)
+                        }
+                    }
+                }
 
                 Spacer(modifier = Modifier.height(10.dp))
-
-                OutlinedTextField(
-                    value = apiKey,
-                    onValueChange = { apiKey = it },
-                    label = { Text("Gemini API Key", color = TextSecondary) },
-                    placeholder = { Text("AIzaSy… (Optional if server embeds key)", color = TextMuted) },
-                    visualTransformation = if (showApiKey) VisualTransformation.None else PasswordVisualTransformation(),
-                    trailingIcon = {
-                        IconButton(onClick = { showApiKey = !showApiKey }) {
-                            Icon(if (showApiKey) Icons.Default.VisibilityOff else Icons.Default.Visibility, contentDescription = null, tint = TextMuted)
-                        }
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(12.dp),
-                    singleLine = true,
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedTextColor = TextPrimary, unfocusedTextColor = TextPrimary,
-                        focusedBorderColor = CyanAccent, unfocusedBorderColor = GlassBorder,
-                        focusedContainerColor = SurfaceDark, unfocusedContainerColor = SurfaceDark
+                if (mode == VoiceSession.MODE_DIRECT) {
+                    SecretField(
+                        value = geminiKey, onValueChange = { geminiKey = it }, label = "Gemini API key",
+                        saved = hasGeminiKey, visible = showApiKey, onToggleVisible = { showApiKey = !showApiKey },
+                        onClear = { viewModel.clearKey(SecurePrefs.GEMINI_API_KEY) }
                     )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Let the AI see the screen", color = TextPrimary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                            Text("An image of the app after each action, so it spots popups, ads and buttons the text list misses", color = TextMuted, fontSize = 11.sp)
+                        }
+                        Switch(
+                            checked = vision, onCheckedChange = { vision = it },
+                            colors = SwitchDefaults.colors(checkedThumbColor = BgDark, checkedTrackColor = GreenActive)
+                        )
+                    }
+                } else {
+                    SettingsTextField(serverUrl, { serverUrl = it }, "WebSocket server URL")
+                }
+
+                HorizontalDivider(color = GlassBorder, modifier = Modifier.padding(vertical = 12.dp))
+                Text("LLM gateway (research & screen reading)", color = TextPrimary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                Spacer(modifier = Modifier.height(8.dp))
+                SettingsTextField(llmBase, { llmBase = it }, "LLM base URL")
+                Spacer(modifier = Modifier.height(8.dp))
+                SecretField(
+                    value = apiKey, onValueChange = { apiKey = it }, label = "LLM API key",
+                    saved = currentApiKey.isNotBlank(), visible = showApiKey, onToggleVisible = { showApiKey = !showApiKey },
+                    onClear = { viewModel.clearKey(SecurePrefs.LLM_API_KEY) }
                 )
+                Spacer(modifier = Modifier.height(8.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.Lock, contentDescription = null, tint = GreenActive, modifier = Modifier.size(14.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("Keys are encrypted on this phone (Android Keystore) and never shown again.", color = TextMuted, fontSize = 11.sp)
+                }
             }
         }
 
@@ -429,8 +478,17 @@ fun SettingsTab(
         item {
             Button(
                 onClick = {
-                    viewModel.saveSettings(model, voice, searchEnabled, serverUrl, apiKey)
-                    Toast.makeText(context, "Settings saved successfully!", Toast.LENGTH_SHORT).show()
+                    val stored = viewModel.saveSettings(
+                        model, voice, searchEnabled, serverUrl, mode,
+                        geminiKey.ifBlank { null }, llmBase, apiKey.ifBlank { null }, vision
+                    )
+                    geminiKey = ""
+                    apiKey = ""
+                    Toast.makeText(
+                        context,
+                        if (stored) "Settings saved" else "Settings saved, but the keys couldn't be stored securely on this phone",
+                        Toast.LENGTH_SHORT
+                    ).show()
                 },
                 colors = ButtonDefaults.buttonColors(containerColor = CyanAccent),
                 shape = RoundedCornerShape(14.dp),
@@ -498,4 +556,54 @@ fun PermissionStatusRow(
             Icon(Icons.Default.CheckCircle, contentDescription = null, tint = GreenActive, modifier = Modifier.size(16.dp))
         }
     }
+}
+
+/** A key field: empty means "keep the saved key"; shows that one is saved without ever showing it. */
+@Composable
+private fun SecretField(
+    value: String, onValueChange: (String) -> Unit, label: String, saved: Boolean,
+    visible: Boolean, onToggleVisible: () -> Unit, onClear: () -> Unit
+) {
+    OutlinedTextField(
+        value = value,
+        onValueChange = onValueChange,
+        label = { Text(label, color = TextSecondary) },
+        placeholder = { Text(if (saved) "•••••••• saved (type to replace)" else "Paste key", color = TextMuted) },
+        visualTransformation = if (visible) VisualTransformation.None else PasswordVisualTransformation(),
+        trailingIcon = {
+            Row {
+                IconButton(onClick = onToggleVisible) {
+                    Icon(if (visible) Icons.Default.VisibilityOff else Icons.Default.Visibility, contentDescription = "Show", tint = TextMuted)
+                }
+                if (saved) IconButton(onClick = onClear) {
+                    Icon(Icons.Default.Delete, contentDescription = "Remove saved key", tint = TextMuted)
+                }
+            }
+        },
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(12.dp),
+        singleLine = true,
+        colors = OutlinedTextFieldDefaults.colors(
+            focusedTextColor = TextPrimary, unfocusedTextColor = TextPrimary,
+            focusedBorderColor = CyanAccent, unfocusedBorderColor = GlassBorder,
+            focusedContainerColor = SurfaceDark, unfocusedContainerColor = SurfaceDark
+        )
+    )
+}
+
+@Composable
+private fun SettingsTextField(value: String, onValueChange: (String) -> Unit, label: String) {
+    OutlinedTextField(
+        value = value,
+        onValueChange = onValueChange,
+        label = { Text(label, color = TextSecondary) },
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(12.dp),
+        singleLine = true,
+        colors = OutlinedTextFieldDefaults.colors(
+            focusedTextColor = TextPrimary, unfocusedTextColor = TextPrimary,
+            focusedBorderColor = CyanAccent, unfocusedBorderColor = GlassBorder,
+            focusedContainerColor = SurfaceDark, unfocusedContainerColor = SurfaceDark
+        )
+    )
 }

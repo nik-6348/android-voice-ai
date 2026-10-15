@@ -49,6 +49,11 @@ class DeviceToolExecutor(
         )
         private const val ASK_FIRST = "Not pressed: this action performs an irreversible payment or wipe, and the user hasn't confirmed yet. Say what will happen, call show_choices with \"Haan, confirm karo\", \"Nahi\", and wait for their answer before tapping it."
 
+        private const val SELF_BLOCKED = "Blocked: that would stop, remove or switch off you (this assistant app) and end the task. " +
+            "Skip yourself: act on the other apps, or tell the user it's the assistant itself."
+        // Buttons that stop, remove or switch off an app (label or view id); applied only when the target is this app
+        private val DESTRUCTIVE = Regex("""(?i)force.?stop|uninstall|clear.?(data|storage|cache)|disable|deactivate|turn.?off|remove|delete|बंद|हटा|अनइंस्टॉल""")
+
         private const val AGENT_OFF = "Screen control is off. Ask the user to enable \"Nik's voice\" in " +
             "Settings > Accessibility (you can open it with launch_intent action android.settings.ACCESSIBILITY_SETTINGS)."
     }
@@ -89,11 +94,12 @@ class DeviceToolExecutor(
         ),
         function(
             "type_text",
-            "Types text into a text field (replacing its content): the given element, else the focused field. Returns the new screen.",
+            "Types text into a text field (replacing its content): the given element, else the focused field. If several " +
+                "fields are on screen and none is focused, it lists them so you can pick. The result says which field was used. Returns the new screen.",
             required = listOf("text" to param("string", "Text to type")),
             optional = listOf(
                 "element_id" to param("integer", "The text field's element number"),
-                "submit" to param("boolean", "Press the keyboard's enter/search/send key after typing")
+                "submit" to param("boolean", "Press the keyboard's enter/search/send key after typing. Leave it out to press it automatically in search fields; false never presses it")
             )
         ),
         function(
@@ -188,7 +194,8 @@ class DeviceToolExecutor(
         ),
         function(
             "open_app",
-            "Opens an installed app by its name. If the name is ambiguous or not found, use list_apps.",
+            "Opens an installed app by its name (use the full name, e.g. \"Google Keep\"). If several apps match it lists them; " +
+                "if none does, use list_apps.",
             required = listOf("app_name" to param("string", "App name, e.g. \"YouTube\""))
         ),
         function(
@@ -320,13 +327,14 @@ class DeviceToolExecutor(
 
                 "tap" -> when {
                     agent == null -> mapOf("error" to AGENT_OFF)
+                    harmsSelf(agent, int("element_id"), str("text")) -> mapOf("error" to SELF_BLOCKED)
                     // Confirmation is enforced here, not left to the model: it once asked and sent without waiting
                     agent.targetLabel(int("element_id"), str("text"))?.let { NEEDS_YES.containsMatchIn(it) } == true && !takeConfirmation() ->
                         mapOf("error" to ASK_FIRST)
                     else -> agent.tap(int("element_id"), str("text"), bool("long_press") == true)
                 }
 
-                "type_text" -> agent?.typeText(str("text") ?: "", int("element_id"), bool("submit") == true) ?: mapOf("error" to AGENT_OFF)
+                "type_text" -> agent?.typeText(str("text") ?: "", int("element_id"), bool("submit")) ?: mapOf("error" to AGENT_OFF)
 
                 "scroll" -> agent?.scroll(str("direction") ?: "down", int("element_id"), str("until_text"), int("max_scrolls") ?: 10)
                     ?: mapOf("error" to AGENT_OFF)
@@ -349,9 +357,16 @@ class DeviceToolExecutor(
 
                 "open_app" -> {
                     val name = str("app_name") ?: str("name") ?: ""
-                    val pkg = findApp(name)
-                    if (pkg != null && launchPackage(pkg)) withScreen(mapOf("success" to true, "opened" to pkg))
-                    else mapOf("success" to false, "error" to "No installed app matches '$name'; call list_apps to see the names")
+                    when (val match = findApp(name)) {
+                        is AppMatch.One -> if (launchPackage(match.app.pkg)) withScreen(mapOf("success" to true, "opened" to "${match.app.label} (${match.app.pkg})"))
+                            else mapOf("success" to false, "error" to "${match.app.label} can't be opened from the launcher")
+                        is AppMatch.Several -> mapOf(
+                            "success" to false,
+                            "error" to "Several apps match '$name'; call open_app again with the exact name",
+                            "matches" to match.apps.map { "${it.label} (${it.pkg})" }
+                        )
+                        AppMatch.None -> mapOf("success" to false, "error" to "No installed app matches '$name'; call list_apps to see the names")
+                    }
                 }
 
                 "list_apps" -> mapOf("apps" to listApps(str("query")))
@@ -537,15 +552,85 @@ class DeviceToolExecutor(
             .map { "${it.label} (${it.pkg})" }
     }
 
-    /** Package of the best match: exact label, then label containing the name (either way), then package name. */
-    private fun findApp(rawName: String): String? {
+    private sealed class AppMatch {
+        data class One(val app: App) : AppMatch()
+        data class Several(val apps: List<App>) : AppMatch()
+        object None : AppMatch()
+    }
+
+    private fun words(s: String): List<String> = s.lowercase().split(Regex("[^\\p{L}\\p{N}]+")).filter { it.isNotEmpty() }
+
+    /**
+     * The app the name means. Exact label (or package, or label without spaces) wins. Otherwise each
+     * word of the name is weighed by how rare it is among the installed apps' names (worked out from
+     * this phone's apps, nothing fixed): a word in many names ("google", "app") counts for little and
+     * can't match on its own, so "Google Keep" opens Keep, not Google. Every distinctive word must
+     * match. Close scores come back as a list to choose from.
+     */
+    private fun findApp(rawName: String): AppMatch {
         val name = rawName.trim().lowercase()
-        if (name.isEmpty()) return null
+        if (name.isEmpty()) return AppMatch.None
         val apps = launchableApps()
-        return (apps.firstOrNull { it.label.lowercase() == name || it.pkg.lowercase() == name }
-            ?: apps.firstOrNull { it.label.lowercase().contains(name) }
-            ?: apps.firstOrNull { name.contains(it.label.lowercase()) && it.label.length > 2 }
-            ?: apps.firstOrNull { it.pkg.lowercase().contains(name.replace(" ", "")) })?.pkg
+        apps.firstOrNull { it.label.lowercase() == name || it.pkg.lowercase() == name || it.label.lowercase().replace(" ", "") == name.replace(" ", "") }
+            ?.let { return AppMatch.One(it) }
+
+        val labelWords = apps.associateWith { words(it.label).toSet() }
+        val df = mutableMapOf<String, Int>()
+        labelWords.values.forEach { ws -> ws.forEach { df[it] = (df[it] ?: 0) + 1 } }
+        val n = apps.size.coerceAtLeast(1)
+        fun weight(w: String) = kotlin.math.ln((n + 1.0) / (1.0 + (df[w] ?: 0)))
+        // A word in several app names is generic here
+        val common = (n / 30).coerceAtLeast(2)
+        val query = words(name)
+        val distinctive = query.filter { (df[it] ?: 0) < common }
+
+        val scored = apps.mapNotNull { app ->
+            val ws = labelWords[app] ?: return@mapNotNull null
+            fun hit(q: String) = q in ws || (q.length >= 3 && ws.any { it.startsWith(q) })
+            if (distinctive.isNotEmpty() && !distinctive.all(::hit)) return@mapNotNull null
+            if (distinctive.isEmpty() && !query.all(::hit)) return@mapNotNull null
+            val score = query.sumOf { q -> if (q in ws) weight(q) else if (hit(q)) 0.6 * weight(q) else 0.0 } -
+                0.05 * (ws.size - query.size).coerceAtLeast(0) // fewer extra words = closer
+            app to score
+        }.sortedByDescending { it.second }
+
+        if (scored.isEmpty()) {
+            // Last resort: the package name contains it ("whatsapp" -> com.whatsapp)
+            return apps.firstOrNull { it.pkg.lowercase().contains(name.replace(" ", "")) }?.let { AppMatch.One(it) } ?: AppMatch.None
+        }
+        val best = scored.first()
+        val runnerUp = scored.getOrNull(1)
+        return if (runnerUp == null || best.second > runnerUp.second * 1.25 + 0.01) AppMatch.One(best.first)
+        else AppMatch.Several(scored.take(5).map { it.first })
+    }
+
+    /** This app as the model should know it (it must never act against itself). */
+    fun selfDescription(): String = "\"$selfLabel\", package ${context.packageName}"
+
+    private val selfLabel: String by lazy { packageManager.getApplicationLabel(context.applicationInfo).toString() }
+
+    // Every name this app shows in Settings: the app label and the screen-control service's label
+    private val selfNames: List<String> by lazy {
+        listOfNotNull(
+            selfLabel,
+            runCatching {
+                packageManager.getServiceInfo(android.content.ComponentName(context, PhoneAgentService::class.java), 0).loadLabel(packageManager).toString()
+            }.getOrNull()
+        ).filter { it.isNotBlank() }.distinct()
+    }
+
+    /**
+     * Whether a tap would stop, remove or switch off this app: a destructive button (force stop,
+     * uninstall, clear data, disable…) on a page about this app, or this app's own switch (screen
+     * control) when it is on. Taps on other apps' pages are never affected.
+     */
+    private fun harmsSelf(agent: PhoneAgentService, elementId: Int?, text: String?): Boolean {
+        val target = agent.target(elementId, text) ?: return false
+        val mentionsSelf = { s: String -> selfNames.any { s.contains(it, ignoreCase = true) } }
+        val aboutSelf = mentionsSelf(target.rowLabel) || (target.app != context.packageName && agent.screenShowsTitle(selfNames))
+        val destructive = DESTRUCTIVE.containsMatchIn(target.label) || DESTRUCTIVE.containsMatchIn(target.viewId.orEmpty())
+        val switchingOff = target.checkable && target.checked && mentionsSelf(target.rowLabel)
+        return (destructive && aboutSelf) || switchingOff
     }
 
     private fun launchPackage(packageName: String): Boolean {
@@ -558,6 +643,18 @@ class DeviceToolExecutor(
 
     private fun launchIntent(action: String?, uri: String?, pkg: String?, extrasJson: String?): Map<String, Any?> {
         if (action == null && uri == null && pkg == null) return mapOf("error" to "Give at least an action, uri or package")
+        // Uninstalling / deleting this app itself
+        val removing = action != null && (action.contains("DELETE") || action.contains("UNINSTALL"))
+        if (removing && (uri?.contains(context.packageName) == true || pkg == context.packageName)) return mapOf("error" to SELF_BLOCKED)
+        // Media and files must really exist: a made-up content:// or file:// URI only fails later in the other app
+        val uris = listOfNotNull(uri) + Regex("(content|file)://[^\"\\s,}]+").findAll(extrasJson.orEmpty()).map { it.value }
+        uris.firstOrNull { !uriExists(Uri.parse(it)) }?.let { missing ->
+            return mapOf(
+                "success" to false,
+                "error" to "$missing doesn't exist on this phone. Never make up content:// or file:// URIs: share or attach " +
+                    "through the app's own UI (its share button, Attach > Gallery, or the screenshot preview's share)."
+            )
+        }
         val intent = Intent(action ?: Intent.ACTION_VIEW).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         uri?.let { intent.data = Uri.parse(it) }
         pkg?.let { intent.setPackage(it) }
@@ -590,6 +687,13 @@ class DeviceToolExecutor(
             put("launched", listOfNotNull(action, uri, pkg).joinToString(" "))
             app?.let { put("opened_in", it) }
         })
+    }
+
+    /** Whether a content:// or file:// URI points at something that exists (other schemes: true). */
+    private fun uriExists(uri: Uri): Boolean = when (uri.scheme?.lowercase()) {
+        "content" -> runCatching { context.contentResolver.openAssetFileDescriptor(uri, "r")?.use { true } ?: false }.getOrDefault(false)
+        "file" -> uri.path?.let { java.io.File(it).exists() } == true
+        else -> true
     }
 
     /** A URL (or a Google search for the words) in the user's browser, never handed to another app. */
@@ -637,7 +741,7 @@ class DeviceToolExecutor(
 
     private fun lookAtScreen(agent: PhoneAgentService, question: String?): Map<String, Any?> {
         val screen = agent.readScreen()
-        val jpeg = agent.screenshotJpeg()
+        val jpeg = agent.appWindowJpeg()
             ?: return mapOf("error" to "Couldn't take a screenshot (the app may block them); use the elements list", "screen" to screen)
         val describe = describeImage ?: return mapOf("error" to "Screen description isn't available", "screen" to screen)
         @Suppress("UNCHECKED_CAST")

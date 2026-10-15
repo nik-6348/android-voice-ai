@@ -51,6 +51,21 @@ object SecurePrefs {
     /** The saved PIN, read only by the unlock gesture. */
     fun pin(context: Context): String? = prefs(context)?.getString(KEY_PIN, null)
 
+    // ---- API keys (Gemini Live, LLM gateway): encrypted like the PIN, never kept in plain text ----
+
+    const val GEMINI_API_KEY = "gemini_api_key"
+    const val LLM_API_KEY = "llm_api_key"
+
+    /** A saved secret, or null. */
+    fun secret(context: Context, name: String): String? = prefs(context)?.getString(name, null)?.takeIf { it.isNotBlank() }
+
+    /** Saves a secret (or clears it when blank). Returns false if the secure store is unavailable: nothing is saved then. */
+    fun setSecret(context: Context, name: String, value: String?): Boolean {
+        val p = prefs(context) ?: return false
+        p.edit().apply { if (value.isNullOrBlank()) remove(name) else putString(name, value.trim()) }.apply()
+        return true
+    }
+
     fun isAutoUnlockEnabled(context: Context): Boolean = prefs(context)?.getBoolean(KEY_AUTO_UNLOCK, false) == true
 
     fun setAutoUnlock(context: Context, enabled: Boolean) {

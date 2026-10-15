@@ -2,12 +2,12 @@ package com.nik.voiceassistant.network
 
 import android.util.Log
 import com.google.gson.Gson
-import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import com.nik.voiceassistant.audio.AudioTrackManager
 import com.nik.voiceassistant.audio.WakeWordManager
-import com.nik.voiceassistant.tools.DeviceToolExecutor
+import com.nik.voiceassistant.data.trace.AgentTrace
 import com.nik.voiceassistant.tools.ToolCallResponse
+import com.nik.voiceassistant.tools.ToolCallRunner
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
@@ -21,30 +21,20 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * Full-duplex WebSocket client connecting to the Gemini Live Audio backend.
- * Streams 16kHz PCM mic audio up, streams 24kHz PCM speaker audio down,
- * and intercepts real-time transcripts, search queries, interruptions, and tool calls.
+ * Live voice through the gateway server (wss://…/ws/live): it holds the Gemini session, and adds its
+ * own speech-to-text (better Hindi) and word-level barge-in. Streams 16 kHz PCM mic audio up and
+ * 24 kHz PCM speaker audio down, with JSON for transcripts, interruptions and tool calls.
+ * The other transport, GeminiLiveClient, talks to Gemini directly.
  */
 class LiveAudioWebSocketClient(
     private val audioTrackManager: AudioTrackManager,
-    private val toolExecutor: DeviceToolExecutor? = null,
-    private val listener: Callback
-) {
-    interface Callback {
-        fun onConnected()
-        fun onReconnecting(attempt: Int, reason: String)
-        fun onDisconnected(reason: String)
-        fun onError(error: Throwable)
-        fun onUserTranscript(text: String)
-        fun onUserSpeaking()
-        fun onModelTranscript(text: String)
-        fun onToolStart(toolName: String, statusText: String) {}
-        /** The model finished its reply for this turn. */
-        fun onTurnComplete() {}
-        fun onToolExecuted(toolName: String, args: Map<String, Any?>, resultSummary: String)
-        /** The latest handle to continue this conversation later (kept across conversations). */
-        fun onResumeHandle(handle: String?)
-    }
+    private val tools: ToolCallRunner,
+    // Function declarations sent in the setup message
+    private val declarations: () -> List<Map<String, Any>>,
+    private val listener: LiveClient.Callback
+) : LiveClient {
+
+    override val supportsVision = false
 
     companion object {
         private const val TAG = "LiveAudioWebSocket"
@@ -56,9 +46,6 @@ class LiveAudioWebSocketClient(
 
     private val gson = Gson()
 
-    // Tool calls run here, one at a time: screen actions wait for the UI to settle, and doing that
-    // on OkHttp's reader thread would stall incoming audio and pings
-    private val toolThread = Executors.newSingleThreadExecutor()
     private val reconnector = Executors.newSingleThreadScheduledExecutor()
     private var webSocket: WebSocket? = null
     private val isConnected = AtomicBoolean(false)
@@ -81,12 +68,10 @@ class LiveAudioWebSocketClient(
     private val queued = ArrayDeque<ByteArray>()
     private var queuedBytes = 0
 
-    // Tool calls being run; a conversation doesn't time out in the middle of one
-    private val toolsRunning = java.util.concurrent.atomic.AtomicInteger(0)
-    // Tracks consecutive tool executions in a single user turn
-    private val consecutiveToolCalls = java.util.concurrent.atomic.AtomicInteger(0)
+    // The first reply audio of this turn has arrived (for the latency metric)
+    @Volatile private var replyStarted = false
 
-    fun isToolRunning(): Boolean = toolsRunning.get() > 0
+    override fun isToolRunning(): Boolean = tools.isRunning()
 
     // Pings find a dead connection (phone switched networks, host dropped it) within ~1 min;
     // 15 s was too tight through the host's proxy (a late pong dropped working calls)
@@ -100,16 +85,21 @@ class LiveAudioWebSocketClient(
      * Connect with ?setup=true in wsUrl: the setup message below (tools + instructions) goes first,
      * and the server opens the Gemini session with it.
      */
-    fun connect(wsUrl: String, apiKey: String, instructions: (resuming: Boolean) -> String, resume: String? = null) {
+    override fun connect(config: LiveClient.Config) {
         if (isConnected.get()) {
             Log.w(TAG, "Already connected or connecting")
             return
         }
-        this.wsUrl = wsUrl
-        this.apiKey = apiKey
-        this.instructions = instructions
+        val raw = config.serverUrl.trim()
+        val base = if (raw.contains("?")) raw.substringBefore("?") else raw
+        // setup=true: tools and instructions go in the first message; transcribe: the server's
+        // speech-to-text writes the user's words (better Hindi than the voice model's)
+        this.wsUrl = "$base?model=${config.model}&voice=${config.voice}&search=${config.search}" +
+            "&setup=true&transcribe=true&transcribe_language=hi-IN,en-IN"
+        this.apiKey = config.apiKey
+        this.instructions = config.instructions
         // Continue the last conversation (Gemini keeps it for a while) instead of starting from nothing
-        resumeHandle = resume
+        resumeHandle = config.resumeHandle
         dropAudioUntil = 0L
         attempts = 0
         userClosed = false
@@ -129,7 +119,7 @@ class LiveAudioWebSocketClient(
             override fun onOpen(webSocket: WebSocket, response: Response) {
                 val setup = mapOf(
                     "type" to "setup",
-                    "tools" to (toolExecutor?.declarations ?: emptyList()),
+                    "tools" to declarations(),
                     "instructions" to instructions(resumeHandle != null)
                 )
                 webSocket.send(gson.toJson(setup))
@@ -151,6 +141,10 @@ class LiveAudioWebSocketClient(
             override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
                 // Incoming binary frame is 24kHz 16-bit PCM Audio from Gemini Live
                 if (System.currentTimeMillis() < dropAudioUntil) return
+                if (!replyStarted) {
+                    replyStarted = true
+                    listener.onModelAudioStart()
+                }
                 audioTrackManager.enqueueAudioChunk(bytes.toByteArray())
             }
 
@@ -193,7 +187,7 @@ class LiveAudioWebSocketClient(
             listener.onResumeHandle(null)
         }
         val delayMs = minOf(300L shl (attempts - 1), 8000L)
-        Log.i(TAG, "Reconnecting in $delayMs ms (attempt $attempts): $reason")
+        AgentTrace.log(AgentTrace.Kind.NETWORK, "Reconnecting in $delayMs ms (attempt $attempts): $reason")
         listener.onReconnecting(attempts, reason)
         reconnector.schedule({ if (!userClosed) open() }, delayMs, TimeUnit.MILLISECONDS)
     }
@@ -201,7 +195,7 @@ class LiveAudioWebSocketClient(
     /**
      * Sends raw 16kHz PCM audio chunk to the server.
      */
-    fun sendAudioChunk(chunk: ByteArray) {
+    override fun sendAudioChunk(chunk: ByteArray) {
         if (!isConnected.get()) {
             if (!userClosed) queueAudio(chunk) // still connecting: keep it for when we're up
             return
@@ -211,7 +205,7 @@ class LiveAudioWebSocketClient(
     }
 
     /** Keeps audio to send as soon as the connection opens (the oldest is dropped past ~8 s). */
-    fun queueAudio(chunk: ByteArray) {
+    override fun queueAudio(chunk: ByteArray) {
         synchronized(queued) {
             queued.addLast(chunk)
             queuedBytes += chunk.size
@@ -227,17 +221,24 @@ class LiveAudioWebSocketClient(
         webSocket?.send(jsonString)
     }
 
+    override fun sendText(text: String) = sendJson(com.google.gson.JsonObject().apply {
+        addProperty("type", "text")
+        addProperty("text", text)
+    }.toString())
+
+    override fun sendPlayback(playing: Boolean) = sendJson("""{"type":"playback","playing":$playing}""")
+
     /** Stops the current reply on the server; audio already on its way is dropped. */
-    fun interrupt() {
+    override fun interrupt() {
         dropAudioUntil = System.currentTimeMillis() + 1000
         sendJson("""{"type":"interrupt"}""")
     }
 
-    fun clearResumeHandle() {
+    override fun clearResumeHandle() {
         resumeHandle = null
     }
 
-    fun disconnect() {
+    override fun disconnect() {
         Log.i(TAG, "Disconnecting WebSocket")
         userClosed = true
         isConnected.set(false)
@@ -251,7 +252,7 @@ class LiveAudioWebSocketClient(
         webSocket = null
     }
 
-    fun isConnected(): Boolean = isConnected.get()
+    override fun isConnected(): Boolean = isConnected.get()
 
     private fun handleJsonMessage(jsonStr: String) {
         if (userClosed) {
@@ -263,7 +264,6 @@ class LiveAudioWebSocketClient(
 
             when (type) {
                 "user_transcript" -> {
-                    consecutiveToolCalls.set(0)
                     val text = jsonObject.get("text")?.asString.orEmpty()
                     listener.onUserTranscript(text)
                     if (WakeWordManager.isWakeWord(text)) {
@@ -272,7 +272,6 @@ class LiveAudioWebSocketClient(
                 }
 
                 "user_transcript_interim" -> {
-                    consecutiveToolCalls.set(0)
                     listener.onUserSpeaking()
                 }
 
@@ -295,7 +294,10 @@ class LiveAudioWebSocketClient(
                     Log.i(TAG, "Server will close soon (${jsonObject.get("time_left")}); will reconnect")
                 }
 
-                "turn_complete" -> listener.onTurnComplete()
+                "turn_complete" -> {
+                    replyStarted = false
+                    listener.onTurnComplete()
+                }
 
                 "interrupted" -> {
                     Log.i(TAG, "AI model signaled barge-in interruption")
@@ -304,9 +306,12 @@ class LiveAudioWebSocketClient(
 
                 // Gemini's function call, relayed by the server (?tools=device)
                 "tool_call" -> {
-                    toolsRunning.incrementAndGet()
-                    toolThread.execute {
-                        try { executeToolCall(jsonObject) } finally { toolsRunning.decrementAndGet() }
+                    val name = jsonObject.get("name")?.asString ?: return
+                    val callId = jsonObject.get("id")?.takeIf { !it.isJsonNull }?.asString
+                    tools.submit(name, tools.parseArgs(jsonObject.get("args") ?: jsonObject.get("arguments"))) { result ->
+                        // Always answer: Gemini waits for the tool response before it speaks again
+                        if (isConnected.get()) sendJson(gson.toJson(ToolCallResponse(id = callId, name = name, result = result)))
+                        else listener.onToolResultLost(name, tools.summary(result))
                     }
                 }
 
@@ -315,7 +320,7 @@ class LiveAudioWebSocketClient(
                 }
 
                 "error" -> {
-                    Log.e(TAG, "Server error: ${jsonObject.get("message")?.asString}")
+                    AgentTrace.log(AgentTrace.Kind.ERROR, "Server error: ${jsonObject.get("message")?.asString}")
                 }
 
                 else -> {
@@ -325,62 +330,5 @@ class LiveAudioWebSocketClient(
         } catch (e: Exception) {
             Log.e(TAG, "Failed to parse incoming JSON message: ${e.message}", e)
         }
-    }
-
-    private fun executeToolCall(jsonObj: JsonObject) {
-        val toolName = jsonObj.get("name")?.asString ?: return
-        val callId = jsonObj.get("id")?.asString
-
-        val argsMap = mutableMapOf<String, Any?>()
-        val argsElement = jsonObj.get("args") ?: jsonObj.get("arguments")
-        if (argsElement != null && argsElement.isJsonObject) {
-            val obj = argsElement.asJsonObject
-            for (key in obj.keySet()) {
-                val elem = obj.get(key)
-                when {
-                    elem.isJsonPrimitive && elem.asJsonPrimitive.isBoolean -> argsMap[key] = elem.asBoolean
-                    elem.isJsonPrimitive && elem.asJsonPrimitive.isNumber -> argsMap[key] = elem.asNumber
-                    elem.isJsonPrimitive && elem.asJsonPrimitive.isString -> argsMap[key] = elem.asString
-                    else -> argsMap[key] = elem.toString()
-                }
-            }
-        }
-
-        val statusText = when (toolName) {
-            "scroll" -> argsMap["until_text"]?.let { "Looking for \"$it\"…" } ?: "Scrolling ${argsMap["direction"] ?: "down"}…"
-            "tap" -> "Tapping ${argsMap["text"]?.let { "\"$it\"" } ?: "on screen"}…"
-            "type_text" -> "Typing \"${argsMap["text"] ?: ""}\"…"
-            "read_screen" -> "Reading the screen…"
-            "look_at_screen" -> "Looking at the screen…"
-            "open_app" -> "Opening ${argsMap["app_name"] ?: "app"}…"
-            "launch_intent" -> "Opening ${argsMap["uri"] ?: argsMap["action"]?.toString()?.substringAfterLast('.')?.lowercase()?.replace('_', ' ') ?: argsMap["package"] ?: "page"}…"
-            "open_website" -> "Opening ${argsMap["url_or_search"] ?: "website"}…"
-            "navigate" -> "Going ${argsMap["action"]?.toString()?.replace('_', ' ') ?: "back"}…"
-            "find_contact" -> "Finding ${argsMap["name"] ?: "contact"}…"
-            "make_call" -> "Calling…"
-            "research" -> "Researching: ${argsMap["question"] ?: ""}…"
-            "update_plan" -> "Planning: ${argsMap["goal"] ?: ""}"
-            "wait" -> "Waiting for the screen…"
-            else -> "${toolName.replace('_', ' ').replaceFirstChar { it.uppercase() }}…"
-        }
-        listener.onToolStart(toolName, statusText)
-
-        val result = toolExecutor?.execute(toolName, argsMap)
-            ?: mapOf("error" to "Device tools are not available")
-        // The screen listing is for the model; the transcript gets a one-line summary
-        val summary = result["error"] ?: result["done"] ?: result["opened"] ?: result["launched"]
-            ?: result["app"]?.let { "screen of $it" } ?: result.filterKeys { it != "screen" && it != "apps" }
-        // The transcript shows the arguments; a PIN must never appear there
-        listener.onToolExecuted(toolName, argsMap, summary.toString().take(160))
-
-        // Always answer: Gemini waits for the tool response before it speaks again
-        val response = ToolCallResponse(
-            id = callId,
-            name = toolName,
-            result = result
-        )
-        val responseJson = gson.toJson(response)
-        sendJson(responseJson)
-        Log.i(TAG, "Sent tool response back to AI: $responseJson")
     }
 }

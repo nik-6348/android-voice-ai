@@ -23,26 +23,32 @@ class VoiceAssistantViewModel(application: Application) : AndroidViewModel(appli
         val description: String
     )
 
-    val availableModels = listOf(
-        ModelOption(
-            id = "gemini-2.5-flash-native-audio-latest",
-            displayName = "Gemini 2.5 Flash Native",
-            badge = "1M TPM • Fast",
-            description = "Official Live Audio model. Low latency, supports real-time Google search grounding."
-        ),
-        ModelOption(
-            id = "gemini-3.1-flash-live-preview",
-            displayName = "Gemini 3 Flash Live",
-            badge = "65K TPM • Preview",
-            description = "Next-generation Gemini 3 Live preview audio model."
-        ),
-        ModelOption(
-            id = "gemini-3.8-live",
-            displayName = "Gemini 3.8 Live",
-            badge = "65K TPM • High Quality",
-            description = "High fidelity real-time conversational audio model."
-        )
+    // Live models: the recommended ones, plus whatever Google lists for this key (refreshLiveModels)
+    private val knownModels = listOf(
+        ModelOption(VoiceSession.DEFAULT_LIVE_MODEL, "Gemini 3.8 Live", "Recommended • Fastest", "Google's default Live model: low latency voice, tools and Google Search."),
+        ModelOption("gemini-3.8-live-extended-thinking", "Gemini 3.8 Live Thinking", "Smarter • Slower", "Reasons more before answering: better for long multi-step tasks, a little more delay."),
+        ModelOption("gemini-2.5-flash-native-audio-preview-12-2025", "Gemini 2.5 Flash Native Audio", "Older", "Previous native-audio model (only for keys that used 2.5 before).")
     )
+    private val _availableModels = MutableStateFlow(knownModels)
+    val availableModels: StateFlow<List<ModelOption>> = _availableModels.asStateFlow()
+
+    private val _modelsLoading = MutableStateFlow(false)
+    val modelsLoading: StateFlow<Boolean> = _modelsLoading.asStateFlow()
+
+    /** Reads the Live models this Gemini key can use from Google; returns false if that failed. */
+    fun refreshLiveModels(onDone: (Boolean) -> Unit = {}) {
+        viewModelScope.launch {
+            _modelsLoading.value = true
+            val ids = session.fetchLiveModels()
+            _modelsLoading.value = false
+            if (ids != null) {
+                val extra = ids.filter { id -> knownModels.none { it.id == id } }
+                    .map { ModelOption(it, it, "From Google", "Live model available to your key.") }
+                _availableModels.value = knownModels.filter { k -> ids.isEmpty() || k.id in ids } + extra
+            }
+            onDone(ids != null)
+        }
+    }
 
     val availableVoices = listOf("Zephyr", "Puck", "Charon", "Kore", "Fenrir", "Aoede")
 
@@ -51,6 +57,12 @@ class VoiceAssistantViewModel(application: Application) : AndroidViewModel(appli
     val isSearchEnabled: StateFlow<Boolean> = session.isSearchEnabled
     val serverUrl: StateFlow<String> = session.serverUrl
     val apiKey: StateFlow<String> = session.apiKey
+    val hasGeminiKey: StateFlow<Boolean> = session.hasGeminiKey
+    val connectionMode: StateFlow<String> = session.connectionMode
+    val llmBaseUrl: StateFlow<String> = session.llmBaseUrl
+    val visionFrames: StateFlow<Boolean> = session.visionFrames
+    fun hasCredentials(): Boolean = session.hasCredentials()
+    fun clearKey(name: String) = session.clearKey(name)
     val isWakeWordEnabled: StateFlow<Boolean> = session.isWakeWordEnabled
     val connectionStatus: StateFlow<ConnectionStatus> = session.connectionStatus
     val isRecording: StateFlow<Boolean> = session.isRecording
@@ -73,6 +85,7 @@ class VoiceAssistantViewModel(application: Application) : AndroidViewModel(appli
     fun setAutoMute(enabled: Boolean) = session.setAutoMute(enabled)
 
     val activeToolStatus: StateFlow<String?> = session.activeToolStatus
+    val plan: StateFlow<com.nik.voiceassistant.tools.TaskPlan?> = session.plan
 
     fun startSession() = session.start()
 
@@ -105,8 +118,10 @@ class VoiceAssistantViewModel(application: Application) : AndroidViewModel(appli
     fun isAutoUnlockEnabled(): Boolean = SecurePrefs.isAutoUnlockEnabled(getApplication())
     fun setAutoUnlock(enabled: Boolean) = SecurePrefs.setAutoUnlock(getApplication(), enabled)
 
-    fun saveSettings(model: String, voice: String, searchEnabled: Boolean, url: String, key: String) =
-        session.saveSettings(model, voice, searchEnabled, url, key)
+    fun saveSettings(
+        model: String, voice: String, searchEnabled: Boolean, url: String, mode: String,
+        geminiKey: String?, llmBaseUrl: String, llmKey: String?, vision: Boolean
+    ): Boolean = session.saveSettings(model, voice, searchEnabled, url, mode, geminiKey, llmBaseUrl, llmKey, vision)
 
     // ---- History Management ----
     val historySessions: StateFlow<List<com.nik.voiceassistant.data.history.ConversationSession>> = session.historySessions
