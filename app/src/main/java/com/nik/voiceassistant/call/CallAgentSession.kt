@@ -25,6 +25,7 @@ import com.nik.voiceassistant.network.GeminiLiveClient
 import com.nik.voiceassistant.network.LiveClient
 import com.nik.voiceassistant.security.Redactor
 import com.nik.voiceassistant.service.PhoneAgentService
+import com.nik.voiceassistant.service.VoiceInCallService
 import com.nik.voiceassistant.tools.CallPlacer
 import com.nik.voiceassistant.tools.ToolCallRunner
 import com.nik.voiceassistant.tools.ToolExecutor
@@ -372,6 +373,9 @@ class CallAgentSession(
     }
 
     private fun answerCall(): Boolean {
+        if (VoiceInCallService.currentService != null && VoiceInCallService.activeCall != null) {
+            return VoiceInCallService.answerActiveCall()
+        }
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.ANSWER_PHONE_CALLS) != PackageManager.PERMISSION_GRANTED) {
             Log.w(TAG, "ANSWER_PHONE_CALLS permission not granted")
             return false
@@ -392,6 +396,9 @@ class CallAgentSession(
 
     private fun enableSpeakerphone() {
         Log.w(TAG, "Enabling speakerphone...")
+        if (VoiceInCallService.currentService != null) {
+            VoiceInCallService.setSpeakerphone(true)
+        }
         val tm = context.getSystemService(TelecomManager::class.java)
         try {
             tm?.showInCallScreen(false)
@@ -411,6 +418,9 @@ class CallAgentSession(
     }
 
     private fun hangUpCall() {
+        if (VoiceInCallService.currentService != null && VoiceInCallService.activeCall != null) {
+            if (VoiceInCallService.hangUpActiveCall()) return
+        }
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P &&
                 ContextCompat.checkSelfPermission(context, Manifest.permission.ANSWER_PHONE_CALLS) == PackageManager.PERMISSION_GRANTED

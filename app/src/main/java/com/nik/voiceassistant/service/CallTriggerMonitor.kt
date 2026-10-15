@@ -119,7 +119,7 @@ object CallTriggerMonitor {
         }
     }
 
-    private fun matchIncoming(context: Context, number: String?) {
+    fun matchIncoming(context: Context, number: String?) {
         val contactName = number?.let { lookupContact(context, it) }
         val matches = MacroEngine.matching(context) { t -> t is Trigger.IncomingCall && callTriggerMatches(t.contactFilter, number, contactName) }
         if (matches.isEmpty()) return
