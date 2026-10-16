@@ -32,6 +32,8 @@ class BootReceiver : BroadcastReceiver() {
 
         // Screen control switched off for a payment app before the reboot comes back on
         PaymentGuard.restore(context)
+        // AlarmManager clears every armed alarm on reboot: re-arm every Scheduled-trigger macro
+        com.nik.voiceassistant.service.ScheduledTriggerMonitor.rescheduleAll(context)
 
         val prefs = context.getSharedPreferences("voice_assistant_settings", Context.MODE_PRIVATE)
         val isWakeWordEnabled = prefs.getBoolean("wake_word", false)

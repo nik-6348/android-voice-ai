@@ -53,6 +53,9 @@
 
     <!-- Set alarms and timers directly via intent -->
     <uses-permission android:name="com.android.alarm.permission.SET_ALARM" />
+    <!-- Scheduled/follow-up macros wake the phone at an exact time even from Doze. If the user hasn't
+         granted it, ScheduledTriggerMonitor falls back to an inexact alarm instead of asking for it. -->
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
 
     <!-- Auto-start wake word listening after reboot / package update -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
@@ -187,6 +190,11 @@
         <!-- Restore background listening on device boot or update -->
         <receiver
             android:name=".service.PaymentGuard$ResumeReceiver"
+            android:exported="false" />
+
+        <!-- Fires a Scheduled-trigger macro (or a one-off schedule_followup) at its armed time -->
+        <receiver
+            android:name=".service.ScheduledMacroReceiver"
             android:exported="false" />
 
         <receiver

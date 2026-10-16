@@ -166,6 +166,7 @@ class VoiceAssistantViewModel(application: Application) : AndroidViewModel(appli
     fun saveAutomation(macro: com.nik.voiceassistant.data.macro.Macro) {
         viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
             com.nik.voiceassistant.data.macro.MacroStore.save(getApplication(), macro)
+            if (macro.enabled) com.nik.voiceassistant.service.ScheduledTriggerMonitor.scheduleOne(getApplication(), macro)
             refreshAutomations()
         }
     }
@@ -173,6 +174,7 @@ class VoiceAssistantViewModel(application: Application) : AndroidViewModel(appli
     fun deleteAutomation(id: String) {
         viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
             com.nik.voiceassistant.data.macro.MacroStore.delete(getApplication(), id)
+            com.nik.voiceassistant.service.ScheduledTriggerMonitor.cancel(getApplication(), id)
             refreshAutomations()
         }
     }
@@ -186,7 +188,10 @@ class VoiceAssistantViewModel(application: Application) : AndroidViewModel(appli
 
     fun setAutomationEnabled(id: String, enabled: Boolean) {
         viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
-            com.nik.voiceassistant.data.macro.MacroStore.update(getApplication(), id) { it.copy(enabled = enabled) }
+            var updated: com.nik.voiceassistant.data.macro.Macro? = null
+            com.nik.voiceassistant.data.macro.MacroStore.update(getApplication(), id) { it.copy(enabled = enabled).also { m -> updated = m } }
+            if (enabled) updated?.let { com.nik.voiceassistant.service.ScheduledTriggerMonitor.scheduleOne(getApplication(), it) }
+            else com.nik.voiceassistant.service.ScheduledTriggerMonitor.cancel(getApplication(), id)
             refreshAutomations()
         }
     }
