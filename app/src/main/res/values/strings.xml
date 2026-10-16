@@ -293,6 +293,23 @@
     <string name="pin_note">Encrypted on this phone (Android Keystore). Never sent to the cloud or the AI.</string>
     <string name="pin_saved">PIN saved securely</string>
     <string name="pin_failed">Couldn\'t store the PIN securely on this phone</string>
+    <string name="lock_type_title">Lock type</string>
+    <string name="lock_type_pin">PIN</string>
+    <string name="lock_type_password">Password</string>
+    <string name="lock_type_pattern">Pattern</string>
+    <string name="action_change">Change</string>
+    <string name="device_password">Device password</string>
+    <string name="password_enter">Enter password</string>
+    <string name="password_replace">New password (replaces the saved one)</string>
+    <string name="password_note">Encrypted on this phone (Android Keystore). Never sent to the cloud or the AI.</string>
+    <string name="password_saved">Password saved securely</string>
+    <string name="password_failed">Couldn\'t store the password securely on this phone</string>
+    <string name="device_pattern">Device pattern</string>
+    <string name="pattern_draw_hint">Draw your unlock pattern below (at least 4 dots), the same way you draw it on the lock screen</string>
+    <string name="pattern_saved">Pattern saved securely</string>
+    <string name="pattern_failed">Couldn\'t store the pattern securely on this phone</string>
+    <string name="pattern_clear">Clear</string>
+    <string name="pattern_note">Encrypted on this phone (Android Keystore). Never sent to the cloud or the AI.</string>
 
     <string name="section_payments">Payment apps</string>
     <string name="payments_title">Step aside in payment apps</string>

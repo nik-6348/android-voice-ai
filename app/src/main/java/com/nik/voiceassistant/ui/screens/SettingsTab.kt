@@ -531,18 +531,33 @@ fun SettingsTab(viewModel: VoiceAssistantViewModel) {
 @Composable
 private fun UnlockSection(viewModel: VoiceAssistantViewModel, resumes: Int, onMessage: (String) -> Unit) {
     // Read again on resume: the app turns auto-unlock off by itself after failed unlocks
-    var pinSaved by remember(resumes) { mutableStateOf(viewModel.hasPin()) }
+    var lockType by remember(resumes) { mutableStateOf(viewModel.lockType()) }
+    var credentialSaved by remember(resumes, lockType) {
+        mutableStateOf(if (lockType == SecurePrefs.LockType.PATTERN) viewModel.hasPattern() else viewModel.hasPin())
+    }
     var autoUnlock by remember(resumes) { mutableStateOf(viewModel.isAutoUnlockEnabled()) }
-    var pinInput by remember { mutableStateOf("") }
+    // Nothing saved yet: show the picker straight away. Already set up: show only the matching type,
+    // a "Change" link reveals the other two instead of all three always competing for attention.
+    var showTypePicker by remember(resumes) { mutableStateOf(!credentialSaved) }
+    var pinInput by remember(lockType) { mutableStateOf("") }
     val pinSavedMsg = stringResource(R.string.pin_saved)
     val pinFailedMsg = stringResource(R.string.pin_failed)
+    val passwordSavedMsg = stringResource(R.string.password_saved)
+    val passwordFailedMsg = stringResource(R.string.password_failed)
+    val patternSavedMsg = stringResource(R.string.pattern_saved)
+    val patternFailedMsg = stringResource(R.string.pattern_failed)
+
+    fun selectLockType(type: SecurePrefs.LockType) {
+        lockType = type
+        viewModel.setLockType(type)
+    }
 
     SectionCard(stringResource(R.string.section_unlock), Icons.Outlined.LockOpen) {
         SwitchRow(
             stringResource(R.string.unlock_title), autoUnlock,
             { autoUnlock = it; viewModel.setAutoUnlock(it) },
-            description = stringResource(if (pinSaved) R.string.unlock_desc else R.string.unlock_needs_pin),
-            enabled = pinSaved
+            description = stringResource(if (credentialSaved) R.string.unlock_desc else R.string.unlock_needs_pin),
+            enabled = credentialSaved
         )
         if (autoUnlock) {
             Card(
@@ -563,33 +578,134 @@ private fun UnlockSection(viewModel: VoiceAssistantViewModel, resumes: Int, onMe
             Text(stringResource(R.string.unlock_off_note), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Spacer(Modifier.size(Spacing.s))
         }
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(stringResource(R.string.device_pin), style = MaterialTheme.typography.labelLarge, modifier = Modifier.weight(1f))
-            if (pinSaved) Badge(stringResource(R.string.pin_saved_badge), container = NikTheme.extended.successContainer, content = NikTheme.extended.onSuccessContainer)
+
+        if (showTypePicker) {
+            Text(stringResource(R.string.lock_type_title), style = MaterialTheme.typography.labelLarge)
+            Spacer(Modifier.size(Spacing.xs))
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(Spacing.s)) {
+                FilterChip(
+                    selected = lockType == SecurePrefs.LockType.PIN, onClick = { selectLockType(SecurePrefs.LockType.PIN) },
+                    label = { Text(stringResource(R.string.lock_type_pin)) }, modifier = Modifier.weight(1f)
+                )
+                FilterChip(
+                    selected = lockType == SecurePrefs.LockType.PASSWORD, onClick = { selectLockType(SecurePrefs.LockType.PASSWORD) },
+                    label = { Text(stringResource(R.string.lock_type_password)) }, modifier = Modifier.weight(1f)
+                )
+                FilterChip(
+                    selected = lockType == SecurePrefs.LockType.PATTERN, onClick = { selectLockType(SecurePrefs.LockType.PATTERN) },
+                    label = { Text(stringResource(R.string.lock_type_pattern)) }, modifier = Modifier.weight(1f)
+                )
+            }
+        } else {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    stringResource(R.string.lock_type_title) + ": " + stringResource(
+                        when (lockType) {
+                            SecurePrefs.LockType.PIN -> R.string.lock_type_pin
+                            SecurePrefs.LockType.PASSWORD -> R.string.lock_type_password
+                            SecurePrefs.LockType.PATTERN -> R.string.lock_type_pattern
+                        }
+                    ),
+                    style = MaterialTheme.typography.labelLarge, modifier = Modifier.weight(1f)
+                )
+                TextButton(onClick = { showTypePicker = true }) { Text(stringResource(R.string.action_change)) }
+            }
         }
-        Spacer(Modifier.size(Spacing.xs))
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            OutlinedTextField(
-                value = pinInput,
-                onValueChange = { if (it.all(Char::isDigit) && it.length <= 12) pinInput = it },
-                label = { Text(stringResource(if (pinSaved) R.string.pin_replace else R.string.pin_enter)) },
-                visualTransformation = PasswordVisualTransformation(),
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
-                singleLine = true,
-                modifier = Modifier.weight(1f)
-            )
-            Spacer(Modifier.width(Spacing.s))
-            Button(
-                onClick = {
-                    val ok = viewModel.savePin(pinInput)
-                    pinInput = ""
-                    pinSaved = viewModel.hasPin()
-                    onMessage(if (ok) pinSavedMsg else pinFailedMsg)
-                },
-                enabled = pinInput.length >= 4
-            ) { Text(stringResource(R.string.action_save)) }
+        Spacer(Modifier.size(Spacing.s))
+
+        when (lockType) {
+            SecurePrefs.LockType.PIN -> {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(stringResource(R.string.device_pin), style = MaterialTheme.typography.labelLarge, modifier = Modifier.weight(1f))
+                    if (credentialSaved) Badge(stringResource(R.string.pin_saved_badge), container = NikTheme.extended.successContainer, content = NikTheme.extended.onSuccessContainer)
+                }
+                Spacer(Modifier.size(Spacing.xs))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedTextField(
+                        value = pinInput,
+                        onValueChange = { if (it.all(Char::isDigit) && it.length <= 12) pinInput = it },
+                        label = { Text(stringResource(if (credentialSaved) R.string.pin_replace else R.string.pin_enter)) },
+                        visualTransformation = PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+                        singleLine = true,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Spacer(Modifier.width(Spacing.s))
+                    Button(
+                        onClick = {
+                            val ok = viewModel.savePin(pinInput)
+                            pinInput = ""
+                            credentialSaved = viewModel.hasPin()
+                            if (ok) showTypePicker = false
+                            onMessage(if (ok) pinSavedMsg else pinFailedMsg)
+                        },
+                        enabled = pinInput.length >= 4
+                    ) { Text(stringResource(R.string.action_save)) }
+                }
+                Text(stringResource(R.string.pin_note), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = Spacing.xs))
+            }
+
+            SecurePrefs.LockType.PASSWORD -> {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(stringResource(R.string.device_password), style = MaterialTheme.typography.labelLarge, modifier = Modifier.weight(1f))
+                    if (credentialSaved) Badge(stringResource(R.string.pin_saved_badge), container = NikTheme.extended.successContainer, content = NikTheme.extended.onSuccessContainer)
+                }
+                Spacer(Modifier.size(Spacing.xs))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedTextField(
+                        value = pinInput,
+                        onValueChange = { if (it.length <= 64) pinInput = it },
+                        label = { Text(stringResource(if (credentialSaved) R.string.password_replace else R.string.password_enter)) },
+                        visualTransformation = PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                        singleLine = true,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Spacer(Modifier.width(Spacing.s))
+                    Button(
+                        onClick = {
+                            val ok = viewModel.savePin(pinInput)
+                            pinInput = ""
+                            credentialSaved = viewModel.hasPin()
+                            if (ok) showTypePicker = false
+                            onMessage(if (ok) passwordSavedMsg else passwordFailedMsg)
+                        },
+                        enabled = pinInput.isNotBlank()
+                    ) { Text(stringResource(R.string.action_save)) }
+                }
+                Text(stringResource(R.string.password_note), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = Spacing.xs))
+            }
+
+            SecurePrefs.LockType.PATTERN -> {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(stringResource(R.string.device_pattern), style = MaterialTheme.typography.labelLarge, modifier = Modifier.weight(1f))
+                    if (credentialSaved) Badge(stringResource(R.string.pin_saved_badge), container = NikTheme.extended.successContainer, content = NikTheme.extended.onSuccessContainer)
+                }
+                Spacer(Modifier.size(Spacing.xs))
+                Text(stringResource(R.string.pattern_draw_hint), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Spacer(Modifier.size(Spacing.s))
+                Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                    com.nik.voiceassistant.ui.components.PatternPad(
+                        onPatternComplete = { cells ->
+                            val ok = viewModel.savePattern(cells)
+                            credentialSaved = viewModel.hasPattern()
+                            if (ok) showTypePicker = false
+                            onMessage(if (ok) patternSavedMsg else patternFailedMsg)
+                        }
+                    )
+                }
+                Spacer(Modifier.size(Spacing.s))
+                OutlinedButton(
+                    onClick = {
+                        viewModel.savePattern(emptyList())
+                        credentialSaved = viewModel.hasPattern()
+                    },
+                    enabled = credentialSaved,
+                    modifier = Modifier.fillMaxWidth()
+                ) { Text(stringResource(R.string.pattern_clear)) }
+                Text(stringResource(R.string.pattern_note), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = Spacing.xs))
+            }
         }
-        Text(stringResource(R.string.pin_note), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = Spacing.xs))
     }
 }
 

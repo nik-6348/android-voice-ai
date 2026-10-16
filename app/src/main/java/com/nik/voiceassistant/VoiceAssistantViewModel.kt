@@ -118,6 +118,10 @@ class VoiceAssistantViewModel(application: Application) : AndroidViewModel(appli
     fun savePin(pin: String): Boolean = SecurePrefs.setPin(getApplication(), pin)
     fun isAutoUnlockEnabled(): Boolean = SecurePrefs.isAutoUnlockEnabled(getApplication())
     fun setAutoUnlock(enabled: Boolean) = SecurePrefs.setAutoUnlock(getApplication(), enabled)
+    fun lockType(): SecurePrefs.LockType = SecurePrefs.lockType(getApplication())
+    fun setLockType(type: SecurePrefs.LockType) = SecurePrefs.setLockType(getApplication(), type)
+    fun hasPattern(): Boolean = SecurePrefs.hasPattern(getApplication())
+    fun savePattern(cells: List<Int>): Boolean = SecurePrefs.setPattern(getApplication(), cells)
 
     fun saveSettings(
         model: String, voice: String, searchEnabled: Boolean, url: String, mode: String,
