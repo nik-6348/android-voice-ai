@@ -16,9 +16,14 @@ object SecurePrefs {
     private const val TAG = "SecurePrefs"
     private const val FILE = "secure_voice_assistant"
     private const val KEY_PIN = "device_pin"
+    private const val KEY_LOCK_TYPE = "lock_type"
+    private const val KEY_PATTERN = "device_pattern"
     private const val KEY_AUTO_UNLOCK = "auto_unlock"
     private const val KEY_UNLOCK_FAILURES = "unlock_failures"
     const val MAX_UNLOCK_FAILURES = 2
+
+    /** Which kind of screen lock the saved credential unlocks. */
+    enum class LockType { PIN, PASSWORD, PATTERN }
 
     @Volatile private var prefs: SharedPreferences? = null
 
@@ -55,7 +60,7 @@ object SecurePrefs {
         ).also { prefs = it }
     }
 
-    /** Saves the PIN (or clears it when blank). Returns false if the secure store is unavailable. */
+    /** Saves the PIN or password (or clears it when blank). Returns false if the secure store is unavailable. */
     fun setPin(context: Context, pin: String): Boolean {
         val p = prefs(context) ?: return false
         p.edit().apply { if (pin.isBlank()) remove(KEY_PIN) else putString(KEY_PIN, pin.trim()) }.remove(KEY_UNLOCK_FAILURES).apply()
@@ -64,8 +69,35 @@ object SecurePrefs {
 
     fun hasPin(context: Context): Boolean = !prefs(context)?.getString(KEY_PIN, null).isNullOrBlank()
 
-    /** The saved PIN, read only by the unlock gesture. */
+    /** The saved PIN or password, read only by the unlock gesture. */
     fun pin(context: Context): String? = prefs(context)?.getString(KEY_PIN, null)
+
+    fun lockType(context: Context): LockType = when (prefs(context)?.getString(KEY_LOCK_TYPE, null)) {
+        "password" -> LockType.PASSWORD
+        "pattern" -> LockType.PATTERN
+        else -> LockType.PIN
+    }
+
+    fun setLockType(context: Context, type: LockType): Boolean {
+        val p = prefs(context) ?: return false
+        p.edit().putString(KEY_LOCK_TYPE, type.name.lowercase()).remove(KEY_UNLOCK_FAILURES).apply()
+        return true
+    }
+
+    /** Saves the pattern as an ordered list of 0-8 cell indices (3x3 grid), or clears it when empty. */
+    fun setPattern(context: Context, cells: List<Int>): Boolean {
+        val p = prefs(context) ?: return false
+        p.edit().apply {
+            if (cells.isEmpty()) remove(KEY_PATTERN) else putString(KEY_PATTERN, cells.joinToString(","))
+        }.remove(KEY_UNLOCK_FAILURES).apply()
+        return true
+    }
+
+    fun hasPattern(context: Context): Boolean = !prefs(context)?.getString(KEY_PATTERN, null).isNullOrBlank()
+
+    /** The saved pattern as 0-8 cell indices in drawing order, read only by the unlock gesture. */
+    fun pattern(context: Context): List<Int>? =
+        prefs(context)?.getString(KEY_PATTERN, null)?.split(",")?.mapNotNull { it.trim().toIntOrNull() }?.takeIf { it.isNotEmpty() }
 
     // ---- API keys (Gemini Live, LLM gateway): encrypted like the PIN, never kept in plain text ----
 

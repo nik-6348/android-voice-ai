@@ -7,6 +7,7 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.Path
+import android.graphics.PointF
 import android.graphics.Rect
 import android.os.Build
 import android.os.Bundle
@@ -703,19 +704,30 @@ class PhoneAgentService : AccessibilityService() {
     enum class Unlock { DONE, NO_PIN, NOT_NUMERIC, NO_KEYPAD, WRONG_PIN }
 
     /**
-     * Unlocks the phone with the user's saved PIN (SecurePrefs), entirely on the device: the PIN is
-     * read here, never sent anywhere and never logged. Wakes the screen, swipes up to the PIN pad,
-     * taps the digits and confirms. Digits are only ever tapped in the lock screen's own window (the
-     * system UI), so an app drawing a look-alike keypad over the lock screen can't receive the PIN.
-     * Only works for a numeric PIN; pattern / password / fingerprint can't be entered this way.
+     * Unlocks the phone with the user's saved credential (SecurePrefs), entirely on the device: the
+     * credential is read here, never sent anywhere and never logged. Dispatches to the PIN, password
+     * or pattern gesture depending on what kind of lock is saved in Settings.
      */
     fun unlockWithSavedPin(): Unlock {
         val km = getSystemService(android.app.KeyguardManager::class.java) ?: return Unlock.NO_KEYPAD
         if (!km.isKeyguardLocked) return Unlock.DONE
+        return when (com.nik.voiceassistant.SecurePrefs.lockType(this)) {
+            com.nik.voiceassistant.SecurePrefs.LockType.PASSWORD -> unlockWithPassword(km)
+            com.nik.voiceassistant.SecurePrefs.LockType.PATTERN -> unlockWithPattern(km)
+            com.nik.voiceassistant.SecurePrefs.LockType.PIN -> unlockWithPin(km)
+        }
+    }
+
+    /**
+     * Taps a saved numeric PIN into the lock screen's own keypad. Digits are only ever tapped in the
+     * lock screen's own window (the system UI), so an app drawing a look-alike keypad over the lock
+     * screen can't receive the PIN.
+     */
+    private fun unlockWithPin(km: android.app.KeyguardManager): Unlock {
         val pin = com.nik.voiceassistant.SecurePrefs.pin(this) ?: return Unlock.NO_PIN
         if (pin.isEmpty() || !pin.all { it.isDigit() }) return Unlock.NOT_NUMERIC
 
-        Log.i(TAG, "Unlock: waking the screen")
+        Log.i(TAG, "Unlock: waking the screen (PIN)")
         wakeScreen()
         Thread.sleep(600)
         // Reveal the PIN pad: swipe up from the bottom (the lock screen shows the clock first)
@@ -741,6 +753,66 @@ class PhoneAgentService : AccessibilityService() {
                 Thread.sleep(800)
             }
         }
+        val stillLocked = km.isKeyguardLocked
+        Log.i(TAG, "Unlock finished; unlocked=${!stillLocked}")
+        return if (stillLocked) Unlock.WRONG_PIN else Unlock.DONE
+    }
+
+    /** Sets the saved password straight into the lock screen's password field, then confirms. */
+    private fun unlockWithPassword(km: android.app.KeyguardManager): Unlock {
+        val password = com.nik.voiceassistant.SecurePrefs.pin(this) ?: return Unlock.NO_PIN
+        if (password.isEmpty()) return Unlock.NO_PIN
+
+        Log.i(TAG, "Unlock: waking the screen (password)")
+        wakeScreen()
+        Thread.sleep(600)
+        val m = resources.displayMetrics
+        gesture(m.widthPixels / 2f, m.heightPixels * 0.85f, m.widthPixels / 2f, m.heightPixels * 0.2f, 250)
+        Thread.sleep(800)
+
+        val field = passwordField()
+        if (field == null) {
+            Log.w(TAG, "Unlock: lock screen password field not found")
+            return Unlock.NO_KEYPAD
+        }
+        val args = Bundle().apply { putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, password) }
+        if (!field.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)) return Unlock.NO_KEYPAD
+
+        Thread.sleep(400)
+        repeat(2) {
+            if (km.isKeyguardLocked) {
+                tapKeypadEnter()
+                Thread.sleep(800)
+            }
+        }
+        val stillLocked = km.isKeyguardLocked
+        Log.i(TAG, "Unlock finished; unlocked=${!stillLocked}")
+        return if (stillLocked) Unlock.WRONG_PIN else Unlock.DONE
+    }
+
+    /** Draws the saved pattern as one continuous gesture on the lock screen's pattern grid. */
+    private fun unlockWithPattern(km: android.app.KeyguardManager): Unlock {
+        val cells = com.nik.voiceassistant.SecurePrefs.pattern(this) ?: return Unlock.NO_PIN
+        if (cells.size < 4 || cells.any { it !in 0..8 }) return Unlock.NOT_NUMERIC
+
+        Log.i(TAG, "Unlock: waking the screen (pattern)")
+        wakeScreen()
+        Thread.sleep(600)
+        val m = resources.displayMetrics
+        gesture(m.widthPixels / 2f, m.heightPixels * 0.85f, m.widthPixels / 2f, m.heightPixels * 0.2f, 250)
+        Thread.sleep(800)
+
+        val bounds = patternViewBounds()
+        if (bounds == null) {
+            Log.w(TAG, "Unlock: lock screen pattern grid not found")
+            return Unlock.NO_KEYPAD
+        }
+        val dots = patternDotCenters(bounds)
+        val points = cells.map { dots[it] }
+        if (!patternGesture(points)) return Unlock.NO_KEYPAD
+
+        // The pattern submits itself on finger-lift; no separate confirm key
+        Thread.sleep(600)
         val stillLocked = km.isKeyguardLocked
         Log.i(TAG, "Unlock finished; unlocked=${!stillLocked}")
         return if (stillLocked) Unlock.WRONG_PIN else Unlock.DONE
@@ -777,6 +849,67 @@ class PhoneAgentService : AccessibilityService() {
             if (r.width() > 0 && r.height() > 0) return node
         }
         return null
+    }
+
+    /** The lock screen's editable password field, if a password (not PIN/pattern) lock is showing. */
+    private fun passwordField(): AccessibilityNodeInfo? {
+        for (root in keyguardRoots()) {
+            val field = firstMatching(root) { it.isVisibleToUser && it.isEditable }
+            if (field != null) return field
+        }
+        return null
+    }
+
+    /**
+     * The lock screen's pattern grid, found by its class name or view id. OEMs vary the lock screen's
+     * look but the pattern view itself is a single custom-drawn view (no per-dot nodes), so this finds
+     * the one container rather than individual dots.
+     */
+    private fun patternViewBounds(): Rect? {
+        for (root in keyguardRoots()) {
+            val node = firstMatching(root) { n ->
+                val cls = n.className?.toString()?.lowercase().orEmpty()
+                val id = n.viewIdResourceName?.lowercase().orEmpty()
+                n.isVisibleToUser && (cls.contains("lockpatternview") || cls.contains("patternview") || id.contains("pattern"))
+            } ?: continue
+            val r = Rect().also { node.getBoundsInScreen(it) }
+            if (r.width() > 0 && r.height() > 0) return r
+        }
+        return null
+    }
+
+    /** The screen centers of a 3x3 pattern's 9 dots (index 0 = top-left, row-major), from the grid's bounds. */
+    private fun patternDotCenters(bounds: Rect): List<PointF> {
+        val cellW = bounds.width() / 3f
+        val cellH = bounds.height() / 3f
+        return (0 until 9).map { i ->
+            val row = i / 3
+            val col = i % 3
+            PointF(bounds.left + cellW * (col + 0.5f), bounds.top + cellH * (row + 0.5f))
+        }
+    }
+
+    /** One continuous finger-drag through every point in order, like drawing a lock pattern. */
+    private fun patternGesture(points: List<PointF>, durationMs: Long = 700): Boolean {
+        if (points.size < 2) return false
+        val path = Path().apply {
+            moveTo(points[0].x, points[0].y)
+            for (p in points.drop(1)) lineTo(p.x, p.y)
+        }
+        val stroke = GestureDescription.StrokeDescription(path, 0, durationMs)
+        val latch = CountDownLatch(1)
+        var ok = false
+        return try {
+            val sent = dispatchGesture(GestureDescription.Builder().addStroke(stroke).build(), object : GestureResultCallback() {
+                override fun onCompleted(gestureDescription: GestureDescription?) { ok = true; latch.countDown() }
+                override fun onCancelled(gestureDescription: GestureDescription?) { latch.countDown() }
+            }, null)
+            if (sent) latch.await(durationMs + 2000, TimeUnit.MILLISECONDS)
+            ok
+        } catch (e: Exception) {
+            Log.w(TAG, "Pattern gesture failed: ${e.message}")
+            false
+        }
     }
 
     /** One tap on a keypad key: a real touch, or its click action if the touch couldn't be played. */

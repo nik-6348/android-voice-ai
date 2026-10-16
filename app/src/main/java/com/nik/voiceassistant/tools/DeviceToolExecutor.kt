@@ -84,8 +84,9 @@ class DeviceToolExecutor(
         ),
         function(
             "unlock_phone",
-            "Unlocks the phone using the PIN saved in Settings. Only works if Auto-unlock is turned ON in Settings. " +
-                "If Auto-unlock is OFF or no PIN is saved, do NOT call this tool; instead, inform the user: 'Phone locked hai, kripya pehle phone unlock karein'."
+            "Unlocks the phone using the PIN, password or pattern saved in Settings (whichever lock type is set). " +
+                "Only works if Auto-unlock is turned ON in Settings. " +
+                "If Auto-unlock is OFF or no credential is saved, do NOT call this tool; instead, inform the user: 'Phone locked hai, kripya pehle phone unlock karein'."
         ),
         function(
             "look_at_screen",
@@ -518,16 +519,16 @@ class DeviceToolExecutor(
             SecurePrefs.noteUnlockSuccess(context)
             withScreen(mapOf("success" to true, "done" to "phone unlocked"))
         }
-        PhoneAgentService.Unlock.NO_PIN -> mapOf("success" to false, "error" to "No PIN is saved. Tell the user: 'Phone locked hai, kripya pehle phone unlock karein.'")
-        PhoneAgentService.Unlock.NOT_NUMERIC -> mapOf("success" to false, "error" to "Only a numeric PIN can be entered automatically. Ask the user to unlock the phone.")
-        PhoneAgentService.Unlock.NO_KEYPAD -> mapOf("success" to false, "error" to "The lock screen's PIN pad wasn't found, so nothing was typed. Ask the user to unlock the phone.")
+        PhoneAgentService.Unlock.NO_PIN -> mapOf("success" to false, "error" to "No PIN/password/pattern is saved. Tell the user: 'Phone locked hai, kripya pehle phone unlock karein.'")
+        PhoneAgentService.Unlock.NOT_NUMERIC -> mapOf("success" to false, "error" to "The saved credential looks invalid for the selected lock type. Ask the user to unlock the phone and re-check it in Settings.")
+        PhoneAgentService.Unlock.NO_KEYPAD -> mapOf("success" to false, "error" to "The lock screen's PIN pad / password field / pattern grid wasn't found, so nothing was entered. Ask the user to unlock the phone.")
         PhoneAgentService.Unlock.WRONG_PIN -> {
             val turnedOff = SecurePrefs.noteUnlockFailure(context)
-            AgentTrace.log(AgentTrace.Kind.WARNING, if (turnedOff) "Saved PIN failed twice: auto-unlock turned off" else "Saved PIN didn't unlock the phone")
+            AgentTrace.log(AgentTrace.Kind.WARNING, if (turnedOff) "Saved credential failed twice: auto-unlock turned off" else "Saved credential didn't unlock the phone")
             mapOf(
                 "success" to false,
-                "error" to if (turnedOff) "The saved PIN failed again, so auto-unlock was turned off to protect the phone. Tell the user to unlock it themself and update the PIN in Settings."
-                else "The saved PIN didn't unlock the phone (it may have changed). Don't try again; ask the user to unlock it."
+                "error" to if (turnedOff) "The saved credential failed again, so auto-unlock was turned off to protect the phone. Tell the user to unlock it themself and update it in Settings."
+                else "The saved credential didn't unlock the phone (it may have changed). Don't try again; ask the user to unlock it."
             )
         }
     }
