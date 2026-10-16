@@ -60,6 +60,18 @@ class AudioTrackManager(
     /** Reply audio is coming out of the speaker now (or just stopped, within TAIL_MS). */
     fun isAudible(): Boolean = audible.get()
 
+    /**
+     * Blocks the calling thread until the audio queue has drained and the speaker has gone silent,
+     * or until [maxMs] milliseconds have passed (safety cap so a tool never stalls indefinitely).
+     * Call this before an acting tool so the voice finishes before the action fires on-screen.
+     */
+    fun waitUntilSilent(maxMs: Long = 3000L) {
+        val deadline = System.currentTimeMillis() + maxMs
+        while (isAudible() && System.currentTimeMillis() < deadline) {
+            Thread.sleep(40)
+        }
+    }
+
     private fun setAudible(value: Boolean) {
         if (audible.getAndSet(value) != value) onPlaybackStateChanged?.invoke(value)
     }

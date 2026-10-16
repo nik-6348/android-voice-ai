@@ -19,12 +19,22 @@ class ToolCallRunner(
     private val executor: ToolExecutor,
     private val listener: LiveClient.Callback,
     // (tool name, result) -> called on the tool thread right before the result is sent
-    private val beforeRespond: (String, Map<String, Any?>) -> Unit = { _, _ -> }
+    private val beforeRespond: (String, Map<String, Any?>) -> Unit = { _, _ -> },
+    // blocks the tool thread until the assistant has finished speaking (before acting tools)
+    private val waitForAudio: () -> Unit = {}
 ) {
     companion object {
         private const val TAG = "ToolCallRunner"
         // Result parts that hold what was on screen or in the phone's lists
         private val SCREEN_KEYS = setOf("screen", "elements", "apps", "contacts", "fields", "matches", "description")
+        // Tools that physically act on the phone: wait for the current speech to finish first so the
+        // voice isn't still talking when the UI already moved.
+        private val ACTING = setOf(
+            "tap", "long_press", "type_text", "scroll", "swipe", "navigate",
+            "open_app", "launch_intent", "open_website", "navigate_back",
+            "unlock_phone", "make_call", "send_sms", "toggle_flashlight",
+            "toggle_bluetooth", "media_control", "system_action", "search_settings"
+        )
     }
 
     private val thread = Executors.newSingleThreadExecutor()
@@ -56,6 +66,9 @@ class ToolCallRunner(
             currentSpan = span
             var result: Map<String, Any?> = mapOf("error" to "Execution failed")
             try {
+                // Wait for speech to finish before physically acting on the screen/phone, so the
+                // voice doesn't keep talking while the UI has already moved to the next screen.
+                if (name in ACTING) waitForAudio()
                 listener.onToolStart(name, statusText(name, args))
                 val started = System.currentTimeMillis()
                 result = try {

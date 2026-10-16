@@ -135,6 +135,7 @@ fun SettingsTab(viewModel: VoiceAssistantViewModel) {
     val assistantName by viewModel.assistantName.collectAsState()
     val autoSleep by viewModel.autoSleep.collectAsState()
     val autoMute by viewModel.autoMute.collectAsState()
+    val fastActionMode by viewModel.fastActionMode.collectAsState()
     val policy by viewModel.policy.collectAsState()
     val isAgentEnabled by viewModel.isAgentEnabled.collectAsState()
     val otlpEndpoint by Tracer.otlpEndpoint.collectAsState()
@@ -254,6 +255,10 @@ fun SettingsTab(viewModel: VoiceAssistantViewModel) {
                     SwitchRow(
                         stringResource(R.string.auto_mute_title), autoMute, { viewModel.setAutoMute(it) },
                         description = stringResource(R.string.auto_mute_desc, assistantName)
+                    )
+                    SwitchRow(
+                        "Fast Action Mode", fastActionMode, { viewModel.setFastActionMode(it) },
+                        description = "Act silently — no step-by-step narration while working; speaks only the final result. Actions also fire without waiting for speech to finish."
                     )
                 }
             }

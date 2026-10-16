@@ -247,6 +247,15 @@ class VoiceSession private constructor(val context: Context) {
     private val _visionFrames = MutableStateFlow(prefs.getBoolean("vision_frames", true))
     val visionFrames: StateFlow<Boolean> = _visionFrames.asStateFlow()
 
+    // Fast action mode: model acts silently (no step-by-step narration); also skips waiting for
+    // audio before acting so actions happen immediately without any speech delay.
+    private val _fastActionMode = MutableStateFlow(prefs.getBoolean("fast_action_mode", false))
+    val fastActionMode: StateFlow<Boolean> = _fastActionMode.asStateFlow()
+    fun setFastActionMode(enabled: Boolean) {
+        _fastActionMode.value = enabled
+        prefs.edit().putBoolean("fast_action_mode", enabled).apply()
+    }
+
     /** Whether a conversation can start: the key the chosen connection needs is saved. */
     fun hasCredentials(): Boolean = if (_connectionMode.value == MODE_DIRECT) _hasGeminiKey.value else _apiKey.value.isNotBlank()
 
@@ -774,7 +783,8 @@ class VoiceSession private constructor(val context: Context) {
             }
         }
 
-    private val toolRunner: ToolCallRunner = ToolCallRunner(toolExecutor, liveCallback, ::beforeToolResponse)
+    private val toolRunner: ToolCallRunner = ToolCallRunner(toolExecutor, liveCallback, ::beforeToolResponse,
+        waitForAudio = { if (!_fastActionMode.value) audioTrackManager.waitUntilSilent() })
     private val directClient: GeminiLiveClient = GeminiLiveClient(audioTrackManager, toolRunner, { toolExecutor.declarations }, liveCallback)
     private val relayClient: LiveAudioWebSocketClient = LiveAudioWebSocketClient(audioTrackManager, toolRunner, { toolExecutor.declarations }, liveCallback)
 
@@ -1294,12 +1304,15 @@ class VoiceSession private constructor(val context: Context) {
         val vision = if (_visionFrames.value && webSocketClient.supportsVision)
             "\n            SEEING: after each action you also get an image of the screen. Use it with the element list: it shows what the list misses (popups, ads, images, colours, where things are). Close what is in the way first."
         else ""
+        val fastMode = if (_fastActionMode.value)
+            "\n\nFAST ACTION MODE IS ON: Act silently. Do NOT speak or narrate while working — no \"theek hai\", no step-by-step commentary. Just do the actions. Speak ONLY once: after the very last action, say one short line reporting the final result or asking what's next."
+        else ""
         val base = DEFAULT_INSTRUCTIONS
             .replace("{NAME}", _assistantName.value)
             .replace("{SELF}", toolExecutor.selfDescription())
             .replace("{OWNER}", ownerLine())
             .replace("{DEVICE}", toolExecutor.deviceProfile())
-            .replace("{VISION}", vision) + "\n\n" + lockPolicy()
+            .replace("{VISION}", vision) + fastMode + "\n\n" + lockPolicy()
         if (resuming) return base
         val recent = _transcripts.value.filter { it.sender == "user" || it.sender == "assistant" }.takeLast(10)
         if (recent.isEmpty()) return base
