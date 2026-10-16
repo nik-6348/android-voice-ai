@@ -92,6 +92,9 @@ import com.nik.voiceassistant.data.trace.AgentTrace
 import com.nik.voiceassistant.data.trace.Tracer
 import com.nik.voiceassistant.security.AgentPolicy
 import com.nik.voiceassistant.service.PaymentGuard
+import com.nik.voiceassistant.service.WebhookServer
+import androidx.compose.material.icons.outlined.Webhook
+import androidx.compose.material.icons.outlined.ContentCopy
 import com.nik.voiceassistant.ui.components.Badge
 import com.nik.voiceassistant.ui.components.ConfirmDialog
 import com.nik.voiceassistant.ui.components.RadioRow
@@ -424,6 +427,9 @@ fun SettingsTab(viewModel: VoiceAssistantViewModel) {
 
             // ---- Payment apps ----
             item { PaymentSection(context, resumes) { showAdbHelp = true } }
+
+            // ---- Webhook server ----
+            item { WebhookSection(context) }
 
             // ---- System permissions ----
             item {
@@ -809,6 +815,49 @@ private fun DangerButton(text: String, icon: ImageVector, onClick: () -> Unit) {
         Icon(icon, contentDescription = null, modifier = Modifier.size(18.dp))
         Spacer(Modifier.width(Spacing.s))
         Text(text)
+    }
+}
+
+@Composable
+private fun WebhookSection(context: Context) {
+    val clipboard = context.getSystemService(ClipboardManager::class.java)
+    val ip = remember { WebhookServer.localAddress(context) }
+    val port = WebhookServer.PORT
+
+    SectionCard("Webhook Server", Icons.Outlined.Webhook) {
+        if (ip == null) {
+            Text(
+                "Webhook server is running on port $port. Connect to Wi-Fi to see the URL.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        } else {
+            val baseUrl = "http://$ip:$port/webhook/"
+            Text(
+                "Local server ready. Ask Shiv to register a webhook, or POST to:",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(Modifier.padding(top = 4.dp))
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                SelectionContainer(Modifier.weight(1f)) {
+                    Text(baseUrl, style = MaterialTheme.typography.bodyMedium)
+                }
+                IconButton(onClick = {
+                    clipboard?.setPrimaryClip(ClipData.newPlainText("Webhook URL", baseUrl))
+                }) {
+                    Icon(Icons.Outlined.ContentCopy, contentDescription = "Copy URL")
+                }
+            }
+            Text(
+                "Only reachable on same Wi-Fi / Tailscale network.",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
     }
 }
 

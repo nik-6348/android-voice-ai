@@ -283,6 +283,22 @@ class DeviceToolExecutor(
                 "instruction" to param("string", "What to do when the time comes, as a complete fresh instruction, e.g. 'Zomato app check karo order deliver hua ya nahi'"),
                 "in_minutes" to param("integer", "Minutes from now to wait, 1 to 1440 (24 hours)")
             )
+        ),
+        function(
+            "register_webhook",
+            "Registers a webhook trigger on this phone's local HTTP server (port 7474). An HTTP POST or GET to " +
+                "http://<phone-ip>:7474/webhook/<path> on the same Wi-Fi / Tailscale network will fire the given " +
+                "instruction automatically, as if the user had asked it. Great for smart-home events, IoT alerts, " +
+                "or any external system that can make an HTTP call. Returns the full webhook URL and a curl example. " +
+                "The server is NOT reachable from the open internet.",
+            required = listOf(
+                "path" to param("string", "URL path for this webhook, e.g. 'water-pump-done' or 'door-opened'. No slashes."),
+                "instruction" to param("string", "What to do when the webhook fires, e.g. 'User ko batao ki paani pump band ho gaya'")
+            ),
+            optional = listOf(
+                "label" to param("string", "A short human-readable name, e.g. 'Pump done'"),
+                "secret" to param("string", "Optional shared-secret token. If set, callers must pass it as X-Webhook-Token header or ?token= query param.")
+            )
         )
     )
 
@@ -509,6 +525,18 @@ class DeviceToolExecutor(
                     }
                 }
 
+                "register_webhook" -> {
+                    val path = str("path")?.trim()?.trimStart('/')?.lowercase()
+                    val instruction = str("instruction")?.trim()
+                    val label = str("label")?.trim() ?: ""
+                    val secret = str("secret")?.trim()
+                    when {
+                        path.isNullOrBlank() -> mapOf("error" to "Give a path for the webhook URL")
+                        instruction.isNullOrBlank() -> mapOf("error" to "Give an instruction to run when the webhook fires")
+                        else -> registerWebhook(path, instruction, label, secret)
+                    }
+                }
+
                 else -> mapOf("error" to "Unsupported tool '$toolName'")
             }
         } catch (e: Exception) {
@@ -672,6 +700,29 @@ class DeviceToolExecutor(
             "success" to true,
             "scheduled_in_minutes" to minutes,
             "next" to "Tell the user briefly that you'll check back in about $minutes minutes, then you can end this turn."
+        )
+    }
+
+    private fun registerWebhook(path: String, instruction: String, label: String, secret: String?): Map<String, Any?> {
+        val macro = com.nik.voiceassistant.data.macro.Macro(
+            title = label.ifBlank { instruction.take(60) },
+            description = "Webhook trigger: /$path",
+            triggers = listOf(
+                com.nik.voiceassistant.data.macro.Trigger.Webhook(path = path, secret = secret?.ifBlank { null }, label = label)
+            ),
+            instruction = instruction,
+            action = com.nik.voiceassistant.data.macro.Action.AlwaysAsk
+        )
+        com.nik.voiceassistant.data.macro.MacroStore.save(context, macro)
+        val ip = com.nik.voiceassistant.service.WebhookServer.localAddress(context) ?: "PHONE_IP"
+        val url = "http://$ip:${com.nik.voiceassistant.service.WebhookServer.PORT}/webhook/$path"
+        val curl = "curl -X POST \"$url\"" + if (!secret.isNullOrBlank()) " -H \"X-Webhook-Token: $secret\"" else ""
+        return mapOf(
+            "success" to true,
+            "webhook_url" to url,
+            "curl_example" to curl,
+            "note" to "Webhook registered. Only reachable on the same Wi-Fi or Tailscale network, not from the internet. " +
+                "Tell the user: URL = $url" + if (!secret.isNullOrBlank()) ", token = $secret" else ""
         )
     }
 

@@ -949,6 +949,7 @@ class VoiceSession private constructor(val context: Context) {
         com.nik.voiceassistant.service.CallTriggerMonitor.start(context)
         com.nik.voiceassistant.service.ChargerAndWifiTriggerMonitor.start(context)
         com.nik.voiceassistant.service.ScheduledTriggerMonitor.rescheduleAll(context)
+        com.nik.voiceassistant.service.WebhookServer.start(context, scope) { getToolExecutor() }
 
         scope.launch { loadHistory() }
     }
