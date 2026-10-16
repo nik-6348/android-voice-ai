@@ -47,6 +47,13 @@ fun PatternPad(
                         }
                     },
                     onDragEnd = {
+                        // The finger often lifts right as it reaches the last dot, before a move event
+                        // past it is reported: check the last known position once more here too.
+                        dragPos?.let { pos ->
+                            dotAt(pos, size.width.toFloat())?.let { idx ->
+                                if (idx !in selected) selected = selected + idx
+                            }
+                        }
                         dragPos = null
                         if (selected.size >= 4) onPatternComplete(selected)
                         selected = listOf()
