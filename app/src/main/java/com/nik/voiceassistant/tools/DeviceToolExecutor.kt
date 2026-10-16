@@ -272,6 +272,17 @@ class DeviceToolExecutor(
             "toggle_bluetooth",
             "Turns Bluetooth on or off. On Android 13+ this opens Bluetooth settings; then read_screen and tap the switch.",
             required = listOf("enabled" to param("boolean", "true = on, false = off"))
+        ),
+        function(
+            "schedule_followup",
+            "Schedules yourself to wake up later and run a fresh instruction on this device, even if the app isn't open " +
+                "then (e.g. the conversation ends before the wait is over). Use it when something needs time before it can " +
+                "be checked (an order, a reply, a download, a timer) instead of just waiting in this same turn. " +
+                "You'll run the instruction exactly as if the user had just asked it at that time.",
+            required = listOf(
+                "instruction" to param("string", "What to do when the time comes, as a complete fresh instruction, e.g. 'Zomato app check karo order deliver hua ya nahi'"),
+                "in_minutes" to param("integer", "Minutes from now to wait, 1 to 1440 (24 hours)")
+            )
         )
     )
 
@@ -487,6 +498,17 @@ class DeviceToolExecutor(
                     mapOf("success" to true, "message" to toggleBluetooth(enabled))
                 }
 
+                "schedule_followup" -> {
+                    val instruction = str("instruction")?.trim()
+                    val minutes = int("in_minutes")
+                    when {
+                        instruction.isNullOrBlank() -> mapOf("error" to "Give an instruction to run when the time comes")
+                        minutes == null || minutes < 1 -> mapOf("error" to "Give in_minutes, at least 1")
+                        minutes > 1440 -> mapOf("error" to "Too far out; keep it within 1440 minutes (24 hours)")
+                        else -> scheduleFollowup(instruction, minutes)
+                    }
+                }
+
                 else -> mapOf("error" to "Unsupported tool '$toolName'")
             }
         } catch (e: Exception) {
@@ -626,6 +648,31 @@ class DeviceToolExecutor(
             "done", "failed" -> mapOf("saved" to true, "next" to "Check the screen shows the result, then tell the user the outcome in one short sentence.")
             else -> mapOf("saved" to true, "next" to "Carry on with step ${next.currentStep}; say in one short line what you're doing.")
         }
+    }
+
+    /** Saves a one-off Scheduled-trigger macro and arms its alarm; ScheduledMacroReceiver runs it and disables it. */
+    private fun scheduleFollowup(instruction: String, minutes: Int): Map<String, Any?> {
+        val cal = java.util.Calendar.getInstance().apply { add(java.util.Calendar.MINUTE, minutes) }
+        val macro = com.nik.voiceassistant.data.macro.Macro(
+            title = instruction.take(60),
+            description = "Scheduled follow-up",
+            triggers = listOf(
+                com.nik.voiceassistant.data.macro.Trigger.Scheduled(
+                    hour = cal.get(java.util.Calendar.HOUR_OF_DAY),
+                    minute = cal.get(java.util.Calendar.MINUTE),
+                    days = emptySet()
+                )
+            ),
+            instruction = instruction,
+            action = com.nik.voiceassistant.data.macro.Action.AlwaysAsk
+        )
+        com.nik.voiceassistant.data.macro.MacroStore.save(context, macro)
+        com.nik.voiceassistant.service.ScheduledTriggerMonitor.scheduleOne(context, macro)
+        return mapOf(
+            "success" to true,
+            "scheduled_in_minutes" to minutes,
+            "next" to "Tell the user briefly that you'll check back in about $minutes minutes, then you can end this turn."
+        )
     }
 
     private fun research(question: String): Map<String, Any?> {
