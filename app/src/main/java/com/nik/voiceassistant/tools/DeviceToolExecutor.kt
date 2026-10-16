@@ -394,7 +394,12 @@ class DeviceToolExecutor(
 
         return try {
             when (toolName) {
-                "read_screen" -> agent?.readScreen() ?: mapOf("error" to AGENT_OFF)
+                "read_screen" -> {
+                    val screen = agent?.readScreen() ?: mapOf("error" to AGENT_OFF)
+                    // When accessibility returns nothing (secure screen, WebView-heavy app, system UI),
+                    // augment with a screenshot description so the model still knows what it's looking at.
+                    augmentWithScreenshot(agent, screen)
+                }
 
                 "unlock_phone" -> when {
                     !SecurePrefs.isAutoUnlockEnabled(context) ->
@@ -740,9 +745,62 @@ class DeviceToolExecutor(
             2) any Android intent action, settings action or deep link that opens the place directly,
             3) one alternative route if the first doesn't match.
         """.trimIndent()
-        val answer = ask(prompt) ?: return mapOf("error" to "Research failed right now; try Google Search, the app's own search, or explore the menus")
+        val answer = ask(prompt) ?: return researchViaBrowser(question)
         plan?.tried?.add("research")
         return mapOf("answer" to answer, "next" to "Follow it on the screen; names may differ slightly, so match what read_screen shows.")
+    }
+
+    /**
+     * When accessibility capture returned nothing (WebView-heavy apps, some system screens), takes a
+     * screenshot and asks the vision model to describe it, appending the result to the screen map.
+     * Returns the original map unchanged when elements are already present or vision isn't available.
+     */
+    private fun augmentWithScreenshot(agent: PhoneAgentService?, screen: Map<String, Any?>): Map<String, Any?> {
+        if (agent == null || describeImage == null) return screen
+        @Suppress("UNCHECKED_CAST")
+        val elements = screen["elements"] as? List<*>
+        if (!elements.isNullOrEmpty()) return screen
+        val jpeg = try { agent.screenshotJpeg(hideOverlay = true) } catch (_: Exception) { null } ?: return screen
+        val seen = describeImage.invoke(jpeg,
+            "Describe what is on this Android phone screen: the app name, visible text, buttons, and any dialogs. " +
+            "Be brief and factual, no markdown, under 6 lines.") ?: return screen
+        return screen + mapOf(
+            "visual_description" to seen,
+            "note" to "Accessibility returned no elements; this description is from a screenshot — use it to decide what to do next."
+        )
+    }
+
+    /**
+     * Fallback when the gateway research call fails: opens a Google search in the default browser,
+     * waits for it to load, takes a screenshot, and uses the vision model to extract the answer.
+     */
+    private fun researchViaBrowser(question: String): Map<String, Any?> {
+        val agent = PhoneAgentService.instance
+        val describe = describeImage
+        if (agent == null || describe == null) {
+            return mapOf("error" to "Research failed; open_website with 'google.com/search?q=YOUR_QUESTION' to search manually, then look_at_screen")
+        }
+        return try {
+            val searchUrl = "https://www.google.com/search?q=${Uri.encode(question)}"
+            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(searchUrl)).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            })
+            Thread.sleep(3500)
+            val jpeg = agent.screenshotJpeg(hideOverlay = false)
+                ?: return mapOf("error" to "Research failed; browser opened for '$question' but screenshot unavailable — look_at_screen to read results.")
+            val seen = describe(jpeg,
+                "This is a Google search results page on an Android phone. Search query: \"$question\". " +
+                "Extract and summarize the key factual information shown. Plain text only, at most 10 short lines.")
+                ?: return mapOf("error" to "Research failed; browser opened for '$question' but couldn't read results — use look_at_screen.")
+            plan?.tried?.add("research")
+            mapOf(
+                "answer" to seen,
+                "source" to "browser_search",
+                "next" to "Answer came from a live browser search (gateway unavailable). The browser is now open; navigate back or home when done."
+            )
+        } catch (e: Exception) {
+            mapOf("error" to "Research failed; try open_website with a Google search URL manually, then look_at_screen")
+        }
     }
 
     /**
