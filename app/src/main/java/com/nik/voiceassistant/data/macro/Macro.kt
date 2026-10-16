@@ -80,6 +80,16 @@ sealed class Trigger {
         override fun describe() = "Wi-Fi connects" + (ssidContains?.let { " ($it)" } ?: "")
     }
     object BootCompleted : Trigger() { override fun describe() = "Phone restarts" }
+
+    /**
+     * An HTTP POST (or GET) to `/webhook/<path>` on the phone's local server (port 7474).
+     * Reachable from the same Wi-Fi / Tailscale network, not from the open internet.
+     * If `secret` is set, the caller must include it as the `X-Webhook-Token` header or `?token=…`
+     * query parameter.
+     */
+    data class Webhook(val path: String, val secret: String? = null, val label: String = "") : Trigger() {
+        override fun describe() = "Webhook /${path.trimStart('/')}" + if (label.isNotBlank()) " ($label)" else ""
+    }
 }
 
 /** Extra conditions, all of which must hold for the trigger to actually run the macro. */

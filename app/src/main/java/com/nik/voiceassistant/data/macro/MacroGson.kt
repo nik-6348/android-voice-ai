@@ -37,6 +37,7 @@ object MacroGson {
                 Trigger.ChargerDisconnected -> "charger_disconnected"
                 is Trigger.WifiConnected -> "wifi_connected"
                 Trigger.BootCompleted -> "boot"
+                is Trigger.Webhook -> "webhook"
             }
             val obj = ctx.serialize(src, src.javaClass).asJsonObject
             obj.addProperty("type", type)
@@ -56,6 +57,7 @@ object MacroGson {
                 "charger_disconnected" -> Trigger.ChargerDisconnected
                 "wifi_connected" -> ctx.deserialize(obj, Trigger.WifiConnected::class.java)
                 "boot" -> Trigger.BootCompleted
+                "webhook" -> ctx.deserialize(obj, Trigger.Webhook::class.java)
                 else -> Trigger.Manual
             }
         }
