@@ -37,19 +37,25 @@ object MacroDispatch {
         return now - last >= DEBOUNCE_MS
     }
 
-    fun run(context: Context, macro: Macro, executor: DeviceToolExecutor) {
+    fun run(context: Context, macro: Macro, executor: DeviceToolExecutor, triggerData: Map<String, String> = emptyMap()) {
         if (!shouldRun(macro.id)) return
+        val instruction = if (triggerData.isEmpty()) macro.instruction else buildString {
+            appendLine(macro.instruction)
+            appendLine()
+            appendLine("--- Trigger context ---")
+            triggerData.forEach { (k, v) -> appendLine("$k: $v") }
+        }
         when (val action = macro.action) {
             is Action.Replay -> if (action.steps.isNotEmpty()) {
                 scope.launch {
                     val result = MacroEngine.replay(context, macro, executor)
                     if (!result.ok) {
                         Log.i(TAG, "Replay of a triggered macro failed; asking the AI to do it live")
-                        askAi(macro.instruction)
+                        askAi(instruction)
                     }
                 }
-            } else askAi(macro.instruction)
-            Action.AlwaysAsk -> askAi(macro.instruction)
+            } else askAi(instruction)
+            Action.AlwaysAsk -> askAi(instruction)
             // A call macro isn't run through a tool executor at all: the call subsystem handles it directly
             is Action.HandleCall -> {
                 val handler = onCallGoalRequested
