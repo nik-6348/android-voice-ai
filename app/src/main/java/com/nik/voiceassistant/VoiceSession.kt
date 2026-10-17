@@ -1033,12 +1033,13 @@ class VoiceSession private constructor(val context: Context) {
      * Starts a conversation. preroll: mic audio from just before (the "Hi Nik, …" the wake word
      * detector heard), sent first so a request spoken in the same breath isn't lost.
      */
-    /** Send a macro instruction to the AI without opening the mic. Mic stays muted throughout. */
+    /** Send a macro instruction to the AI without opening the mic or playing any TTS reply. */
     fun sendTextSilent(text: String) {
         val t = text.trim()
         if (t.isEmpty()) return
-        val silentInstruction = "(BACKGROUND AUTOMATION — do NOT speak any reply, do NOT greet. Just perform the action silently and stop.) $t"
+        val silentInstruction = "(BACKGROUND AUTOMATION — do NOT speak, do NOT greet, do NOT confirm. Just perform the action silently.) $t"
         silentMacroRun = true
+        audioTrackManager.mutePlayback = true
         if (_isRecording.value && _connectionStatus.value == ConnectionStatus.CONNECTED) {
             webSocketClient.sendText(silentInstruction)
         } else {
@@ -1147,6 +1148,7 @@ class VoiceSession private constructor(val context: Context) {
         if (!_isRecording.value) return
         val wasSilent = silentMacroRun
         silentMacroRun = false
+        audioTrackManager.mutePlayback = false
         Log.i(TAG, "Conversation ended${if (wasSilent) " [silent macro]" else ""}")
         AgentTrace.log(AgentTrace.Kind.SESSION, "Conversation ended")
         MacroRecorder.finishOnConversationEnd()?.let { finishRecordedMacro(it) }

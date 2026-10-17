@@ -42,6 +42,8 @@ class AudioTrackManager(
     // Each chunk carries the flush generation it was queued in
     private val audioQueue = Channel<Pair<Long, ByteArray>>(Channel.UNLIMITED)
     private val isPlaying = AtomicBoolean(false)
+    // When true, incoming audio chunks are silently dropped (silent macro runs)
+    @Volatile var mutePlayback: Boolean = false
 
     // Frames written since the track was last flushed, and whether reply audio is audible now
     private val framesWritten = AtomicLong(0)
@@ -207,7 +209,7 @@ class AudioTrackManager(
      * Enqueue a PCM chunk from WebSocket server for playback.
      */
     fun enqueueAudioChunk(chunk: ByteArray) {
-        if (chunk.isEmpty()) return
+        if (chunk.isEmpty() || mutePlayback) return
         audioQueue.trySend(flushGeneration.get() to chunk)
     }
 
