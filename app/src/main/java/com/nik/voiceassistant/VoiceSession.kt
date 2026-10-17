@@ -400,6 +400,9 @@ class VoiceSession private constructor(val context: Context) {
 
     @Volatile private var currentSession: ConversationSession? = null
 
+    // Set when a background macro runs silently: watchdog ends session as soon as work+speech done
+    @Volatile private var silentMacroRun = false
+
     /** Called when a conversation ends by itself (bye or idle), so the service can listen for "Hi Nik" again. */
     @Volatile var onConversationEnded: (() -> Unit)? = null
 
@@ -1034,10 +1037,12 @@ class VoiceSession private constructor(val context: Context) {
     fun sendTextSilent(text: String) {
         val t = text.trim()
         if (t.isEmpty()) return
+        val silentInstruction = "(BACKGROUND AUTOMATION — do NOT speak any reply, do NOT greet. Just perform the action silently and stop.) $t"
+        silentMacroRun = true
         if (_isRecording.value && _connectionStatus.value == ConnectionStatus.CONNECTED) {
-            webSocketClient.sendText(t)
+            webSocketClient.sendText(silentInstruction)
         } else {
-            pendingText = t
+            pendingText = silentInstruction
             start(keepMicMuted = true)
         }
     }
@@ -1140,11 +1145,13 @@ class VoiceSession private constructor(val context: Context) {
     /** The conversation is over (bye or idle): stop and let the service listen for "Hi Nik" again. */
     private fun endConversation(reason: String? = null) {
         if (!_isRecording.value) return
-        Log.i(TAG, "Conversation ended")
+        val wasSilent = silentMacroRun
+        silentMacroRun = false
+        Log.i(TAG, "Conversation ended${if (wasSilent) " [silent macro]" else ""}")
         AgentTrace.log(AgentTrace.Kind.SESSION, "Conversation ended")
         MacroRecorder.finishOnConversationEnd()?.let { finishRecordedMacro(it) }
         shutDown()
-        addTranscript("system", reason ?: if (_isWakeWordEnabled.value) "Sleeping — say \"Hi ${_assistantName.value}\" to wake me" else "Conversation ended")
+        if (!wasSilent) addTranscript("system", reason ?: if (_isWakeWordEnabled.value) "Sleeping — say \"Hi ${_assistantName.value}\" to wake me" else "Conversation ended")
         onConversationEnded?.invoke()
     }
 
@@ -1265,12 +1272,18 @@ class VoiceSession private constructor(val context: Context) {
                 // The assistant is done (turn over, voice quiet, no tool for a moment): the user's turn
                 // A task still in progress keeps it closed (noise can't derail the task), unless the agent has gone idle
                 val taskRunning = toolExecutor.plan?.status == "working" && now - maxOf(lastToolEnd, lastActivity) < TASK_IDLE_REOPEN_MS
-                if (reopenWhenDone && _isMicMuted.value && _autoMute.value && quietFor >= MIC_REOPEN_QUIET_MS &&
+                if (!silentMacroRun && reopenWhenDone && _isMicMuted.value && _autoMute.value && quietFor >= MIC_REOPEN_QUIET_MS &&
                     !webSocketClient.isToolRunning() && now - lastToolEnd >= MIC_REOPEN_QUIET_MS && !endRequested && !taskRunning
                 ) openMic()
                 when {
                     // "bye" always ends, even with auto-sleep off
                     endRequested && quietFor >= END_AFTER_SILENT_MS -> { endConversation(); return@launch }
+                    // Silent macro: end as soon as work and any speech are done (no waiting for user input)
+                    silentMacroRun && !isBusy && quietFor >= 1500L -> {
+                        Log.i(TAG, "Silent macro completed — ending session")
+                        endConversation()
+                        return@launch
+                    }
                     // Idle auto-sleep only when the toggle is on and no goal/task is currently executing
                     _autoSleep.value && !isBusy && now - lastActivity > IDLE_END_MS -> {
                         Log.i(TAG, "No one has talked and no task is active for ${IDLE_END_MS / 1000} s")
