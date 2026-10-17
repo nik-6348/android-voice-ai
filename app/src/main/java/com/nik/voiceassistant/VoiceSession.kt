@@ -1279,7 +1279,9 @@ class VoiceSession private constructor(val context: Context) {
                     // "bye" always ends, even with auto-sleep off
                     endRequested && quietFor >= END_AFTER_SILENT_MS -> { endConversation(); return@launch }
                     // Silent macro: end as soon as work and any speech are done (no waiting for user input)
-                    silentMacroRun && !isBusy && quietFor >= 1500L -> {
+                    // Only count down AFTER we've been connected and had at least one tool/reply (lastActivity > 0 check)
+                    silentMacroRun && _connectionStatus.value == ConnectionStatus.CONNECTED &&
+                        lastActivity > 0L && now - lastActivity > 2000L && !isBusy && quietFor >= 1500L -> {
                         Log.i(TAG, "Silent macro completed — ending session")
                         endConversation()
                         return@launch

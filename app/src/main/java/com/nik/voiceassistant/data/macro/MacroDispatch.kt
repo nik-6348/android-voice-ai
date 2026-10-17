@@ -28,7 +28,7 @@ object MacroDispatch {
     // A burst of events for the same macro (several notifications from one app, a flaky call-state
     // callback firing twice) only runs it once
     private val lastRunAt = java.util.concurrent.ConcurrentHashMap<String, Long>()
-    private const val DEBOUNCE_MS = 10_000L
+    private const val DEBOUNCE_MS = 30_000L
 
     /** True once per macro per DEBOUNCE_MS window; false (and does nothing else) the rest of the time. */
     private fun shouldRun(macroId: String): Boolean {
