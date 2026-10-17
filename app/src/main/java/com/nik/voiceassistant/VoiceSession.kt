@@ -156,6 +156,34 @@ class VoiceSession private constructor(val context: Context) {
             CURRENT REQUEST: what the user says now is the request. Don't pick up an earlier unfinished task on your own (a greeting or a new question is not "continue"); resume one only when the user asks, or when the app tells you the connection dropped mid-task.
 
             ENDING: keep going until the goal is reached. Call end_conversation only when the user clearly says they're done (bye, bas, band karo, that's all); a thank-you or ok is not a goodbye.
+
+            AUTOMATIONS (create_automation, list_automations, edit_automation, delete_automation):
+            You can create automations that run automatically when something happens, even if the user isn't talking to you.
+            HOW TO CREATE: understand what the user wants fully first. Ask one clarifying question at a time for anything missing (exact time? which app? which contact? which network?). Then call create_automation. Never guess — ask.
+            TRIGGER TYPES AND WHEN TO USE EACH:
+              • phrase — user says a voice command
+              • scheduled — at a specific time/days (e.g. "roz subah 7 baje")
+              • broadcast_event — any Android system event. You know these action strings:
+                  Screen on:  android.intent.action.SCREEN_ON
+                  Screen off: android.intent.action.SCREEN_OFF
+                  Headphones plug in: android.intent.action.HEADSET_PLUG  extras: {"state":"1"}
+                  Headphones unplug:  android.intent.action.HEADSET_PLUG  extras: {"state":"0"}
+                  Bluetooth device connected:    android.bluetooth.device.action.ACL_CONNECTED
+                  Bluetooth device disconnected: android.bluetooth.device.action.ACL_DISCONNECTED
+                  Battery low:   android.intent.action.BATTERY_LOW
+                  Battery OK:    android.intent.action.BATTERY_OKAY
+                  SMS received:  android.provider.Telephony.SMS_RECEIVED
+                  Airplane mode: android.intent.action.AIRPLANE_MODE
+                  USB connected: android.hardware.usb.action.USB_DEVICE_ATTACHED
+                  App installed: android.intent.action.PACKAGE_ADDED
+                  Do Not Disturb changed: android.app.action.INTERRUPTION_FILTER_CHANGED
+                  (Use any valid Android broadcast action — these are just common ones)
+              • condition — YOU check periodically using your tools (screen, apps, web). Provide condition_instruction (what to check), condition_interval_minutes (how often). When you later run a condition check, use your tools silently, then call report_condition(met=true/false).
+              • webhook — HTTP POST from same Wi-Fi network (IoT, smart home)
+              • notification — when a specific app sends a notification
+              • incoming_call / missed_call — phone call events
+              • charger_connected / charger_disconnected / wifi_connected / boot / manual
+            MANAGING: list_automations shows all saved ones. edit_automation to change title/instruction/enabled. delete_automation to remove (confirm first).
         """.trimIndent()
     }
 
@@ -959,6 +987,8 @@ class VoiceSession private constructor(val context: Context) {
         com.nik.voiceassistant.service.CallTriggerMonitor.start(context)
         com.nik.voiceassistant.service.ChargerAndWifiTriggerMonitor.start(context)
         com.nik.voiceassistant.service.ScheduledTriggerMonitor.rescheduleAll(context)
+        com.nik.voiceassistant.service.ConditionPollingEngine.rescheduleAll(context)
+        com.nik.voiceassistant.service.GenericBroadcastMonitor.start(context) { getToolExecutor() }
         com.nik.voiceassistant.service.WebhookServer.start(context, scope) { getToolExecutor() }
 
         scope.launch { loadHistory() }

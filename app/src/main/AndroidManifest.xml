@@ -197,6 +197,15 @@
             android:name=".service.ScheduledMacroReceiver"
             android:exported="false" />
 
+        <!-- Fires a Condition-trigger macro's periodic check at its polled interval -->
+        <receiver
+            android:name=".service.ConditionPollingReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.nik.voiceassistant.action.CONDITION_CHECK" />
+            </intent-filter>
+        </receiver>
+
         <receiver
             android:name=".receiver.BootReceiver"
             android:enabled="true"
