@@ -25,6 +25,7 @@ import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.Bolt
 import androidx.compose.material.icons.outlined.Call
 import androidx.compose.material.icons.outlined.DeleteOutline
+import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.MusicNote
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -98,6 +99,7 @@ fun AutomationsTab(viewModel: VoiceAssistantViewModel) {
     var favoritesOnly by rememberSaveable { mutableStateOf(false) }
     var showCreateDialog by rememberSaveable { mutableStateOf(false) }
     var deleteId by rememberSaveable { mutableStateOf<String?>(null) }
+    var editMacro by rememberSaveable { mutableStateOf<String?>(null) }
 
     val shown = remember(automations, favoritesOnly) { if (favoritesOnly) automations.filter { it.isFavorite } else automations }
     val startingText = stringResource(R.string.automation_starting)
@@ -158,7 +160,8 @@ fun AutomationsTab(viewModel: VoiceAssistantViewModel) {
                         },
                         onToggleFavorite = { viewModel.toggleFavoriteAutomation(macro.id) },
                         onToggleEnabled = { viewModel.setAutomationEnabled(macro.id, it) },
-                        onDelete = { deleteId = macro.id }
+                        onDelete = { deleteId = macro.id },
+                        onEdit = { editMacro = macro.id }
                     )
                 }
             }
@@ -194,6 +197,20 @@ fun AutomationsTab(viewModel: VoiceAssistantViewModel) {
         )
     }
 
+    editMacro?.let { id ->
+        val macro = automations.firstOrNull { it.id == id }
+        if (macro != null) {
+            EditAutomationDialog(
+                macro = macro,
+                onDismiss = { editMacro = null },
+                onSave = { title, instruction ->
+                    viewModel.updateAutomation(id, title, instruction)
+                    editMacro = null
+                }
+            )
+        }
+    }
+
     if (showCreateDialog) {
         val savedMsg = stringResource(R.string.automation_saved)
         val learningMsg = stringResource(R.string.automation_learning, assistantName)
@@ -222,7 +239,8 @@ fun AutomationCard(
     onRun: () -> Unit,
     onToggleFavorite: () -> Unit,
     onToggleEnabled: (Boolean) -> Unit,
-    onDelete: () -> Unit
+    onDelete: () -> Unit,
+    onEdit: () -> Unit
 ) {
     val scheme = MaterialTheme.colorScheme
     val (icon: ImageVector, container, content) = when {
@@ -256,6 +274,9 @@ fun AutomationCard(
                         contentDescription = stringResource(if (macro.isFavorite) R.string.cd_unfavorite else R.string.cd_favorite, macro.title),
                         tint = if (macro.isFavorite) scheme.tertiary else scheme.onSurfaceVariant
                     )
+                }
+                IconButton(onClick = onEdit) {
+                    Icon(Icons.Outlined.Edit, contentDescription = "Edit ${macro.title}")
                 }
             }
             Spacer(Modifier.size(Spacing.s))
@@ -449,5 +470,47 @@ fun CreateAutomationDialog(
             }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.action_cancel)) } }
+    )
+}
+
+@Composable
+fun EditAutomationDialog(
+    macro: Macro,
+    onDismiss: () -> Unit,
+    onSave: (title: String, instruction: String) -> Unit
+) {
+    var title by rememberSaveable { mutableStateOf(macro.title) }
+    var instruction by rememberSaveable { mutableStateOf(macro.instruction) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        icon = { Icon(Icons.Outlined.Edit, contentDescription = null) },
+        title = { Text("Edit Automation") },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(Spacing.s)) {
+                OutlinedTextField(
+                    value = title,
+                    onValueChange = { title = it },
+                    label = { Text("Title") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Text("Trigger: ${macro.triggerSummary()}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                OutlinedTextField(
+                    value = instruction,
+                    onValueChange = { instruction = it },
+                    label = { Text("AI Prompt / Steps") },
+                    minLines = 4,
+                    maxLines = 10,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        },
+        confirmButton = {
+            Button(onClick = { onSave(title, instruction) }, enabled = title.isNotBlank() && instruction.isNotBlank()) {
+                Text("Save")
+            }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
     )
 }

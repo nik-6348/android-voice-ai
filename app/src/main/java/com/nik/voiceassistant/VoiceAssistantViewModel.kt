@@ -183,6 +183,13 @@ class VoiceAssistantViewModel(application: Application) : AndroidViewModel(appli
         }
     }
 
+    fun updateAutomation(id: String, title: String, instruction: String) {
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            com.nik.voiceassistant.data.macro.MacroStore.update(getApplication(), id) { it.copy(title = title.trim(), instruction = instruction.trim()) }
+            refreshAutomations()
+        }
+    }
+
     fun toggleFavoriteAutomation(id: String) {
         viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
             com.nik.voiceassistant.data.macro.MacroStore.update(getApplication(), id) { it.copy(isFavorite = !it.isFavorite) }
