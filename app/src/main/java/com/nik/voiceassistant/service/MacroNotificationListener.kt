@@ -61,12 +61,18 @@ class MacroNotificationListener : NotificationListenerService() {
             sbn.packageName
         }
 
+        Log.d(TAG, "Notification received: pkg=${sbn.packageName} app='$appLabel' title='$title'")
+
         val matches = MacroEngine.matching(applicationContext) { trigger ->
             trigger is Trigger.NotificationReceived && triggerMatches(trigger, sbn.packageName, appLabel, title, text)
         }
+        Log.d(TAG, "Macro matches for '${sbn.packageName}': ${matches.size}")
         if (matches.isEmpty()) return
         val executor = VoiceSession.get(applicationContext).getToolExecutor()
-        for (macro in matches) MacroDispatch.run(applicationContext, macro, executor)
+        for (macro in matches) {
+            Log.i(TAG, "Firing macro '${macro.title}' (id=${macro.id}) for notification from ${sbn.packageName}")
+            MacroDispatch.run(applicationContext, macro, executor)
+        }
     }
 
     /**
