@@ -7,6 +7,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * The screen's view of the conversation. The conversation itself lives in VoiceSession, so it
@@ -61,6 +62,10 @@ class VoiceAssistantViewModel(application: Application) : AndroidViewModel(appli
     val connectionMode: StateFlow<String> = session.connectionMode
     val llmBaseUrl: StateFlow<String> = session.llmBaseUrl
     val visionFrames: StateFlow<Boolean> = session.visionFrames
+    val fastActionMode: StateFlow<Boolean> = session.fastActionMode
+    fun setFastActionMode(enabled: Boolean) = session.setFastActionMode(enabled)
+    val silentAutomations: StateFlow<Boolean> = session.silentAutomations
+    fun setSilentAutomations(enabled: Boolean) = session.setSilentAutomations(enabled)
     fun hasCredentials(): Boolean = session.hasCredentials()
     fun clearKey(name: String) = session.clearKey(name)
     val isWakeWordEnabled: StateFlow<Boolean> = session.isWakeWordEnabled
@@ -117,11 +122,24 @@ class VoiceAssistantViewModel(application: Application) : AndroidViewModel(appli
     fun savePin(pin: String): Boolean = SecurePrefs.setPin(getApplication(), pin)
     fun isAutoUnlockEnabled(): Boolean = SecurePrefs.isAutoUnlockEnabled(getApplication())
     fun setAutoUnlock(enabled: Boolean) = SecurePrefs.setAutoUnlock(getApplication(), enabled)
+    fun lockType(): SecurePrefs.LockType = SecurePrefs.lockType(getApplication())
+    fun setLockType(type: SecurePrefs.LockType) = SecurePrefs.setLockType(getApplication(), type)
+    fun hasPattern(): Boolean = SecurePrefs.hasPattern(getApplication())
+    fun savePattern(cells: List<Int>): Boolean = SecurePrefs.setPattern(getApplication(), cells)
 
     fun saveSettings(
         model: String, voice: String, searchEnabled: Boolean, url: String, mode: String,
         geminiKey: String?, llmBaseUrl: String, llmKey: String?, vision: Boolean
-    ): Boolean = session.saveSettings(model, voice, searchEnabled, url, mode, geminiKey, llmBaseUrl, llmKey, vision)
+    ): VoiceSession.SaveResult = session.saveSettings(model, voice, searchEnabled, url, mode, geminiKey, llmBaseUrl, llmKey, vision)
+
+    // ---- Safety & privacy (Settings) ----
+    val policy: StateFlow<com.nik.voiceassistant.security.AgentPolicy.Settings> = com.nik.voiceassistant.security.AgentPolicy.state
+
+    fun updatePolicy(transform: (com.nik.voiceassistant.security.AgentPolicy.Settings) -> com.nik.voiceassistant.security.AgentPolicy.Settings) =
+        session.updatePolicy(transform)
+
+    /** Deletes every saved conversation (History). */
+    fun clearAllHistory() = session.clearAllHistory()
 
     // ---- History Management ----
     val historySessions: StateFlow<List<com.nik.voiceassistant.data.history.ConversationSession>> = session.historySessions
@@ -134,52 +152,72 @@ class VoiceAssistantViewModel(application: Application) : AndroidViewModel(appli
 
     fun deleteChat(sessionId: String) = session.deleteChat(sessionId)
 
-    // ---- Automations Management ----
-    private val _automations = MutableStateFlow<List<com.nik.voiceassistant.data.automation.AutomationTask>>(
-        com.nik.voiceassistant.data.automation.AutomationManager.getAllTasks(getApplication())
-    )
-    val automations: StateFlow<List<com.nik.voiceassistant.data.automation.AutomationTask>> = _automations.asStateFlow()
+    // ---- Automations (macros) ----
+    private val _automations = MutableStateFlow<List<com.nik.voiceassistant.data.macro.Macro>>(emptyList())
+    val automations: StateFlow<List<com.nik.voiceassistant.data.macro.Macro>> = _automations.asStateFlow()
+
+    init {
+        refreshAutomations()
+    }
 
     fun refreshAutomations() {
-        _automations.value = com.nik.voiceassistant.data.automation.AutomationManager.getAllTasks(getApplication())
-    }
-
-    fun saveAutomation(task: com.nik.voiceassistant.data.automation.AutomationTask) {
-        com.nik.voiceassistant.data.automation.AutomationManager.saveTask(getApplication(), task)
-        refreshAutomations()
-    }
-
-    fun deleteAutomation(id: String) {
-        com.nik.voiceassistant.data.automation.AutomationManager.deleteTask(getApplication(), id)
-        refreshAutomations()
-    }
-
-    fun toggleFavoriteAutomation(id: String) {
-        com.nik.voiceassistant.data.automation.AutomationManager.toggleFavorite(getApplication(), id)
-        refreshAutomations()
-    }
-
-    fun executeAutomation(
-        task: com.nik.voiceassistant.data.automation.AutomationTask,
-        onProgress: (stepIndex: Int, total: Int, desc: String) -> Unit,
-        onComplete: (success: Boolean, message: String) -> Unit
-    ) {
-        viewModelScope.launch {
-            val result = com.nik.voiceassistant.data.automation.AutomationManager.executeTask(
-                getApplication(),
-                task,
-                session.getToolExecutor(),
-                onProgress
-            )
-            refreshAutomations()
-            onComplete(result.first, result.second)
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            val all = com.nik.voiceassistant.data.macro.MacroStore.getAll(getApplication())
+            withContext(kotlinx.coroutines.Dispatchers.Main) { _automations.value = all }
         }
     }
 
+    fun saveAutomation(macro: com.nik.voiceassistant.data.macro.Macro) {
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            com.nik.voiceassistant.data.macro.MacroStore.save(getApplication(), macro)
+            if (macro.enabled) com.nik.voiceassistant.service.ScheduledTriggerMonitor.scheduleOne(getApplication(), macro)
+            refreshAutomations()
+        }
+    }
+
+    fun deleteAutomation(id: String) {
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            com.nik.voiceassistant.data.macro.MacroStore.delete(getApplication(), id)
+            com.nik.voiceassistant.service.ScheduledTriggerMonitor.cancel(getApplication(), id)
+            refreshAutomations()
+        }
+    }
+
+    fun toggleFavoriteAutomation(id: String) {
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            com.nik.voiceassistant.data.macro.MacroStore.update(getApplication(), id) { it.copy(isFavorite = !it.isFavorite) }
+            refreshAutomations()
+        }
+    }
+
+    fun setAutomationEnabled(id: String, enabled: Boolean) {
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            var updated: com.nik.voiceassistant.data.macro.Macro? = null
+            com.nik.voiceassistant.data.macro.MacroStore.update(getApplication(), id) { it.copy(enabled = enabled).also { m -> updated = m } }
+            if (enabled) updated?.let { com.nik.voiceassistant.service.ScheduledTriggerMonitor.scheduleOne(getApplication(), it) }
+            else com.nik.voiceassistant.service.ScheduledTriggerMonitor.cancel(getApplication(), id)
+            refreshAutomations()
+        }
+    }
+
+    /** Replays a macro's recorded steps. On failure, the caller should offer to re-record it live. */
+    fun runAutomation(
+        macro: com.nik.voiceassistant.data.macro.Macro,
+        onProgress: (stepIndex: Int, total: Int, desc: String) -> Unit,
+        onComplete: (result: com.nik.voiceassistant.data.macro.MacroEngine.ReplayResult) -> Unit
+    ) {
+        viewModelScope.launch {
+            val result = com.nik.voiceassistant.data.macro.MacroEngine.replay(getApplication(), macro, session.getToolExecutor(), onProgress)
+            refreshAutomations()
+            onComplete(result)
+        }
+    }
+
+    /** Starts a brand-new macro: the AI performs `instruction` live now, and it's saved once the goal is done. */
     fun recordAndExecuteAutomation(instruction: String) {
         val clean = instruction.trim()
         if (clean.isBlank()) return
-        com.nik.voiceassistant.data.automation.AutomationManager.startRecording(clean)
+        com.nik.voiceassistant.data.macro.MacroRecorder.start(clean)
         session.sendText(clean)
     }
 }

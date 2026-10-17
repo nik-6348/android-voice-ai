@@ -1,34 +1,84 @@
 package com.nik.voiceassistant.ui.screens
 
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.*
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.material.icons.automirrored.filled.Chat
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Clear
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.outlined.ContentCopy
+import androidx.compose.material.icons.outlined.DeleteOutline
+import androidx.compose.material.icons.outlined.DeleteSweep
+import androidx.compose.material.icons.outlined.Forum
+import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.res.pluralStringResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.AnnotatedString
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import com.nik.voiceassistant.R
+import com.nik.voiceassistant.TranscriptItem
 import com.nik.voiceassistant.VoiceAssistantViewModel
 import com.nik.voiceassistant.data.history.ConversationSession
-import com.nik.voiceassistant.ui.theme.*
+import com.nik.voiceassistant.ui.components.Badge
+import com.nik.voiceassistant.ui.components.ConfirmDialog
+import com.nik.voiceassistant.ui.components.EmptyState
+import com.nik.voiceassistant.ui.components.ScreenHeader
+import com.nik.voiceassistant.ui.components.safeList
+import com.nik.voiceassistant.ui.components.safeSender
+import com.nik.voiceassistant.ui.components.safeString
+import com.nik.voiceassistant.ui.components.safeText
+import com.nik.voiceassistant.ui.components.transcriptKeys
+import com.nik.voiceassistant.ui.theme.Spacing
 import java.text.SimpleDateFormat
-import java.util.*
+import java.util.Date
+import java.util.Locale
+
+// Sessions come from Gson: any field can be null at runtime, so they are read through these
+private fun ConversationSession.safeTitle(fallback: String) = safeString(title).ifBlank { fallback }
+private fun ConversationSession.safeMessages(): List<TranscriptItem> = safeList(messages)
+private fun ConversationSession.safeId() = safeString(id)
 
 @Composable
 fun HistoryTab(
@@ -37,188 +87,121 @@ fun HistoryTab(
 ) {
     val historySessions by viewModel.historySessions.collectAsState()
     val currentSessionId by viewModel.currentSessionId.collectAsState()
-    var searchQuery by remember { mutableStateOf("") }
-    var viewingSession by remember { mutableStateOf<ConversationSession?>(null) }
-    var sessionToDelete by remember { mutableStateOf<ConversationSession?>(null) }
+    val assistantName by viewModel.assistantName.collectAsState()
+    var searchQuery by rememberSaveable { mutableStateOf("") }
+    // Dialogs by session id, so they survive rotation
+    var viewingId by rememberSaveable { mutableStateOf<String?>(null) }
+    var deleteId by rememberSaveable { mutableStateOf<String?>(null) }
+    var confirmDeleteAll by rememberSaveable { mutableStateOf(false) }
+    val untitled = stringResource(R.string.history_untitled)
 
-    val filteredSessions = remember(historySessions, searchQuery) {
-        if (searchQuery.isBlank()) historySessions
-        else {
-            historySessions.filter { session ->
-                session.title.contains(searchQuery, ignoreCase = true) ||
-                    session.messages.any { it.text.contains(searchQuery, ignoreCase = true) }
-            }
+    val sessions = remember(historySessions) { historySessions.filter { it.safeId().isNotEmpty() }.distinctBy { it.safeId() } }
+    val filtered = remember(sessions, searchQuery) {
+        val q = searchQuery.trim()
+        if (q.isEmpty()) sessions
+        else sessions.filter { s ->
+            s.safeTitle("").contains(q, ignoreCase = true) || s.safeMessages().any { it.safeText.contains(q, ignoreCase = true) }
         }
     }
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(horizontal = 16.dp)
-    ) {
-        // ---- Header ----
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(top = 12.dp, bottom = 12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
+    Column(Modifier.fillMaxSize().padding(horizontal = Spacing.m)) {
+        ScreenHeader(
+            title = stringResource(R.string.history_title),
+            subtitle = pluralStringResource(R.plurals.history_count, sessions.size, sessions.size)
         ) {
-            Column {
-                Text(
-                    text = "Conversation History",
-                    color = TextPrimary,
-                    fontSize = 22.sp,
-                    fontWeight = FontWeight.Bold
-                )
-                Text(
-                    text = "${historySessions.size} saved sessions",
-                    color = TextSecondary,
-                    fontSize = 12.sp
-                )
+            if (sessions.isNotEmpty()) {
+                IconButton(onClick = { confirmDeleteAll = true }) {
+                    Icon(Icons.Outlined.DeleteSweep, contentDescription = stringResource(R.string.delete_all_conversations))
+                }
             }
-
-            Button(
-                onClick = {
-                    viewModel.startNewChat()
-                    onNavigateToAssistant()
-                },
-                colors = ButtonDefaults.buttonColors(containerColor = CyanAccent),
-                shape = RoundedCornerShape(20.dp),
-                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp)
-            ) {
-                Icon(Icons.Default.Add, contentDescription = null, tint = BgDark, modifier = Modifier.size(18.dp))
-                Spacer(modifier = Modifier.width(4.dp))
-                Text("New Chat", color = BgDark, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+            FilledTonalButton(onClick = { viewModel.startNewChat(); onNavigateToAssistant() }) {
+                Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(Spacing.xs))
+                Text(stringResource(R.string.new_chat))
             }
         }
 
-        // ---- Search Field ----
         OutlinedTextField(
             value = searchQuery,
             onValueChange = { searchQuery = it },
-            placeholder = { Text("Search conversations…", color = TextMuted, fontSize = 13.sp) },
-            leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, tint = TextMuted) },
+            placeholder = { Text(stringResource(R.string.history_search)) },
+            leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
             trailingIcon = {
-                if (searchQuery.isNotEmpty()) {
-                    IconButton(onClick = { searchQuery = "" }) {
-                        Icon(Icons.Default.Clear, contentDescription = "Clear", tint = TextMuted)
-                    }
+                if (searchQuery.isNotEmpty()) IconButton(onClick = { searchQuery = "" }) {
+                    Icon(Icons.Filled.Clear, contentDescription = stringResource(R.string.cd_clear_search))
                 }
             },
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(bottom = 12.dp),
-            colors = OutlinedTextFieldDefaults.colors(
-                focusedBorderColor = CyanAccent,
-                unfocusedBorderColor = GlassBorder,
-                focusedContainerColor = SurfaceCard,
-                unfocusedContainerColor = SurfaceCard,
-                focusedTextColor = TextPrimary,
-                unfocusedTextColor = TextPrimary
-            ),
-            shape = RoundedCornerShape(14.dp),
-            singleLine = true
+            shape = CircleShape,
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth().padding(bottom = Spacing.s)
         )
 
-        // ---- History List ----
-        if (filteredSessions.isEmpty()) {
-            Box(
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth(),
-                contentAlignment = Alignment.Center
+        if (filtered.isEmpty()) {
+            EmptyState(
+                icon = Icons.Outlined.Forum,
+                title = if (searchQuery.isNotBlank()) stringResource(R.string.history_no_match, searchQuery) else stringResource(R.string.history_empty_title),
+                message = stringResource(R.string.history_empty_body),
+                modifier = Modifier.weight(1f)
             ) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Icon(
-                        Icons.Default.Forum,
-                        contentDescription = null,
-                        tint = TextMuted,
-                        modifier = Modifier.size(54.dp)
-                    )
-                    Spacer(modifier = Modifier.height(12.dp))
-                    Text(
-                        text = if (searchQuery.isNotBlank()) "No conversations match '$searchQuery'" else "No conversation history yet",
-                        color = TextSecondary,
-                        fontSize = 15.sp,
-                        fontWeight = FontWeight.Medium
-                    )
-                    Spacer(modifier = Modifier.height(6.dp))
-                    Text(
-                        text = "Talk to the assistant or start a new chat.",
-                        color = TextMuted,
-                        fontSize = 12.sp
-                    )
-                    Spacer(modifier = Modifier.height(16.dp))
-                    Button(
-                        onClick = {
-                            viewModel.startNewChat()
-                            onNavigateToAssistant()
-                        },
-                        colors = ButtonDefaults.buttonColors(containerColor = BrandCyan),
-                        shape = RoundedCornerShape(18.dp)
-                    ) {
-                        Text("Start Talking", color = BgDark, fontWeight = FontWeight.SemiBold)
-                    }
-                }
+                Button(onClick = { viewModel.startNewChat(); onNavigateToAssistant() }) { Text(stringResource(R.string.action_start_talking)) }
             }
         } else {
             LazyColumn(
                 modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
-                contentPadding = PaddingValues(bottom = 80.dp)
+                verticalArrangement = Arrangement.spacedBy(Spacing.s),
+                contentPadding = PaddingValues(bottom = Spacing.l)
             ) {
-                items(filteredSessions, key = { it.id }) { session ->
+                items(filtered, key = { it.safeId() }) { session ->
                     HistorySessionCard(
                         session = session,
-                        isActive = session.id == currentSessionId,
-                        onContinue = {
-                            viewModel.resumeChat(session.id)
-                            onNavigateToAssistant()
-                        },
-                        onViewTranscript = { viewingSession = session },
-                        onDelete = { sessionToDelete = session }
+                        title = session.safeTitle(untitled),
+                        isActive = session.safeId() == currentSessionId,
+                        onContinue = { viewModel.resumeChat(session.safeId()); onNavigateToAssistant() },
+                        onViewTranscript = { viewingId = session.safeId() },
+                        onDelete = { deleteId = session.safeId() }
                     )
                 }
             }
         }
     }
 
-    // ---- Transcript Detail Dialog ----
-    viewingSession?.let { session ->
-        TranscriptViewerDialog(
+    viewingId?.let { id ->
+        val session = sessions.firstOrNull { it.safeId() == id }
+        if (session != null) TranscriptViewerDialog(
             session = session,
-            onDismiss = { viewingSession = null },
+            title = session.safeTitle(untitled),
+            assistantName = assistantName,
+            onDismiss = { viewingId = null },
             onResumeChat = {
-                viewingSession = null
-                viewModel.resumeChat(session.id)
+                viewingId = null
+                viewModel.resumeChat(id)
                 onNavigateToAssistant()
             }
         )
     }
 
-    // ---- Confirm Delete Dialog ----
-    sessionToDelete?.let { session ->
-        AlertDialog(
-            onDismissRequest = { sessionToDelete = null },
-            title = { Text("Delete Conversation?", color = TextPrimary) },
-            text = { Text("Are you sure you want to delete '${session.title}'? This action cannot be undone.", color = TextSecondary) },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        viewModel.deleteChat(session.id)
-                        sessionToDelete = null
-                    }
-                ) {
-                    Text("Delete", color = RedStop, fontWeight = FontWeight.Bold)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { sessionToDelete = null }) {
-                    Text("Cancel", color = TextSecondary)
-                }
-            },
-            containerColor = SurfaceDark
+    deleteId?.let { id ->
+        val title = sessions.firstOrNull { it.safeId() == id }?.safeTitle(untitled) ?: untitled
+        ConfirmDialog(
+            title = stringResource(R.string.history_delete_title),
+            message = stringResource(R.string.history_delete_body, title),
+            confirmLabel = stringResource(R.string.action_delete),
+            dismissLabel = stringResource(R.string.action_cancel),
+            icon = Icons.Outlined.DeleteOutline,
+            onConfirm = { viewModel.deleteChat(id); deleteId = null },
+            onDismiss = { deleteId = null }
+        )
+    }
+
+    if (confirmDeleteAll) {
+        ConfirmDialog(
+            title = stringResource(R.string.delete_all_conversations_title),
+            message = stringResource(R.string.delete_all_conversations_body),
+            confirmLabel = stringResource(R.string.action_delete_all),
+            dismissLabel = stringResource(R.string.action_cancel),
+            icon = Icons.Outlined.DeleteSweep,
+            onConfirm = { viewModel.clearAllHistory(); confirmDeleteAll = false },
+            onDismiss = { confirmDeleteAll = false }
         )
     }
 }
@@ -226,147 +209,54 @@ fun HistoryTab(
 @Composable
 fun HistorySessionCard(
     session: ConversationSession,
-    isActive: Boolean = false,
+    title: String,
+    isActive: Boolean,
     onContinue: () -> Unit,
     onViewTranscript: () -> Unit,
     onDelete: () -> Unit
 ) {
-    val dateStr = remember(session.updatedAt) {
-        val sdf = SimpleDateFormat("dd MMM, hh:mm a", Locale.getDefault())
-        sdf.format(Date(session.updatedAt))
-    }
-    val userMsgs = session.messages.count { it.sender == "user" }
-    val lastMsg = session.messages.lastOrNull { it.sender == "user" || it.sender == "assistant" }?.text ?: "No messages"
+    val scheme = MaterialTheme.colorScheme
+    val messages = session.safeMessages()
+    val dateStr = remember(session.updatedAt) { SimpleDateFormat("dd MMM, hh:mm a", Locale.getDefault()).format(Date(session.updatedAt)) }
+    val userMsgs = messages.count { it.safeSender == "user" }
+    val lastMsg = messages.lastOrNull { it.safeSender == "user" || it.safeSender == "assistant" }?.safeText
+        ?: stringResource(R.string.history_no_messages)
 
     Card(
+        shape = MaterialTheme.shapes.large,
+        colors = CardDefaults.cardColors(containerColor = if (isActive) scheme.secondaryContainer else scheme.surfaceContainerLow),
         modifier = Modifier
             .fillMaxWidth()
-            .border(
-                if (isActive) 1.5.dp else 1.dp,
-                if (isActive) BrandCyan.copy(alpha = 0.8f) else GlassBorder,
-                RoundedCornerShape(16.dp)
-            )
-            .clickable { onViewTranscript() },
-        shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(containerColor = if (isActive) SurfaceDark else SurfaceCard)
+            .clip(MaterialTheme.shapes.large)
+            .clickable(onClickLabel = stringResource(R.string.action_view_transcript), onClick = onViewTranscript)
     ) {
-        Column(modifier = Modifier.padding(14.dp)) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.weight(1f)
-                ) {
-                    if (isActive) {
-                        Box(
-                            modifier = Modifier
-                                .background(BrandCyan.copy(alpha = 0.22f), RoundedCornerShape(6.dp))
-                                .border(0.5.dp, BrandCyan, RoundedCornerShape(6.dp))
-                                .padding(horizontal = 5.dp, vertical = 2.dp)
-                        ) {
-                            Text(
-                                text = "ACTIVE",
-                                color = BrandCyan,
-                                fontSize = 9.sp,
-                                fontWeight = FontWeight.Bold
-                            )
-                        }
-                        Spacer(modifier = Modifier.width(6.dp))
-                    }
-                    Text(
-                        text = session.title,
-                        color = TextPrimary,
-                        fontSize = 15.sp,
-                        fontWeight = FontWeight.Bold,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
+        Column(Modifier.padding(start = Spacing.m, end = Spacing.s, top = Spacing.m, bottom = Spacing.s)) {
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(end = Spacing.s)) {
+                if (isActive) {
+                    Badge(stringResource(R.string.history_current), container = scheme.primary, content = scheme.onPrimary)
+                    Spacer(Modifier.width(Spacing.s))
                 }
-
-                Text(
-                    text = dateStr,
-                    color = TextMuted,
-                    fontSize = 11.sp
-                )
+                Text(title, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                Spacer(Modifier.width(Spacing.s))
+                Text(dateStr, style = MaterialTheme.typography.labelSmall, color = scheme.onSurfaceVariant)
             }
-
-            Spacer(modifier = Modifier.height(6.dp))
-
+            Spacer(Modifier.size(Spacing.xs))
             Text(
-                text = lastMsg,
-                color = TextSecondary,
-                fontSize = 12.sp,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-                lineHeight = 16.sp
+                lastMsg, style = MaterialTheme.typography.bodyMedium, color = scheme.onSurfaceVariant,
+                maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(end = Spacing.s)
             )
-
-            Spacer(modifier = Modifier.height(10.dp))
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                // Info badges
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Box(
-                        modifier = Modifier
-                            .background(BrandViolet.copy(alpha = 0.2f), RoundedCornerShape(6.dp))
-                            .padding(horizontal = 6.dp, vertical = 2.dp)
-                    ) {
-                        Text(
-                            text = "$userMsgs queries",
-                            color = BrandViolet,
-                            fontSize = 10.sp,
-                            fontWeight = FontWeight.SemiBold
-                        )
-                    }
-
-                    Spacer(modifier = Modifier.width(6.dp))
-
-                    Text(
-                        text = "${session.messages.size} total turns",
-                        color = TextMuted,
-                        fontSize = 10.sp
-                    )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    pluralStringResource(R.plurals.history_requests, userMsgs, userMsgs) + " · " + pluralStringResource(R.plurals.history_messages, messages.size, messages.size),
+                    style = MaterialTheme.typography.labelMedium, color = scheme.onSurfaceVariant, modifier = Modifier.weight(1f)
+                )
+                IconButton(onClick = onDelete) {
+                    Icon(Icons.Outlined.DeleteOutline, contentDescription = stringResource(R.string.cd_delete_conversation, title))
                 }
-
-                // Actions
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    IconButton(
-                        onClick = onDelete,
-                        modifier = Modifier.size(30.dp)
-                    ) {
-                        Icon(Icons.Default.DeleteOutline, contentDescription = "Delete", tint = TextMuted, modifier = Modifier.size(16.dp))
-                    }
-
-                    Spacer(modifier = Modifier.width(4.dp))
-
-                    Button(
-                        onClick = onContinue,
-                        colors = ButtonDefaults.buttonColors(containerColor = if (isActive) BrandCyan else CyanAccent),
-                        shape = RoundedCornerShape(12.dp),
-                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                        modifier = Modifier.height(28.dp)
-                    ) {
-                        Icon(
-                            if (isActive) Icons.Default.ChatBubbleOutline else Icons.Default.PlayArrow,
-                            contentDescription = null,
-                            tint = BgDark,
-                            modifier = Modifier.size(13.dp)
-                        )
-                        Spacer(modifier = Modifier.width(3.dp))
-                        Text(
-                            if (isActive) "Current" else "Resume",
-                            color = BgDark,
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Bold
-                        )
-                    }
+                TextButton(onClick = onContinue) {
+                    Icon(if (isActive) Icons.AutoMirrored.Filled.Chat else Icons.Filled.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(Spacing.xs))
+                    Text(stringResource(if (isActive) R.string.history_open else R.string.history_resume))
                 }
             }
         }
@@ -376,136 +266,53 @@ fun HistorySessionCard(
 @Composable
 fun TranscriptViewerDialog(
     session: ConversationSession,
+    title: String,
+    assistantName: String,
     onDismiss: () -> Unit,
     onResumeChat: () -> Unit
 ) {
     val clipboard = LocalClipboardManager.current
     var copied by remember { mutableStateOf(false) }
+    val messages = session.safeMessages()
+    val keys = remember(messages) { transcriptKeys(messages) }
+    val scheme = MaterialTheme.colorScheme
 
-    Dialog(onDismissRequest = onDismiss) {
+    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         Surface(
-            modifier = Modifier
-                .fillMaxWidth()
-                .fillMaxHeight(0.85f),
-            shape = RoundedCornerShape(20.dp),
-            color = SurfaceDark,
-            border = androidx.compose.foundation.BorderStroke(1.dp, GlassBorder)
+            modifier = Modifier.fillMaxWidth(0.94f).fillMaxHeight(0.88f),
+            shape = MaterialTheme.shapes.extraLarge,
+            color = scheme.surfaceContainerHigh
         ) {
-            Column(modifier = Modifier.padding(16.dp)) {
-                // Header
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(session.title, color = TextPrimary, fontSize = 16.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        Text("${session.messages.size} messages", color = TextSecondary, fontSize = 11.sp)
+            Column(Modifier.padding(Spacing.m)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text(title, style = MaterialTheme.typography.titleLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(pluralStringResource(R.plurals.history_messages, messages.size, messages.size), style = MaterialTheme.typography.bodySmall, color = scheme.onSurfaceVariant)
                     }
-
-                    IconButton(onClick = onDismiss) {
-                        Icon(Icons.Default.Close, contentDescription = "Close", tint = TextSecondary)
+                    IconButton(onClick = onDismiss) { Icon(Icons.Filled.Clear, contentDescription = stringResource(R.string.action_close)) }
+                }
+                HorizontalDivider(Modifier.padding(vertical = Spacing.s))
+                LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(Spacing.s)) {
+                    itemsIndexed(messages, key = { i, _ -> keys.getOrElse(i) { "pos-$i" } }) { _, item ->
+                        TranscriptBubble(item, assistantName)
                     }
                 }
-
-                HorizontalDivider(color = GlassBorder, modifier = Modifier.padding(vertical = 10.dp))
-
-                // Transcript list
-                LazyColumn(
-                    modifier = Modifier.weight(1f),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    items(session.messages) { item ->
-                        val isUser = item.sender == "user"
-                        val isAssistant = item.sender == "assistant"
-                        val isTool = item.sender == "tool"
-
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(vertical = 2.dp),
-                            horizontalAlignment = if (isUser) Alignment.End else Alignment.Start
-                        ) {
-                            Box(
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(12.dp))
-                                    .background(
-                                        when {
-                                            isUser -> CyanAccent.copy(alpha = 0.15f)
-                                            isAssistant -> SurfaceCard
-                                            isTool -> BrandViolet.copy(alpha = 0.15f)
-                                            else -> Glass
-                                        }
-                                    )
-                                    .border(
-                                        1.dp,
-                                        when {
-                                            isUser -> CyanAccent.copy(alpha = 0.4f)
-                                            isTool -> BrandViolet.copy(alpha = 0.3f)
-                                            else -> GlassBorder
-                                        },
-                                        RoundedCornerShape(12.dp)
-                                    )
-                                    .padding(horizontal = 12.dp, vertical = 8.dp)
-                            ) {
-                                Column {
-                                    Text(
-                                        text = when (item.sender) {
-                                            "user" -> "You"
-                                            "assistant" -> "Assistant"
-                                            "tool" -> "Action / Tool"
-                                            else -> "System"
-                                        },
-                                        color = when (item.sender) {
-                                            "user" -> CyanAccent
-                                            "assistant" -> GreenActive
-                                            "tool" -> BrandViolet
-                                            else -> TextMuted
-                                        },
-                                        fontSize = 10.sp,
-                                        fontWeight = FontWeight.Bold
-                                    )
-                                    Spacer(modifier = Modifier.height(2.dp))
-                                    Text(
-                                        text = item.text,
-                                        color = TextPrimary,
-                                        fontSize = 13.sp,
-                                        lineHeight = 17.sp
-                                    )
-                                }
-                            }
-                        }
+                HorizontalDivider(Modifier.padding(vertical = Spacing.s))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    TextButton(onClick = {
+                        val fullText = messages.joinToString("\n\n") { "${it.safeSender.uppercase()}: ${it.safeText}" }
+                        clipboard.setText(AnnotatedString(fullText))
+                        copied = true
+                    }) {
+                        Icon(Icons.Outlined.ContentCopy, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(Spacing.xs))
+                        Text(stringResource(if (copied) R.string.copied_all else R.string.action_copy_all))
                     }
-                }
-
-                HorizontalDivider(color = GlassBorder, modifier = Modifier.padding(vertical = 10.dp))
-
-                // Dialog bottom actions
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    TextButton(
-                        onClick = {
-                            val fullText = session.messages.joinToString("\n\n") { "${it.sender.uppercase()}: ${it.text}" }
-                            clipboard.setText(AnnotatedString(fullText))
-                            copied = true
-                        }
-                    ) {
-                        Icon(Icons.Default.ContentCopy, contentDescription = null, tint = TextSecondary, modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text(if (copied) "Copied!" else "Copy All", color = TextSecondary, fontSize = 12.sp)
-                    }
-
-                    Button(
-                        onClick = onResumeChat,
-                        colors = ButtonDefaults.buttonColors(containerColor = CyanAccent),
-                        shape = RoundedCornerShape(12.dp)
-                    ) {
-                        Icon(Icons.Default.PlayArrow, contentDescription = null, tint = BgDark, modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text("Continue in Chat", color = BgDark, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                    Box(Modifier.weight(1f))
+                    Button(onClick = onResumeChat) {
+                        Icon(Icons.Filled.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(Spacing.xs))
+                        Text(stringResource(R.string.history_continue))
                     }
                 }
             }

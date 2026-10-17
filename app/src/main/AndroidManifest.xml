@@ -18,23 +18,31 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
-    <!-- Hardware Control Permissions (Flashlight, Bluetooth) -->
-    <uses-permission android:name="android.permission.CAMERA" />
+    <!-- Flashlight: CameraManager.setTorchMode needs no camera permission -->
     <uses-feature android:name="android.hardware.camera" android:required="false" />
     <uses-feature android:name="android.hardware.camera.flash" android:required="false" />
 
-    <uses-permission android:name="android.permission.BLUETOOTH" />
-    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" />
+    <!-- Bluetooth on/off: the old permissions only exist up to Android 11 -->
+    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
 
     <!-- Always listening for "Hi Nik": ask to be left out of battery optimization (Moto kills it otherwise) -->
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
+    <!-- Calls and SIM numbers are optional: the app also runs on tablets without telephony -->
+    <uses-feature android:name="android.hardware.telephony" android:required="false" />
+
     <!-- "Call X": place the call directly (make_call tool), not just open the dialer -->
     <uses-permission android:name="android.permission.CALL_PHONE" />
+    <!-- Answer incoming calls directly when a macro matches (Action.HandleCall) -->
+    <uses-permission android:name="android.permission.ANSWER_PHONE_CALLS" />
 
-    <!-- Contacts lookup for "call / message <name>" (find_contact tool) -->
+    <!-- Contacts lookup for "call / message <name>" (find_contact tool), and to name a caller in a
+         call-triggered macro ("jab Mummy ka call aaye…") -->
     <uses-permission android:name="android.permission.READ_CONTACTS" />
+    <!-- Missed-call-triggered macros read the call log, the only reliable way to know a call was missed -->
+    <uses-permission android:name="android.permission.READ_CALL_LOG" />
     <!-- The user's own numbers (SIMs), for "send it to me" (e.g. WhatsApp's "Message yourself" chat) -->
     <uses-permission android:name="android.permission.READ_PHONE_STATE" />
     <uses-permission android:name="android.permission.READ_PHONE_NUMBERS" />
@@ -45,26 +53,58 @@
 
     <!-- Set alarms and timers directly via intent -->
     <uses-permission android:name="com.android.alarm.permission.SET_ALARM" />
+    <!-- Scheduled/follow-up macros wake the phone at an exact time even from Doze. If the user hasn't
+         granted it, ScheduledTriggerMonitor falls back to an inexact alarm instead of asking for it. -->
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
 
     <!-- Auto-start wake word listening after reboot / package update -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
-    <!-- App Launcher Permission -->
-    <uses-permission
-        android:name="android.permission.QUERY_ALL_PACKAGES"
-        tools:ignore="QueryAllPackagesPermission" />
+    <!-- Apps the agent needs to see, instead of QUERY_ALL_PACKAGES: launchable apps (open_app, list_apps),
+         apps that open web links (a wa.me / youtube.com link opens in its app), browsers, payment apps
+         (upi://pay, PaymentGuard) and the home app. Intents are started directly, so launch_intent
+         doesn't need to see the app it opens. -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.HOME" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <category android:name="android.intent.category.BROWSABLE" />
+            <data android:scheme="https" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="http" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="upi" />
+        </intent>
+        <intent>
+            <action android:name="com.android.settings.action.SETTINGS_SEARCH" />
+        </intent>
+    </queries>
 
     <!-- Screen Overlay / Draw over other apps (floating assistant UI & status) -->
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
 
     <application
-        android:allowBackup="true"
+        android:allowBackup="false"
+        android:fullBackupContent="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
         android:theme="@style/Theme.NikVoiceAssistant"
-        tools:targetApi="34">
+        tools:targetApi="34"
+        tools:ignore="DataExtractionRules">
 
         <activity
             android:name=".MainActivity"
@@ -74,6 +114,16 @@
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.DIAL" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.DIAL" />
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:scheme="tel" />
             </intent-filter>
         </activity>
 
@@ -112,10 +162,49 @@
                 android:resource="@xml/phone_agent_service" />
         </service>
 
+        <!-- Notification-triggered macros ("jab WhatsApp par Papa ka message aaye…"); the user turns
+             this on once in Settings > Notification access, same as any notification-reading app -->
+        <service
+            android:name=".service.MacroNotificationListener"
+            android:exported="false"
+            android:label="@string/app_name"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
+
+        <!-- System InCallService for handling calls when set as default phone app -->
+        <service
+            android:name=".service.VoiceInCallService"
+            android:permission="android.permission.BIND_INCALL_SERVICE"
+            android:exported="true">
+            <meta-data
+                android:name="android.telecom.IN_CALL_SERVICE_UI"
+                android:value="true" />
+            <intent-filter>
+                <action android:name="android.telecom.InCallService" />
+            </intent-filter>
+        </service>
+
         <!-- Restore background listening on device boot or update -->
         <receiver
             android:name=".service.PaymentGuard$ResumeReceiver"
             android:exported="false" />
+
+        <!-- Fires a Scheduled-trigger macro (or a one-off schedule_followup) at its armed time -->
+        <receiver
+            android:name=".service.ScheduledMacroReceiver"
+            android:exported="false" />
+
+        <!-- Fires a Condition-trigger macro's periodic check at its polled interval -->
+        <receiver
+            android:name=".service.ConditionPollingReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.nik.voiceassistant.action.CONDITION_CHECK" />
+            </intent-filter>
+        </receiver>
 
         <receiver
             android:name=".receiver.BootReceiver"

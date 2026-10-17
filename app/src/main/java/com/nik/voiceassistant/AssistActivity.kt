@@ -1,6 +1,10 @@
 package com.nik.voiceassistant
 
+import android.Manifest
 import android.app.Activity
+import android.content.Intent
+import android.content.pm.PackageManager
+import androidx.core.content.ContextCompat
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -27,9 +31,22 @@ class AssistActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        if (intent?.action == ACTION_KEEP_LISTENING) {
-            com.nik.voiceassistant.service.VoiceAssistantService.refreshListening(this)
+        val action = intent?.action
+        if (action == ACTION_KEEP_LISTENING) {
+            // Only meaningful while "Hi Nik" is on (any app can open this exported activity)
+            if (VoiceSession.get(this).isWakeWordEnabled.value) com.nik.voiceassistant.service.VoiceAssistantService.refreshListening(this)
             Handler(Looper.getMainLooper()).postDelayed({ finish() }, 500)
+            return
+        }
+        // Exported for the system's assistant gesture: only that request opens the mic
+        if (action != Intent.ACTION_ASSIST && action != Intent.ACTION_VOICE_COMMAND) {
+            finish()
+            return
+        }
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            // The app asks for it
+            startActivity(Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            finish()
             return
         }
         val session = VoiceSession.get(this)

@@ -49,7 +49,10 @@ android {
     buildTypes {
         release {
             signingConfig = signingConfigs.findByName("release")
-            isMinifyEnabled = false
+            // R8: smaller APK, and the routine logs (they can include what was said or on screen) are
+            // stripped from release builds (proguard-rules.pro)
+            isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
@@ -109,4 +112,6 @@ dependencies {
     implementation(libs.androidx.security.crypto)
 
     debugImplementation(libs.androidx.ui.tooling)
+
+    testImplementation(libs.junit)
 }

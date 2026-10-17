@@ -3,4 +3,381 @@
     <string name="voice_service_channel_name">Voice Assistant Active</string>
     <string name="voice_service_channel_desc">Background voice recognition and streaming</string>
     <string name="phone_agent_description">Lets Shiv read the screen and tap, type, scroll and navigate when you ask it to by voice.</string>
+
+    <!-- Navigation -->
+    <string name="tab_assistant">Assistant</string>
+    <string name="tab_automations">Automations</string>
+    <string name="tab_history">History</string>
+    <string name="tab_activity">Activity</string>
+    <string name="tab_settings">Settings</string>
+
+    <!-- Common actions -->
+    <string name="action_cancel">Cancel</string>
+    <string name="action_close">Close</string>
+    <string name="action_collapse">Collapse</string>
+    <string name="action_expand">Expand</string>
+    <string name="action_copy">Copy</string>
+    <string name="action_copy_all">Copy all</string>
+    <string name="action_delete">Delete</string>
+    <string name="action_delete_all">Delete all</string>
+    <string name="action_discard">Discard</string>
+    <string name="action_fix">Fix</string>
+    <string name="action_new">New</string>
+    <string name="action_open_settings">Settings</string>
+    <string name="action_open_trace">Open trace</string>
+    <string name="action_retry">Retry</string>
+    <string name="action_run">Run</string>
+    <string name="action_save">Save</string>
+    <string name="action_start_talking">Start talking</string>
+    <string name="action_turn_on">Turn on</string>
+    <string name="action_view_transcript">View conversation</string>
+    <string name="cannot_undo">This can\'t be undone.</string>
+    <string name="copied">%1$s copied</string>
+    <string name="copied_all">Copied</string>
+    <string name="loading">Loading…</string>
+    <string name="none">none</string>
+    <string name="recommended">Recommended</string>
+
+    <!-- Assistant tab -->
+    <string name="new_chat">New chat</string>
+    <string name="status_connecting">Connecting…</string>
+    <string name="status_error">Couldn\'t connect</string>
+    <string name="status_working_on">Working on: %1$s</string>
+    <string name="status_speaking">Speaking</string>
+    <string name="status_thinking">Thinking…</string>
+    <string name="status_muted">Mic muted · tap Talk to speak</string>
+    <string name="status_listening">Listening…</string>
+    <string name="status_idle">Tap the mic to start</string>
+    <string name="status_idle_wake">Say “Hi %1$s” or tap the mic</string>
+    <string name="screen_control_off_title">Screen control is off</string>
+    <string name="screen_control_off_body">Lets %1$s tap, type and run automations for you</string>
+    <string name="error_connect_title">Couldn\'t connect</string>
+    <string name="error_connect_body">Check your internet connection and try again.</string>
+    <string name="error_needs_key">Add your API key in Settings to start.</string>
+    <string name="hero_greeting">Namaste 🙏</string>
+    <string name="hero_hint">Bolo ya likho — main phone operate kar sakta hoon, apps khol sakta hoon, aur sabhi tasks autonomously karta hoon.</string>
+    <string name="choices_hint">Tap or say</string>
+    <string name="composer_hint">Message %1$s…</string>
+    <string name="control_mute">Mute</string>
+    <string name="control_unmute">Unmute</string>
+    <string name="control_start">Start</string>
+    <string name="control_talk">Talk</string>
+    <string name="control_end">End</string>
+    <string name="control_stop_reply">Stop reply</string>
+    <string name="cd_start_conversation">Start conversation</string>
+    <string name="cd_end_conversation">End conversation</string>
+    <string name="cd_mute">Mute microphone</string>
+    <string name="cd_unmute">Turn microphone on</string>
+    <string name="cd_stop_reply">Stop the reply</string>
+    <string name="cd_send">Send</string>
+    <string name="cd_you_said">You said: %1$s</string>
+    <string name="cd_assistant_said">%1$s said: %2$s</string>
+
+    <!-- Plan -->
+    <string name="plan_title">Plan</string>
+    <string name="plan_status_working">Working</string>
+    <string name="plan_status_blocked">Blocked</string>
+    <string name="plan_status_failed">Failed</string>
+    <string name="plan_status_done">Done</string>
+    <string name="plan_progress">%1$d of %2$d steps done</string>
+    <string name="plan_step_line">%1$d. %2$s</string>
+    <string name="plan_step_done">Done</string>
+    <string name="plan_step_current">In progress</string>
+    <string name="plan_step_pending">Not started</string>
+    <string name="plan_show_all">Show all %1$d steps</string>
+    <string name="plan_show_less">Show less (%1$d steps)</string>
+    <string name="plan_tried">Tried: %1$s</string>
+
+    <!-- History -->
+    <string name="history_title">History</string>
+    <string name="history_search">Search conversations</string>
+    <string name="cd_clear_search">Clear search</string>
+    <string name="history_untitled">Conversation</string>
+    <string name="history_no_match">No conversations match “%1$s”</string>
+    <string name="history_empty_title">No conversations yet</string>
+    <string name="history_empty_body">Talk to the assistant or start a new chat. Conversations are kept on this phone.</string>
+    <string name="history_no_messages">No messages</string>
+    <string name="history_current">Current</string>
+    <string name="history_open">Open</string>
+    <string name="history_resume">Resume</string>
+    <string name="history_continue">Continue in chat</string>
+    <string name="history_delete_title">Delete conversation?</string>
+    <string name="history_delete_body">“%1$s” will be deleted from this phone. This can\'t be undone.</string>
+    <string name="cd_delete_conversation">Delete %1$s</string>
+
+    <!-- Automations -->
+    <string name="automations_title">Automations</string>
+    <string name="automations_subtitle">Multi-step tasks in one tap or one phrase</string>
+    <string name="automations_favorites">Favorites</string>
+    <string name="automations_empty_title">No automations yet</string>
+    <string name="automations_no_favorites">No favorites yet</string>
+    <string name="automations_empty_body">Create one to repeat a task with a tap or a voice phrase.</string>
+    <string name="automations_create">Create automation</string>
+    <string name="automation_running">Running automation</string>
+    <string name="automation_starting">Starting…</string>
+    <string name="automation_step">Step %1$d of %2$d: %3$s</string>
+    <string name="automation_saved">Automation saved</string>
+    <string name="automation_learning">%1$s is doing the task and learning the steps…</string>
+    <string name="automation_delete_title">Delete automation?</string>
+    <string name="automation_delete_body">“%1$s” will be deleted. This can\'t be undone.</string>
+    <string name="automation_new_title">New automation</string>
+    <string name="automation_mode_ai">Learn from AI</string>
+    <string name="automation_mode_manual">Manual</string>
+    <string name="automation_ai_desc">Tell %1$s what to do once. It does the task live, records the steps and saves them, so next time it runs in one tap.</string>
+    <string name="automation_instruction">What should it do?</string>
+    <string name="automation_task_title">Name</string>
+    <string name="automation_task_title_hint">e.g. Night alarm</string>
+    <string name="automation_trigger">Voice phrase (optional)</string>
+    <string name="automation_action">Action</string>
+    <string name="automation_action_alarm">Alarm</string>
+    <string name="automation_action_youtube">YouTube</string>
+    <string name="automation_action_app">Open app</string>
+    <string name="automation_action_call">AI Call</string>
+    <string name="automation_app_name">App name</string>
+    <string name="automation_call_caller">Caller filter (blank = any caller)</string>
+    <string name="automation_call_caller_hint">e.g. Rahul, +91..., unknown, or blank</string>
+    <string name="automation_call_goal">What should AI do on the call?</string>
+    <string name="automation_call_goal_hint">e.g. Pucho kis baare me call kiya aur bolo main busy hoon</string>
+    <string name="automation_call_disclose">Say AI assistant at start of call</string>
+    <string name="automation_do_and_record">Do it and record</string>
+    <string name="cd_favorite">Add %1$s to favorites</string>
+    <string name="cd_unfavorite">Remove %1$s from favorites</string>
+    <string name="cd_delete_automation">Delete %1$s</string>
+
+    <!-- Activity -->
+    <string name="activity_title">Activity</string>
+    <string name="activity_live_subtitle">What the agent does and decides, as it happens</string>
+    <string name="activity_saved_day">Saved log of %1$s</string>
+    <string name="activity_live">Live</string>
+    <string name="activity_traces">Traces (%1$d)</string>
+    <string name="activity_events">Events (%1$d)</string>
+    <string name="cd_share_log">Share this log</string>
+    <string name="share_trace">Share log</string>
+    <string name="share_day_otlp">Share day (OTLP)</string>
+    <string name="share_trace_otlp">Share trace (OTLP JSON)</string>
+    <string name="share_nothing">Nothing saved for that day</string>
+    <string name="metric_latency">Reply latency</string>
+    <string name="metric_last">last %1$d ms</string>
+    <string name="metric_tool_success">Tool success</string>
+    <string name="metric_tool_time">Avg tool time</string>
+    <string name="metric_reconnects">Reconnects</string>
+    <string name="metric_tokens">Tokens</string>
+    <string name="traces_empty_title">No traces yet</string>
+    <string name="traces_empty_body">Each request becomes a trace: the model\'s turns and every tool call with its input and output.</string>
+    <string name="events_empty_title">Nothing here yet</string>
+    <string name="events_empty_live">Start a conversation and every step will show up here.</string>
+    <string name="events_empty_day">No events in this file.</string>
+    <string name="event_failed">failed</string>
+    <string name="filter_all">All</string>
+    <string name="filter_decisions">Decisions</string>
+    <string name="filter_tools">Tools</string>
+    <string name="filter_conversation">Conversation</string>
+    <string name="filter_system">Network &amp; errors</string>
+    <string name="storage_title">Log storage</string>
+    <string name="storage_saved_on_phone">Saved in this app\'s private storage on the phone: %1$d day(s), %2$s. Logs include what you said and what the agent did; they leave the phone only if you share them.</string>
+    <string name="storage_memory_only">Not saved: logs are kept in memory only, until the app closes.</string>
+    <string name="storage_exported_to">Finished traces are also sent to %1$s</string>
+    <string name="otlp_title">Send traces to an OpenTelemetry collector (optional)</string>
+    <string name="otlp_body">OTLP/HTTP JSON, e.g. https://collector.example.com:4318 (Jaeger, Grafana Tempo, Honeycomb). Codes and card numbers are masked before sending.</string>
+    <string name="otlp_label">Collector URL</string>
+    <string name="otlp_off">Off: nothing is sent</string>
+    <string name="delete_this_day">Delete day</string>
+    <string name="delete_all_logs">Delete all</string>
+    <string name="delete_all_logs_title">Delete all activity logs?</string>
+    <string name="delete_day_title">Delete %1$s?</string>
+    <string name="trace_title">Trace</string>
+    <string name="trace_running">Running</string>
+    <string name="trace_ok">OK</string>
+    <string name="trace_goal">Goal: %1$s</string>
+    <string name="trace_input">Input</string>
+    <string name="trace_output">Output</string>
+    <string name="trace_events">Events</string>
+    <string name="trace_chars">%1$d chars</string>
+    <string name="cd_back">Back</string>
+    <string name="cd_share_trace">Share trace</string>
+    <string name="cd_copy">Copy %1$s</string>
+
+    <!-- Settings -->
+    <string name="settings_title">Settings</string>
+    <string name="settings_subtitle">Assistant, AI model, privacy and permissions</string>
+    <string name="settings_saved">Settings saved</string>
+    <string name="save_key_not_stored">Saved, but the key couldn\'t be stored securely on this phone. Try again.</string>
+    <string name="save_invalid_server_url">Server URL must start with ws:// or wss://</string>
+    <string name="save_invalid_llm_url">LLM base URL must be a valid https:// address</string>
+    <string name="save_invalid_key">That API key doesn\'t look right. Check it and try again.</string>
+    <string name="unsaved_changes">Unsaved changes</string>
+    <string name="models_updated">Models updated from Google</string>
+    <string name="models_failed">Couldn\'t load models (check the Gemini key)</string>
+
+    <string name="section_assistant">Assistant</string>
+    <string name="assistant_name">Assistant name</string>
+    <string name="assistant_name_hint">What the assistant calls itself</string>
+    <string name="assistant_voice">Voice</string>
+    <string name="wake_word_title">“Hi %1$s” wake word</string>
+    <string name="wake_word_desc">Listens on the phone (offline), even when the screen is locked or the app is closed. Uses more battery.</string>
+    <string name="auto_start_title">Start listening when the app opens</string>
+    <string name="auto_start_desc">Off: tap the mic to start</string>
+    <string name="auto_sleep_title">End the conversation when idle</string>
+    <string name="auto_sleep_desc">Stops listening after a short time with nobody talking. Off: keeps listening until you end it.</string>
+    <string name="auto_mute_title">Mute the mic while it works</string>
+    <string name="auto_mute_desc">The mic turns off while %1$s works on your request, so noise can\'t interrupt, and back on when it\'s done. Tap the mic to speak anytime.</string>
+
+    <string name="section_model">AI model &amp; search</string>
+    <string name="model_live">Gemini Live model</string>
+    <string name="models_refresh">Refresh</string>
+    <string name="search_title">Google Search</string>
+    <string name="search_desc">Answers can use live web results</string>
+    <string name="vision_title">Let the AI see the screen</string>
+    <string name="vision_desc">Sends an image of the app after each action, so it spots popups and buttons the text misses</string>
+
+    <string name="section_connection">Connection &amp; keys</string>
+    <string name="connection_how">How to reach the AI</string>
+    <string name="mode_direct">Direct to Gemini Live</string>
+    <string name="mode_direct_desc">Fastest: the phone talks to Google itself. Needs a Gemini API key.</string>
+    <string name="mode_server">Through your server</string>
+    <string name="mode_server_desc">Via your WebSocket server (its own Hindi speech-to-text). Uses the LLM key.</string>
+    <string name="gemini_key">Gemini API key</string>
+    <string name="server_url">WebSocket server URL</string>
+    <string name="llm_gateway">LLM gateway (research and screen reading)</string>
+    <string name="llm_base_url">LLM base URL</string>
+    <string name="llm_key">LLM API key</string>
+    <string name="key_paste">Paste key</string>
+    <string name="key_saved_placeholder">Saved · type to replace</string>
+    <string name="key_saved_note">A key is saved on this phone</string>
+    <string name="keys_note">Keys are encrypted on this phone (Android Keystore) and never shown again.</string>
+    <string name="cd_show_key">Show key</string>
+    <string name="cd_hide_key">Hide key</string>
+    <string name="cd_remove_key">Remove saved key</string>
+
+    <string name="section_safety">Safety &amp; Privacy</string>
+    <string name="safety_subtitle">How much the assistant may do on its own, and what is kept on this phone</string>
+    <string name="confirm_title">Ask before acting</string>
+    <string name="confirm_relaxed">Relaxed</string>
+    <string name="confirm_relaxed_desc">Asks only before payments, wiping data and dialing codes.</string>
+    <string name="confirm_balanced">Balanced</string>
+    <string name="confirm_balanced_desc">Also asks before calls, sending messages and deleting, unless you asked for it in your own words.</string>
+    <string name="confirm_strict">Strict</string>
+    <string name="confirm_strict_desc">Asks before every call, message sent, delete and payment.</string>
+    <string name="mask_title">Hide OTPs &amp; card numbers from the AI</string>
+    <string name="mask_desc">Codes and card numbers on screen are masked before the AI sees them. The assistant can\'t read OTPs for you while this is on.</string>
+    <string name="save_history_title">Save conversations</string>
+    <string name="save_history_desc">Keeps chats on this phone for the History tab</string>
+    <string name="history_keep_for">Delete conversations after</string>
+    <string name="delete_all_conversations">Delete all conversations</string>
+    <string name="delete_all_conversations_title">Delete all conversations?</string>
+    <string name="delete_all_conversations_body">Every saved conversation is deleted from this phone. This can\'t be undone.</string>
+    <string name="conversations_deleted">All conversations deleted</string>
+    <string name="save_logs_title">Save activity logs</string>
+    <string name="save_logs_desc">Keeps the Activity tab\'s logs on this phone. Off: memory only, gone when the app closes.</string>
+    <string name="log_screen_title">Include screen contents in logs</string>
+    <string name="log_screen_desc">Off: only a one-line summary of what the agent read on screen</string>
+    <string name="logs_keep_for">Delete logs after</string>
+    <string name="delete_activity_logs">Delete activity logs</string>
+    <string name="delete_activity_logs_title">Delete activity logs?</string>
+    <string name="delete_activity_logs_body">All saved logs and traces are deleted from this phone, along with the ones in memory. This can\'t be undone.</string>
+    <string name="logs_deleted">Activity logs deleted</string>
+    <string name="keep_forever">Forever</string>
+    <string name="keep_one_day">1 day</string>
+    <string name="keep_days">%1$d days</string>
+
+    <string name="section_unlock">Screen unlock</string>
+    <string name="unlock_title">Unlock the phone for me</string>
+    <string name="unlock_desc">Enters your PIN when the phone is locked and a task needs it</string>
+    <string name="unlock_needs_pin">Save your PIN below first</string>
+    <string name="unlock_warning">Anyone who can speak to your locked phone can make it unlock while this is on. After 2 failed unlocks the app turns this off by itself.</string>
+    <string name="unlock_off_note">Off: when the phone is locked, the assistant asks you to unlock it first.</string>
+    <string name="device_pin">Device PIN</string>
+    <string name="pin_saved_badge">Saved</string>
+    <string name="pin_enter">Enter PIN</string>
+    <string name="pin_replace">New PIN (replaces the saved one)</string>
+    <string name="pin_note">Encrypted on this phone (Android Keystore). Never sent to the cloud or the AI.</string>
+    <string name="pin_saved">PIN saved securely</string>
+    <string name="pin_failed">Couldn\'t store the PIN securely on this phone</string>
+    <string name="lock_type_title">Lock type</string>
+    <string name="lock_type_pin">PIN</string>
+    <string name="lock_type_password">Password</string>
+    <string name="lock_type_pattern">Pattern</string>
+    <string name="action_change">Change</string>
+    <string name="device_password">Device password</string>
+    <string name="password_enter">Enter password</string>
+    <string name="password_replace">New password (replaces the saved one)</string>
+    <string name="password_note">Encrypted on this phone (Android Keystore). Never sent to the cloud or the AI.</string>
+    <string name="password_saved">Password saved securely</string>
+    <string name="password_failed">Couldn\'t store the password securely on this phone</string>
+    <string name="device_pattern">Device pattern</string>
+    <string name="pattern_draw_hint">Draw your unlock pattern below (at least 4 dots), the same way you draw it on the lock screen</string>
+    <string name="pattern_saved">Pattern saved securely</string>
+    <string name="pattern_failed">Couldn\'t store the pattern securely on this phone</string>
+    <string name="pattern_clear">Clear</string>
+    <string name="pattern_note">Encrypted on this phone (Android Keystore). Never sent to the cloud or the AI.</string>
+
+    <string name="section_payments">Payment apps</string>
+    <string name="payments_title">Step aside in payment apps</string>
+    <string name="payments_desc">PhonePe, GPay, Paytm and bank apps refuse to pay while screen control is on. It switches off while they\'re open and back on after.</string>
+    <string name="payments_found">Found on this phone: %1$s</string>
+    <string name="perm_usage">Usage access</string>
+    <string name="perm_usage_desc">Needed to turn screen control back on by itself</string>
+    <string name="perm_secure_settings">Switch screen control off and on</string>
+    <string name="perm_secure_settings_desc">One-time setup from a computer (adb)</string>
+    <string name="adb_title">One-time setup</string>
+    <string name="adb_body">Connect the phone to a computer with USB debugging on and run:</string>
+
+    <string name="section_permissions">Permissions</string>
+    <string name="perm_granted">Allowed</string>
+    <string name="perm_accessibility">Screen control (accessibility)</string>
+    <string name="perm_accessibility_desc">Needed to tap, type and read the screen</string>
+    <string name="perm_overlay">Display over other apps</string>
+    <string name="perm_overlay_desc">Shows the assistant over other apps</string>
+    <string name="perm_mic">Microphone</string>
+    <string name="perm_mic_desc">Needed to hear you</string>
+    <string name="perm_notifications">Notifications</string>
+    <string name="perm_notifications_desc">Shows that the assistant is listening</string>
+
+    <!-- Overlay -->
+    <string name="overlay_move_panel">Assistant panel. Drag to move</string>
+    <string name="overlay_move_up">Move up</string>
+    <string name="overlay_move_down">Move down</string>
+    <string name="overlay_move_left">Move left</string>
+    <string name="overlay_move_right">Move right</string>
+    <string name="overlay_shrink">Shrink to bubble</string>
+    <string name="overlay_open_app">Open in app</string>
+    <string name="overlay_expand">%1$s assistant. Open panel</string>
+    <string name="overlay_tap_mic">Tap the mic to talk</string>
+    <string name="overlay_mic_off_working">Mic off · working</string>
+    <string name="overlay_step">Step %1$d of %2$d · %3$s</string>
+    <string name="overlay_working_on_it">Working on it…</string>
+
+    <!-- Counts -->
+    <plurals name="history_count">
+        <item quantity="one">%1$d saved conversation</item>
+        <item quantity="other">%1$d saved conversations</item>
+    </plurals>
+    <plurals name="history_requests">
+        <item quantity="one">%1$d request</item>
+        <item quantity="other">%1$d requests</item>
+    </plurals>
+    <plurals name="history_messages">
+        <item quantity="one">%1$d message</item>
+        <item quantity="other">%1$d messages</item>
+    </plurals>
+    <plurals name="metric_calls">
+        <item quantity="one">%1$d call</item>
+        <item quantity="other">%1$d calls</item>
+    </plurals>
+    <plurals name="metric_errors">
+        <item quantity="one">%1$d error</item>
+        <item quantity="other">%1$d errors</item>
+    </plurals>
+    <plurals name="trace_errors">
+        <item quantity="one">%1$d error</item>
+        <item quantity="other">%1$d errors</item>
+    </plurals>
+    <plurals name="trace_tool_calls">
+        <item quantity="one">%1$d tool call</item>
+        <item quantity="other">%1$d tool calls</item>
+    </plurals>
+    <plurals name="automation_steps">
+        <item quantity="one">%1$d step</item>
+        <item quantity="other">%1$d steps</item>
+    </plurals>
 </resources>

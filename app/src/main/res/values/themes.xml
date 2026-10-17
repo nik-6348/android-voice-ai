@@ -1,9 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style name="Theme.NikVoiceAssistant" parent="android:Theme.Material.NoActionBar">
-        <item name="android:statusBarColor">#090D16</item>
-        <item name="android:navigationBarColor">#090D16</item>
-        <item name="android:windowBackground">#090D16</item>
+    <!-- Light by default; values-night switches to the dark parent. Compose sets the final bar colours. -->
+    <style name="Theme.NikVoiceAssistant" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:statusBarColor">@color/system_bar</item>
+        <item name="android:navigationBarColor">@color/system_bar</item>
+        <item name="android:windowBackground">@color/window_background</item>
+        <item name="android:windowLightStatusBar">true</item>
     </style>
 
     <!-- Assistant gesture entry (AssistActivity): no window of its own, the app underneath stays visible -->

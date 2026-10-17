@@ -16,8 +16,14 @@ import android.util.Log
 import android.view.KeyEvent
 import androidx.core.content.ContextCompat
 import com.google.gson.JsonParser
+import com.nik.voiceassistant.SecurePrefs
+import com.nik.voiceassistant.data.trace.AgentTrace
+import com.nik.voiceassistant.security.ActionGuard
+import com.nik.voiceassistant.security.AgentPolicy
 import com.nik.voiceassistant.service.PaymentGuard
 import com.nik.voiceassistant.service.PhoneAgentService
+import java.util.concurrent.locks.ReentrantLock
+import kotlin.concurrent.withLock
 
 /**
  * The phone tools the voice model can call. They are generic on purpose: the model reads the
@@ -32,23 +38,27 @@ class DeviceToolExecutor(
     private val describeImage: ((ByteArray, String) -> String?)? = null,
     // show_choices: (question, options) shown as a tappable list in the app and the overlay
     private val onShowChoices: (String, List<String>) -> Unit = { _, _ -> },
-    // Whether the user said yes after the last list was shown (one use); gates send / pay / delete taps
-    private val takeConfirmation: () -> Boolean = { false },
+    // Whether the user said yes (spoken, typed or tapped) after this time; one use
+    private val confirmedSince: (Long) -> Boolean = { false },
+    // What the user themself said or typed for the current request (never screen text)
+    private val userText: () -> String = { "" },
     // research: a question -> an answer found on the web, or null on failure (blocking)
     private val research: ((String) -> String?)? = null,
     // update_plan: the model's current plan, shown as live progress
-    private val onPlan: (TaskPlan?) -> Unit = {}
-) {
+    private val onPlan: (TaskPlan?) -> Unit = {},
+    // call_and_talk: places a call and has the AI conduct the conversation
+    private val onCallAndTalk: ((number: String?, goal: String, maxMinutes: Int?) -> Map<String, Any?>)? = null
+) : ToolExecutor {
 
     companion object {
         private const val TAG = "DeviceToolExecutor"
         private const val MAX_APPS = 60
 
-        // Only high-stakes actions: irreversible financial payments, money transfers, or destructive wipes
-        private val NEEDS_YES = Regex(
-            """(?i)\b(pay now|confirm payment|complete purchase|transfer funds|delete account|erase all|factory reset)\b|भुगतान करें|पैसे भेजें"""
-        )
-        private const val ASK_FIRST = "Not pressed: this action performs an irreversible payment or wipe, and the user hasn't confirmed yet. Say what will happen, call show_choices with \"Haan, confirm karo\", \"Nahi\", and wait for their answer before tapping it."
+        // The yes / no shown to the user when an action needs their OK (VoiceSession reads the answer)
+        const val CONFIRM_YES = "Haan, karo"
+        const val CONFIRM_NO = "Nahi"
+        // A yes counts for this long after the question was shown
+        private const val CONFIRM_WINDOW_MS = 120_000L
 
         private const val SELF_BLOCKED = "Blocked: that would stop, remove or switch off you (this assistant app) and end the task. " +
             "Skip yourself: act on the other apps, or tell the user it's the assistant itself."
@@ -74,8 +84,9 @@ class DeviceToolExecutor(
         ),
         function(
             "unlock_phone",
-            "Unlocks the phone using the PIN saved in Settings. Only works if Auto-unlock is turned ON in Settings. " +
-                "If Auto-unlock is OFF or no PIN is saved, do NOT call this tool; instead, inform the user: 'Phone locked hai, kripya pehle phone unlock karein'."
+            "Unlocks the phone using the PIN, password or pattern saved in Settings (whichever lock type is set). " +
+                "Only works if Auto-unlock is turned ON in Settings. " +
+                "If Auto-unlock is OFF or no credential is saved, do NOT call this tool; instead, inform the user: 'Phone locked hai, kripya pehle phone unlock karein'."
         ),
         function(
             "look_at_screen",
@@ -179,9 +190,23 @@ class DeviceToolExecutor(
         ),
         function(
             "make_call",
-            "Places a phone call. If the user explicitly requested a call (e.g. 'Rahul ko call lagao' or 'Call 9876543210'), place the call directly and narrate 'Calling...'. If there is contact ambiguity, confirm the contact first.",
+            "Places a phone call. If the user explicitly requested a call (e.g. 'Rahul ko call lagao' or 'Call 9876543210'), place the call directly and narrate 'Calling...'. If there is contact ambiguity, confirm the contact first. " +
+                "If it returns needs_confirmation, ask the user and call it again only after they say yes.",
             required = listOf("number" to param("string", "Phone number, e.g. +919876543210")),
             optional = listOf("speaker" to param("boolean", "Put the call on speaker (default true)"))
+        ),
+        function(
+            "call_and_talk",
+            "Places a phone call and conducts an AI-driven conversation on it to achieve a specific goal (e.g. 'Order pizza', 'Ask if they are open today'). " +
+                "Use this ONLY when the user wants YOU (the AI) to talk on the call, not when they want to speak themselves (use make_call for that). " +
+                "If it returns needs_confirmation, ask the user and call it again only after they say yes.",
+            required = listOf(
+                "number" to param("string", "Phone number to call, e.g. +919876543210 (use find_contact first to look up a name)"),
+                "goal" to param("string", "The task to achieve on the call, e.g. 'Order 2 pizzas' or 'Confirm booking'")
+            ),
+            optional = listOf(
+                "max_minutes" to param("integer", "Maximum duration of the call in minutes (default 5)")
+            )
         ),
         function(
             "media_control",
@@ -247,6 +272,105 @@ class DeviceToolExecutor(
             "toggle_bluetooth",
             "Turns Bluetooth on or off. On Android 13+ this opens Bluetooth settings; then read_screen and tap the switch.",
             required = listOf("enabled" to param("boolean", "true = on, false = off"))
+        ),
+        function(
+            "get_time",
+            "Returns the phone's current local date, time, day of week, and timezone — live from the device. " +
+                "Call this whenever the user asks what time or date it is, or when you need the current time for a calculation. " +
+                "Never guess or use the system-prompt time for a direct time question."
+        ),
+        function(
+            "schedule_followup",
+            "Schedules yourself to wake up later and run a fresh instruction on this device, even if the app isn't open " +
+                "then (e.g. the conversation ends before the wait is over). Use it when something needs time before it can " +
+                "be checked (an order, a reply, a download, a timer) instead of just waiting in this same turn. " +
+                "You'll run the instruction exactly as if the user had just asked it at that time.",
+            required = listOf(
+                "instruction" to param("string", "What to do when the time comes, as a complete fresh instruction, e.g. 'Zomato app check karo order deliver hua ya nahi'"),
+                "in_minutes" to param("integer", "Minutes from now to wait, 1 to 1440 (24 hours)")
+            )
+        ),
+        function(
+            "register_webhook",
+            "Registers a webhook trigger on this phone's local HTTP server (port 7474). An HTTP POST or GET to " +
+                "http://<phone-ip>:7474/webhook/<path> on the same Wi-Fi / Tailscale network will fire the given " +
+                "instruction automatically, as if the user had asked it. Great for smart-home events, IoT alerts, " +
+                "or any external system that can make an HTTP call. Returns the full webhook URL and a curl example. " +
+                "The server is NOT reachable from the open internet.",
+            required = listOf(
+                "path" to param("string", "URL path for this webhook, e.g. 'water-pump-done' or 'door-opened'. No slashes."),
+                "instruction" to param("string", "What to do when the webhook fires, e.g. 'User ko batao ki paani pump band ho gaya'")
+            ),
+            optional = listOf(
+                "label" to param("string", "A short human-readable name, e.g. 'Pump done'"),
+                "secret" to param("string", "Optional shared-secret token. If set, callers must pass it as X-Webhook-Token header or ?token= query param.")
+            )
+        ),
+        function(
+            "create_automation",
+            "Creates a new automation macro. FIRST understand fully what the user wants; ask one clarifying " +
+                "question at a time if anything is unclear (which app? which contact? which time?). Once clear, call this. " +
+                "trigger_type options: phrase (voice command), scheduled (time/day), broadcast_event (any Android system " +
+                "event — you know the intent action strings), condition (you check periodically using tools), webhook " +
+                "(HTTP call from same network), notification, incoming_call, missed_call, charger_connected, " +
+                "charger_disconnected, wifi_connected, boot, manual.",
+            required = listOf(
+                "title" to param("string", "Short human-readable name, e.g. 'Headphones → Spotify'"),
+                "trigger_type" to param("string", "phrase|scheduled|broadcast_event|condition|webhook|notification|incoming_call|missed_call|charger_connected|charger_disconnected|wifi_connected|boot|manual"),
+                "instruction" to param("string", "What to do when triggered — a complete AI instruction as if the user said it")
+            ),
+            optional = listOf(
+                "trigger_phrase" to param("string", "For phrase: the voice command phrase"),
+                "scheduled_hour" to param("integer", "For scheduled: hour 0-23"),
+                "scheduled_minute" to param("integer", "For scheduled: minute 0-59"),
+                "scheduled_days" to param("string", "For scheduled: comma-separated Calendar day numbers 1=Sun..7=Sat, blank=every day"),
+                "broadcast_action" to param("string", "For broadcast_event: Android intent action string e.g. android.intent.action.HEADSET_PLUG"),
+                "broadcast_extras" to param("string", "For broadcast_event: JSON {\"key\":\"value\"} pairs that must match intent extras. Blank value = key must exist. E.g. {\"state\":\"1\"} for headphones plugged in."),
+                "broadcast_label" to param("string", "For broadcast_event: human-readable trigger description"),
+                "condition_instruction" to param("string", "For condition: what to check each interval using tools (screen, apps, web)"),
+                "condition_interval_minutes" to param("integer", "For condition: check every N minutes (default 10)"),
+                "condition_stop_on_met" to param("boolean", "For condition: disable after first fire? (default true)"),
+                "condition_label" to param("string", "For condition: human-readable description"),
+                "webhook_path" to param("string", "For webhook: URL path (no slashes)"),
+                "webhook_secret" to param("string", "For webhook: optional token"),
+                "notification_package" to param("string", "For notification: app package name"),
+                "notification_app_label" to param("string", "For notification: app display name"),
+                "notification_title_contains" to param("string", "For notification: title must contain this"),
+                "notification_text_contains" to param("string", "For notification: body must contain this"),
+                "wifi_ssid" to param("string", "For wifi_connected: SSID to match (blank=any)"),
+                "call_contact_filter" to param("string", "For incoming/missed_call: phone number or 'unknown'"),
+                "call_contact_label" to param("string", "For incoming/missed_call: contact display name")
+            )
+        ),
+        function(
+            "list_automations",
+            "Lists all saved automations with their id, title, trigger summary, and enabled state. " +
+                "Use this before edit_automation or delete_automation to get the id."
+        ),
+        function(
+            "edit_automation",
+            "Edit an existing automation's title, instruction, or on/off state. For bigger changes " +
+                "(trigger type), delete and recreate with create_automation.",
+            required = listOf("id" to param("string", "Macro id from list_automations")),
+            optional = listOf(
+                "title" to param("string", "New title"),
+                "instruction" to param("string", "New instruction — what the AI should do when triggered"),
+                "enabled" to param("boolean", "true = on, false = off")
+            )
+        ),
+        function(
+            "delete_automation",
+            "Permanently delete an automation. Confirm with the user before calling this.",
+            required = listOf("id" to param("string", "Macro id from list_automations"))
+        ),
+        function(
+            "report_condition",
+            "INTERNAL: called only during a condition-check turn. Reports whether the condition is currently met. " +
+                "If met=true, the macro's action runs next. If met=false, the next check is already scheduled — end the turn silently.",
+            required = listOf(
+                "macro_id" to param("string", "The macro_id given in the condition check instruction"),
+                "met" to param("boolean", "true = condition IS met now, false = not yet")
+            )
         )
     )
 
@@ -280,14 +404,54 @@ class DeviceToolExecutor(
      * Runs one tool call and returns its result (sent back to the model). Screen actions block
      * for a moment while the UI settles, so call this off the WebSocket thread.
      */
-    fun execute(toolName: String, arguments: Map<String, Any?>?): Map<String, Any?> {
-        // Never log a PIN (unlock_phone's one-time pin argument)
-        Log.i(TAG, "Executing tool: $toolName with arguments: ${arguments?.mapValues { (k, v) -> if (k == "pin") "***" else v }}")
-        val result = run(toolName, arguments.orEmpty())
-        return withProgressCheck(toolName, arguments.orEmpty(), result)
+    // One action at a time: the model's tool thread and an automation run share the screen and the progress state
+    private val actionLock = ReentrantLock()
+
+    /**
+     * Runs one tool call. trusted: the user started it themself (an automation they ran), which
+     * counts as asking for calls / sends / deletes; payments and wipes still need their yes.
+     */
+    override fun execute(toolName: String, arguments: Map<String, Any?>?, trusted: Boolean): Map<String, Any?> = actionLock.withLock {
+        // Arguments can hold message text and numbers: only the tool name is logged
+        Log.i(TAG, "Executing tool: $toolName")
+        val result = run(toolName, arguments.orEmpty(), trusted)
+        withProgressCheck(toolName, arguments.orEmpty(), result)
     }
 
-    private fun run(toolName: String, args: Map<String, Any?>): Map<String, Any?> {
+    // ---- Asking before actions with consequences (see ActionGuard) ----
+
+    private data class Pending(val key: String, val at: Long)
+    @Volatile private var pending: Pending? = null
+    // The last number put in the dialer: a code there (*21*…#) makes its Call button a dial code
+    @Volatile private var lastDialed: String? = null
+
+    /**
+     * Null when the action may go ahead now. Otherwise the user is shown a yes / no and the model is
+     * told to wait: once they say yes, the same call (same key) goes through, once.
+     */
+    private fun gate(risk: ActionGuard.Risk, key: String, what: String, trusted: Boolean): Map<String, Any?>? {
+        if (!ActionGuard.needsYes(risk, AgentPolicy.current.confirmLevel, userText(), trusted)) return null
+        val p = pending
+        if (p != null && p.key == key && System.currentTimeMillis() - p.at < CONFIRM_WINDOW_MS && confirmedSince(p.at)) {
+            pending = null
+            AgentTrace.log(AgentTrace.Kind.TOOL, "User confirmed: $what")
+            return null
+        }
+        pending = Pending(key, System.currentTimeMillis())
+        AgentTrace.log(AgentTrace.Kind.WARNING, "Waiting for the user's OK to $what")
+        onShowChoices("$what?", listOf(CONFIRM_YES, CONFIRM_NO))
+        return mapOf(
+            "success" to false,
+            "needs_confirmation" to what,
+            "error" to "Not done yet: this needs the user's OK first (${risk.what}), and a yes / no is now shown to them. " +
+                "Ask them in one short line (\"$what?\") and wait for the answer. If they say yes, call this same tool again " +
+                "with the same arguments; if no, don't do it."
+        )
+    }
+
+    private fun digits(number: String) = number.filter { it.isDigit() || it == '+' || it == '*' || it == '#' }
+
+    private fun run(toolName: String, args: Map<String, Any?>, trusted: Boolean): Map<String, Any?> {
         fun str(key: String) = args[key]?.toString()?.takeIf { it.isNotBlank() }
         fun int(key: String) = args[key]?.toString()?.toDoubleOrNull()?.toInt()
         fun bool(key: String) = args[key]?.toString()?.toBooleanStrictOrNull()
@@ -302,27 +466,43 @@ class DeviceToolExecutor(
 
         return try {
             when (toolName) {
-                "read_screen" -> agent?.readScreen() ?: mapOf("error" to AGENT_OFF)
+                "read_screen" -> {
+                    val screen = agent?.readScreen() ?: mapOf("error" to AGENT_OFF)
+                    // When accessibility returns nothing (secure screen, WebView-heavy app, system UI),
+                    // augment with a screenshot description so the model still knows what it's looking at.
+                    augmentWithScreenshot(agent, screen)
+                }
 
-                "unlock_phone" -> {
-                    if (!com.nik.voiceassistant.SecurePrefs.isAutoUnlockEnabled(context)) {
+                "unlock_phone" -> when {
+                    !SecurePrefs.isAutoUnlockEnabled(context) ->
                         mapOf("success" to false, "error" to "Auto-unlock is OFF in Settings for security. Tell the user: 'Phone locked hai, kripya pehle phone unlock karein.'")
-                    } else if (!com.nik.voiceassistant.SecurePrefs.hasPin(context)) {
+                    !SecurePrefs.hasPin(context) ->
                         mapOf("success" to false, "error" to "No PIN is saved in Settings. Tell the user: 'Phone locked hai aur PIN saved nahi hai. Kripya pehle phone unlock karein.'")
-                    } else if (agent == null) {
-                        mapOf("error" to AGENT_OFF)
-                    } else {
-                        val err = agent.unlockWithSavedPin()
-                        if (err == null) withScreen(mapOf("success" to true, "done" to "phone unlocked"))
-                        else mapOf("success" to false, "error" to err)
-                    }
+                    // Only for a request the user made themself, never for something read on the screen
+                    !trusted && userText().isBlank() ->
+                        mapOf("success" to false, "error" to "The phone is unlocked only for a request the user made. Ask the user what they want first.")
+                    agent == null -> mapOf("error" to AGENT_OFF)
+                    else -> unlock(agent)
                 }
 
                 "look_at_screen" -> if (agent == null) mapOf("error" to AGENT_OFF) else lookAtScreen(agent, str("question"))
 
                 "media_control" -> mediaControl(str("action") ?: "play_pause")
 
-                "make_call" -> makeCall(str("number"), bool("speaker") != false)
+                "make_call" -> {
+                    val number = str("number")
+                    val risk = if (ActionGuard.isDialCode(number)) ActionGuard.Risk.DIAL_CODE else ActionGuard.Risk.CALL
+                    number?.let { gate(risk, "call:${digits(it)}", "Call $it", trusted) } ?: makeCall(number, bool("speaker") != false)
+                }
+
+                "call_and_talk" -> {
+                    val number = str("number")
+                    val goal = str("goal") ?: "Handle phone call"
+                    val maxMinutes = int("max_minutes")
+                    val risk = if (ActionGuard.isDialCode(number)) ActionGuard.Risk.DIAL_CODE else ActionGuard.Risk.CALL
+                    number?.let { gate(risk, "call_and_talk:${digits(it)}", "Call $it to: $goal", trusted) }
+                        ?: callAndTalk(number, goal, maxMinutes)
+                }
 
                 "show_choices" -> {
                     // Arrays arrive as JSON text (see LiveAudioWebSocketClient.executeToolCall)
@@ -342,16 +522,18 @@ class DeviceToolExecutor(
                     agent?.readScreen() ?: mapOf("done" to "waited")
                 }
 
-                "tap" -> when {
-                    agent == null -> mapOf("error" to AGENT_OFF)
-                    harmsSelf(agent, int("element_id"), str("text")) -> mapOf("error" to SELF_BLOCKED)
-                    // Confirmation is enforced here, not left to the model: it once asked and sent without waiting
-                    agent.targetLabel(int("element_id"), str("text"))?.let { NEEDS_YES.containsMatchIn(it) } == true && !takeConfirmation() ->
-                        mapOf("error" to ASK_FIRST)
-                    else -> agent.tap(int("element_id"), str("text"), bool("long_press") == true, int("times") ?: 1)
-                }
+                "tap" -> if (agent == null) mapOf("error" to AGENT_OFF) else tap(agent, int("element_id"), str("text"), bool("long_press") == true, int("times") ?: 1, trusted)
 
-                "type_text" -> agent?.typeText(str("text") ?: "", int("element_id"), bool("submit")) ?: mapOf("error" to AGENT_OFF)
+                "type_text" -> when {
+                    agent == null -> mapOf("error" to AGENT_OFF)
+                    else -> {
+                        val text = str("text") ?: ""
+                        // Enter in a chat box sends the message; in a search box it just searches
+                        val sends = bool("submit") == true && agent.submitSends(int("element_id"))
+                        (if (sends) gate(ActionGuard.Risk.SEND, "send:${text.hashCode()}", "Send \"${text.take(60)}\"", trusted) else null)
+                            ?: agent.typeText(text, int("element_id"), bool("submit"))
+                    }
+                }
 
                 "scroll" -> agent?.scroll(str("direction") ?: "down", int("element_id"), str("until_text"), int("max_scrolls") ?: 10)
                     ?: mapOf("error" to AGENT_OFF)
@@ -395,7 +577,7 @@ class DeviceToolExecutor(
                     mapOf("success" to true, "done" to "conversation will end after your goodbye")
                 }
 
-                "launch_intent" -> launchIntent(str("action"), str("uri"), str("package"), str("extras"))
+                "launch_intent" -> launchIntent(str("action"), str("uri"), str("package"), str("extras"), trusted)
 
                 "open_website" -> openWebsite(str("url_or_search") ?: "")
 
@@ -409,11 +591,148 @@ class DeviceToolExecutor(
                     mapOf("success" to true, "message" to toggleBluetooth(enabled))
                 }
 
+                "schedule_followup" -> {
+                    val instruction = str("instruction")?.trim()
+                    val minutes = int("in_minutes")
+                    when {
+                        instruction.isNullOrBlank() -> mapOf("error" to "Give an instruction to run when the time comes")
+                        minutes == null || minutes < 1 -> mapOf("error" to "Give in_minutes, at least 1")
+                        minutes > 1440 -> mapOf("error" to "Too far out; keep it within 1440 minutes (24 hours)")
+                        else -> scheduleFollowup(instruction, minutes)
+                    }
+                }
+
+                "get_time" -> {
+                    val tz = java.util.TimeZone.getDefault()
+                    val now = java.util.Date()
+                    val date = java.text.SimpleDateFormat("EEEE, d MMMM yyyy", java.util.Locale.ENGLISH).also { it.timeZone = tz }.format(now)
+                    val time = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.ENGLISH).also { it.timeZone = tz }.format(now)
+                    val tzName = tz.getDisplayName(false, java.util.TimeZone.SHORT)
+                    mapOf("date" to date, "time" to time, "timezone" to tzName, "epoch_ms" to now.time)
+                }
+
+                "register_webhook" -> {
+                    val path = str("path")?.trim()?.trimStart('/')?.lowercase()
+                    val instruction = str("instruction")?.trim()
+                    val label = str("label")?.trim() ?: ""
+                    val secret = str("secret")?.trim()
+                    when {
+                        path.isNullOrBlank() -> mapOf("error" to "Give a path for the webhook URL")
+                        instruction.isNullOrBlank() -> mapOf("error" to "Give an instruction to run when the webhook fires")
+                        else -> registerWebhook(path, instruction, label, secret)
+                    }
+                }
+
+                "create_automation" -> {
+                    val title = str("title")?.trim()
+                    val triggerType = str("trigger_type")?.trim()
+                    val instruction = str("instruction")?.trim()
+                    when {
+                        title.isNullOrBlank() -> mapOf("error" to "Give a title")
+                        triggerType.isNullOrBlank() -> mapOf("error" to "Give a trigger_type")
+                        instruction.isNullOrBlank() -> mapOf("error" to "Give an instruction")
+                        else -> createAutomation(title, triggerType, instruction, args)
+                    }
+                }
+
+                "list_automations" -> {
+                    val macros = com.nik.voiceassistant.data.macro.MacroStore.getAll(context)
+                    mapOf("automations" to macros.map { m ->
+                        mapOf("id" to m.id, "title" to m.title, "trigger" to m.triggerSummary(),
+                              "enabled" to m.enabled, "run_count" to m.runCount)
+                    }, "count" to macros.size)
+                }
+
+                "edit_automation" -> {
+                    val id = str("id")?.trim()
+                    if (id.isNullOrBlank()) return mapOf("error" to "Give the automation id from list_automations")
+                    val macros = com.nik.voiceassistant.data.macro.MacroStore.getAll(context)
+                    if (macros.none { it.id == id }) return mapOf("error" to "Automation not found. Use list_automations to get the id.")
+                    com.nik.voiceassistant.data.macro.MacroStore.update(context, id) { m ->
+                        m.copy(
+                            title = str("title")?.trim()?.ifBlank { null } ?: m.title,
+                            instruction = str("instruction")?.trim()?.ifBlank { null } ?: m.instruction,
+                            enabled = bool("enabled") ?: m.enabled
+                        )
+                    }
+                    val updated = com.nik.voiceassistant.data.macro.MacroStore.getAll(context).firstOrNull { it.id == id }
+                    com.nik.voiceassistant.service.GenericBroadcastMonitor.refresh(context) { null }
+                    mapOf("success" to true, "title" to (updated?.title ?: ""), "enabled" to (updated?.enabled ?: true))
+                }
+
+                "delete_automation" -> {
+                    val id = str("id")?.trim()
+                    if (id.isNullOrBlank()) return mapOf("error" to "Give the automation id")
+                    com.nik.voiceassistant.data.macro.MacroStore.delete(context, id)
+                    com.nik.voiceassistant.service.ConditionPollingEngine.cancel(context, id)
+                    com.nik.voiceassistant.service.ScheduledTriggerMonitor.cancel(context, id)
+                    com.nik.voiceassistant.service.GenericBroadcastMonitor.refresh(context) { null }
+                    mapOf("success" to true)
+                }
+
+                "report_condition" -> {
+                    val macroId = str("macro_id")?.trim()
+                    val met = bool("met")
+                    when {
+                        macroId.isNullOrBlank() -> mapOf("error" to "Give macro_id")
+                        met == null -> mapOf("error" to "Give met (true/false)")
+                        !met -> mapOf("result" to "not_met", "next" to "Condition not met. End this turn silently — do not speak to the user.")
+                        else -> {
+                            val macro = com.nik.voiceassistant.data.macro.MacroStore.getAll(context).firstOrNull { it.id == macroId }
+                                ?: return mapOf("error" to "Macro $macroId not found")
+                            val trig = macro.triggers.firstOrNull { it is com.nik.voiceassistant.data.macro.Trigger.Condition } as? com.nik.voiceassistant.data.macro.Trigger.Condition
+                            if (trig?.stopOnMet == true) {
+                                com.nik.voiceassistant.data.macro.MacroStore.update(context, macroId) { it.copy(enabled = false) }
+                                com.nik.voiceassistant.service.ConditionPollingEngine.cancel(context, macroId)
+                            }
+                            mapOf("result" to "met", "next" to "Condition IS MET. Now carry out this action for the user: ${macro.instruction}")
+                        }
+                    }
+                }
+
                 else -> mapOf("error" to "Unsupported tool '$toolName'")
             }
         } catch (e: Exception) {
             Log.e(TAG, "Error executing tool '$toolName': ${e.message}", e)
             mapOf("error" to (e.message ?: "Execution failed"))
+        }
+    }
+
+    /** A tap, after the checks: never against this app itself, and with the user's OK where it matters. */
+    private fun tap(agent: PhoneAgentService, elementId: Int?, text: String?, longPress: Boolean, times: Int, trusted: Boolean): Map<String, Any?> {
+        if (harmsSelf(agent, elementId, text)) return mapOf("error" to SELF_BLOCKED)
+        val target = agent.target(elementId, text)
+        val label = target?.label?.ifBlank { null } ?: text
+        var risk = ActionGuard.classifyTap(label, target?.viewId)
+        // The dialer's Call button with a code in it runs that code (e.g. call forwarding)
+        if (risk == ActionGuard.Risk.CALL && ActionGuard.isDialCode(lastDialed)) risk = ActionGuard.Risk.DIAL_CODE
+        if (risk != null) {
+            val what = when (risk) {
+                ActionGuard.Risk.DIAL_CODE -> "Dial ${lastDialed ?: "this code"}"
+                else -> "Press \"${label?.take(60) ?: "this button"}\""
+            }
+            gate(risk, "tap:${risk.name}:${label?.lowercase()}", what, trusted)?.let { return it }
+        }
+        // One confirmed press is one press
+        return agent.tap(elementId, text, longPress, if (risk != null) 1 else times)
+    }
+
+    private fun unlock(agent: PhoneAgentService): Map<String, Any?> = when (agent.unlockWithSavedPin()) {
+        PhoneAgentService.Unlock.DONE -> {
+            SecurePrefs.noteUnlockSuccess(context)
+            withScreen(mapOf("success" to true, "done" to "phone unlocked"))
+        }
+        PhoneAgentService.Unlock.NO_PIN -> mapOf("success" to false, "error" to "No PIN/password/pattern is saved. Tell the user: 'Phone locked hai, kripya pehle phone unlock karein.'")
+        PhoneAgentService.Unlock.NOT_NUMERIC -> mapOf("success" to false, "error" to "The saved credential looks invalid for the selected lock type. Ask the user to unlock the phone and re-check it in Settings.")
+        PhoneAgentService.Unlock.NO_KEYPAD -> mapOf("success" to false, "error" to "The lock screen's PIN pad / password field / pattern grid wasn't found, so nothing was entered. Ask the user to unlock the phone.")
+        PhoneAgentService.Unlock.WRONG_PIN -> {
+            val turnedOff = SecurePrefs.noteUnlockFailure(context)
+            AgentTrace.log(AgentTrace.Kind.WARNING, if (turnedOff) "Saved credential failed twice: auto-unlock turned off" else "Saved credential didn't unlock the phone")
+            mapOf(
+                "success" to false,
+                "error" to if (turnedOff) "The saved credential failed again, so auto-unlock was turned off to protect the phone. Tell the user to unlock it themself and update it in Settings."
+                else "The saved credential didn't unlock the phone (it may have changed). Don't try again; ask the user to unlock it."
+            )
         }
     }
 
@@ -452,7 +771,9 @@ class DeviceToolExecutor(
             append("language ${java.util.Locale.getDefault().toLanguageTag()}, ")
             launcher?.let { append("home app $it, ") }
             defaultBrowser()?.let { append("browser $it, ") }
-            append("time ${java.text.SimpleDateFormat("EEE d MMM yyyy HH:mm", java.util.Locale.ENGLISH).format(java.util.Date())}")
+            val tz = java.util.TimeZone.getDefault()
+            val sdf = java.text.SimpleDateFormat("EEE d MMM yyyy HH:mm:ss", java.util.Locale.ENGLISH).also { it.timeZone = tz }
+            append("time ${sdf.format(java.util.Date())} ${tz.getDisplayName(false, java.util.TimeZone.SHORT)}")
         }
     }
 
@@ -512,6 +833,127 @@ class DeviceToolExecutor(
         }
     }
 
+    /** Saves a one-off Scheduled-trigger macro and arms its alarm; ScheduledMacroReceiver runs it and disables it. */
+    private fun scheduleFollowup(instruction: String, minutes: Int): Map<String, Any?> {
+        val cal = java.util.Calendar.getInstance().apply { add(java.util.Calendar.MINUTE, minutes) }
+        val macro = com.nik.voiceassistant.data.macro.Macro(
+            title = instruction.take(60),
+            description = "Scheduled follow-up",
+            triggers = listOf(
+                com.nik.voiceassistant.data.macro.Trigger.Scheduled(
+                    hour = cal.get(java.util.Calendar.HOUR_OF_DAY),
+                    minute = cal.get(java.util.Calendar.MINUTE),
+                    days = emptySet()
+                )
+            ),
+            instruction = instruction,
+            action = com.nik.voiceassistant.data.macro.Action.AlwaysAsk
+        )
+        com.nik.voiceassistant.data.macro.MacroStore.save(context, macro)
+        com.nik.voiceassistant.service.ScheduledTriggerMonitor.scheduleOne(context, macro)
+        return mapOf(
+            "success" to true,
+            "scheduled_in_minutes" to minutes,
+            "next" to "Tell the user briefly that you'll check back in about $minutes minutes, then you can end this turn."
+        )
+    }
+
+    private fun createAutomation(title: String, triggerType: String, instruction: String, args: Map<String, Any?>): Map<String, Any?> {
+        fun s(k: String) = args[k]?.toString()?.trim()?.ifBlank { null }
+        fun i(k: String) = args[k]?.toString()?.toIntOrNull()
+        fun b(k: String) = args[k]?.let { it == true || it.toString().equals("true", ignoreCase = true) }
+
+        val trigger: com.nik.voiceassistant.data.macro.Trigger = when (triggerType) {
+            "phrase" -> com.nik.voiceassistant.data.macro.Trigger.Phrase(s("trigger_phrase") ?: title)
+            "scheduled" -> {
+                val h = i("scheduled_hour") ?: return mapOf("error" to "Give scheduled_hour (0-23)")
+                val m = i("scheduled_minute") ?: 0
+                val days = s("scheduled_days")?.split(",")?.mapNotNull { it.trim().toIntOrNull() }?.toSet() ?: emptySet()
+                com.nik.voiceassistant.data.macro.Trigger.Scheduled(h, m, days)
+            }
+            "broadcast_event" -> {
+                val action = s("broadcast_action") ?: return mapOf("error" to "Give broadcast_action (Android intent action string)")
+                val extrasJson = s("broadcast_extras") ?: "{}"
+                val extras: Map<String, String> = try {
+                    @Suppress("UNCHECKED_CAST")
+                    com.google.gson.Gson().fromJson(extrasJson, Map::class.java) as? Map<String, String> ?: emptyMap()
+                } catch (_: Exception) { emptyMap() }
+                com.nik.voiceassistant.data.macro.Trigger.BroadcastEvent(action, extras, s("broadcast_label") ?: "")
+            }
+            "condition" -> {
+                val check = s("condition_instruction") ?: return mapOf("error" to "Give condition_instruction")
+                val interval = i("condition_interval_minutes") ?: 10
+                val stop = b("condition_stop_on_met") ?: true
+                com.nik.voiceassistant.data.macro.Trigger.Condition(check, interval, stop, s("condition_label") ?: "")
+            }
+            "webhook" -> {
+                val path = s("webhook_path") ?: return mapOf("error" to "Give webhook_path")
+                com.nik.voiceassistant.data.macro.Trigger.Webhook(path, s("webhook_secret"))
+            }
+            "notification" -> com.nik.voiceassistant.data.macro.Trigger.NotificationReceived(
+                s("notification_package"), s("notification_app_label"),
+                s("notification_title_contains"), s("notification_text_contains")
+            )
+            "incoming_call" -> com.nik.voiceassistant.data.macro.Trigger.IncomingCall(s("call_contact_filter"), s("call_contact_label"))
+            "missed_call"   -> com.nik.voiceassistant.data.macro.Trigger.MissedCall(s("call_contact_filter"), s("call_contact_label"))
+            "charger_connected"    -> com.nik.voiceassistant.data.macro.Trigger.ChargerConnected
+            "charger_disconnected" -> com.nik.voiceassistant.data.macro.Trigger.ChargerDisconnected
+            "wifi_connected" -> com.nik.voiceassistant.data.macro.Trigger.WifiConnected(s("wifi_ssid"))
+            "boot"   -> com.nik.voiceassistant.data.macro.Trigger.BootCompleted
+            "manual" -> com.nik.voiceassistant.data.macro.Trigger.Manual
+            else -> return mapOf("error" to "Unknown trigger_type '$triggerType'")
+        }
+
+        val macro = com.nik.voiceassistant.data.macro.Macro(
+            title = title,
+            triggers = listOf(trigger),
+            instruction = instruction,
+            action = com.nik.voiceassistant.data.macro.Action.AlwaysAsk
+        )
+        com.nik.voiceassistant.data.macro.MacroStore.save(context, macro)
+
+        // Arm the appropriate engine
+        when (trigger) {
+            is com.nik.voiceassistant.data.macro.Trigger.Scheduled ->
+                com.nik.voiceassistant.service.ScheduledTriggerMonitor.scheduleOne(context, macro)
+            is com.nik.voiceassistant.data.macro.Trigger.Condition ->
+                com.nik.voiceassistant.service.ConditionPollingEngine.scheduleOne(context, macro)
+            is com.nik.voiceassistant.data.macro.Trigger.BroadcastEvent ->
+                com.nik.voiceassistant.service.GenericBroadcastMonitor.refresh(context) { null }
+            is com.nik.voiceassistant.data.macro.Trigger.Webhook -> {
+                val ip = com.nik.voiceassistant.service.WebhookServer.localAddress(context) ?: "PHONE_IP"
+                return mapOf("success" to true, "id" to macro.id, "trigger" to trigger.describe(),
+                    "webhook_url" to "http://$ip:${com.nik.voiceassistant.service.WebhookServer.PORT}/webhook/${trigger.path}")
+            }
+            else -> {}
+        }
+        return mapOf("success" to true, "id" to macro.id, "trigger" to trigger.describe(),
+            "next" to "Automation '${title}' created. Tell the user it's saved and active.")
+    }
+
+    private fun registerWebhook(path: String, instruction: String, label: String, secret: String?): Map<String, Any?> {
+        val macro = com.nik.voiceassistant.data.macro.Macro(
+            title = label.ifBlank { instruction.take(60) },
+            description = "Webhook trigger: /$path",
+            triggers = listOf(
+                com.nik.voiceassistant.data.macro.Trigger.Webhook(path = path, secret = secret?.ifBlank { null }, label = label)
+            ),
+            instruction = instruction,
+            action = com.nik.voiceassistant.data.macro.Action.AlwaysAsk
+        )
+        com.nik.voiceassistant.data.macro.MacroStore.save(context, macro)
+        val ip = com.nik.voiceassistant.service.WebhookServer.localAddress(context) ?: "PHONE_IP"
+        val url = "http://$ip:${com.nik.voiceassistant.service.WebhookServer.PORT}/webhook/$path"
+        val curl = "curl -X POST \"$url\"" + if (!secret.isNullOrBlank()) " -H \"X-Webhook-Token: $secret\"" else ""
+        return mapOf(
+            "success" to true,
+            "webhook_url" to url,
+            "curl_example" to curl,
+            "note" to "Webhook registered. Only reachable on the same Wi-Fi or Tailscale network, not from the internet. " +
+                "Tell the user: URL = $url" + if (!secret.isNullOrBlank()) ", token = $secret" else ""
+        )
+    }
+
     private fun research(question: String): Map<String, Any?> {
         if (question.isBlank()) return mapOf("error" to "Give a question")
         val ask = research ?: return mapOf("error" to "Research isn't available; rely on Google Search or the phone's own search")
@@ -526,9 +968,62 @@ class DeviceToolExecutor(
             2) any Android intent action, settings action or deep link that opens the place directly,
             3) one alternative route if the first doesn't match.
         """.trimIndent()
-        val answer = ask(prompt) ?: return mapOf("error" to "Research failed right now; try Google Search, the app's own search, or explore the menus")
+        val answer = ask(prompt) ?: return researchViaBrowser(question)
         plan?.tried?.add("research")
         return mapOf("answer" to answer, "next" to "Follow it on the screen; names may differ slightly, so match what read_screen shows.")
+    }
+
+    /**
+     * When accessibility capture returned nothing (WebView-heavy apps, some system screens), takes a
+     * screenshot and asks the vision model to describe it, appending the result to the screen map.
+     * Returns the original map unchanged when elements are already present or vision isn't available.
+     */
+    private fun augmentWithScreenshot(agent: PhoneAgentService?, screen: Map<String, Any?>): Map<String, Any?> {
+        if (agent == null || describeImage == null) return screen
+        @Suppress("UNCHECKED_CAST")
+        val elements = screen["elements"] as? List<*>
+        if (!elements.isNullOrEmpty()) return screen
+        val jpeg = try { agent.screenshotJpeg(hideOverlay = true) } catch (_: Exception) { null } ?: return screen
+        val seen = describeImage.invoke(jpeg,
+            "Describe what is on this Android phone screen: the app name, visible text, buttons, and any dialogs. " +
+            "Be brief and factual, no markdown, under 6 lines.") ?: return screen
+        return screen + mapOf(
+            "visual_description" to seen,
+            "note" to "Accessibility returned no elements; this description is from a screenshot — use it to decide what to do next."
+        )
+    }
+
+    /**
+     * Fallback when the gateway research call fails: opens a Google search in the default browser,
+     * waits for it to load, takes a screenshot, and uses the vision model to extract the answer.
+     */
+    private fun researchViaBrowser(question: String): Map<String, Any?> {
+        val agent = PhoneAgentService.instance
+        val describe = describeImage
+        if (agent == null || describe == null) {
+            return mapOf("error" to "Research failed; open_website with 'google.com/search?q=YOUR_QUESTION' to search manually, then look_at_screen")
+        }
+        return try {
+            val searchUrl = "https://www.google.com/search?q=${Uri.encode(question)}"
+            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(searchUrl)).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            })
+            Thread.sleep(3500)
+            val jpeg = agent.screenshotJpeg(hideOverlay = false)
+                ?: return mapOf("error" to "Research failed; browser opened for '$question' but screenshot unavailable — look_at_screen to read results.")
+            val seen = describe(jpeg,
+                "This is a Google search results page on an Android phone. Search query: \"$question\". " +
+                "Extract and summarize the key factual information shown. Plain text only, at most 10 short lines.")
+                ?: return mapOf("error" to "Research failed; browser opened for '$question' but couldn't read results — use look_at_screen.")
+            plan?.tried?.add("research")
+            mapOf(
+                "answer" to seen,
+                "source" to "browser_search",
+                "next" to "Answer came from a live browser search (gateway unavailable). The browser is now open; navigate back or home when done."
+            )
+        } catch (e: Exception) {
+            mapOf("error" to "Research failed; try open_website with a Google search URL manually, then look_at_screen")
+        }
     }
 
     /**
@@ -687,11 +1182,22 @@ class DeviceToolExecutor(
         return true
     }
 
-    private fun launchIntent(action: String?, uri: String?, pkg: String?, extrasJson: String?): Map<String, Any?> {
+    private fun launchIntent(action: String?, uri: String?, pkg: String?, extrasJson: String?, trusted: Boolean): Map<String, Any?> {
         if (action == null && uri == null && pkg == null) return mapOf("error" to "Give at least an action, uri or package")
         // Uninstalling / deleting this app itself
         val removing = action != null && (action.contains("DELETE") || action.contains("UNINSTALL"))
         if (removing && (uri?.contains(context.packageName) == true || pkg == context.packageName)) return mapOf("error" to SELF_BLOCKED)
+        // Intents that act on their own go through the same checks as the buttons that do the same
+        val tel = uri?.takeIf { it.startsWith("tel:", ignoreCase = true) }?.let { Uri.decode(it.substringAfter(':')) }
+        if (action == Intent.ACTION_DIAL && tel != null) lastDialed = tel
+        val placesCall = action != null && action.startsWith("android.intent.action.CALL")
+        when {
+            placesCall -> {
+                val risk = if (ActionGuard.isDialCode(tel)) ActionGuard.Risk.DIAL_CODE else ActionGuard.Risk.CALL
+                gate(risk, "call:${digits(tel.orEmpty())}", "Call ${tel ?: "this number"}", trusted)?.let { return it }
+            }
+            removing -> gate(ActionGuard.Risk.DELETE, "intent:$action:$uri", "Uninstall or delete ${uri ?: pkg ?: "this"}", trusted)?.let { return it }
+        }
         // Media and files must really exist: a made-up content:// or file:// URI only fails later in the other app
         val uris = listOfNotNull(uri) + Regex("(content|file)://[^\"\\s,}]+").findAll(extrasJson.orEmpty()).map { it.value }
         uris.firstOrNull { !uriExists(Uri.parse(it)) }?.let { missing ->
@@ -724,10 +1230,15 @@ class DeviceToolExecutor(
         // A web link an installed app handles (wa.me, youtube.com, maps…) opens in that app, not the browser
         val app = if (pkg == null && intent.data?.scheme in setOf("http", "https")) appForWebLink(intent) else null
         app?.let { intent.setPackage(it) }
-        if (intent.resolveActivity(packageManager) == null) {
+        // Started directly (not checked with resolveActivity first): without QUERY_ALL_PACKAGES most
+        // apps are invisible to that check, but starting them still works
+        try {
+            context.startActivity(intent)
+        } catch (e: android.content.ActivityNotFoundException) {
             return mapOf("success" to false, "error" to "No app on this phone handles that intent; try another action/URI or open the app and use the screen")
+        } catch (e: SecurityException) {
+            return mapOf("success" to false, "error" to "That screen can't be opened by other apps; open it through the app's own menus instead")
         }
-        context.startActivity(intent)
         return withScreen(buildMap {
             put("success", true)
             put("launched", listOfNotNull(action, uri, pkg).joinToString(" "))
@@ -782,8 +1293,11 @@ class DeviceToolExecutor(
         }
         val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).addCategory(Intent.CATEGORY_BROWSABLE).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         defaultBrowser()?.let { intent.setPackage(it) }
-        if (intent.resolveActivity(packageManager) == null) return mapOf("success" to false, "error" to "No browser found")
-        context.startActivity(intent)
+        try {
+            context.startActivity(intent)
+        } catch (e: android.content.ActivityNotFoundException) {
+            return mapOf("success" to false, "error" to "No browser found")
+        }
         return withScreen(mapOf("success" to true, "opened" to url, "browser" to intent.`package`))
     }
 
@@ -834,34 +1348,26 @@ class DeviceToolExecutor(
     // ---- Calls ----
 
     private fun makeCall(number: String?, speaker: Boolean): Map<String, Any?> {
-        if (number.isNullOrBlank()) return mapOf("error" to "Give a phone number (use find_contact for a name)")
-        val tel = Uri.fromParts("tel", number.replace(Regex("[\\s()-]"), ""), null)
-        if (ContextCompat.checkSelfPermission(context, Manifest.permission.CALL_PHONE) != PackageManager.PERMISSION_GRANTED) {
-            // Without the permission the dialer can only be opened with the number filled in
-            context.startActivity(Intent(Intent.ACTION_DIAL, tel).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        lastDialed = null
+        val res = CallPlacer.place(context, number, speaker)
+        if (!res.success) {
             return withScreen(mapOf(
                 "success" to false,
-                "error" to "Phone call permission is off, so only the dialer opened; tap its Call button, and tell the user to allow Phone calls for Nik's voice"
+                "error" to (res.error ?: "Call failed")
             ))
-        }
-        context.startActivity(Intent(Intent.ACTION_CALL, tel).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-        var onSpeaker = false
-        if (speaker) {
-            Thread.sleep(2500) // let the call screen come up
-            // The in-call screen's own Speaker button is what the dialer respects; the audio route is the fallback
-            onSpeaker = PhoneAgentService.instance?.switchOn(listOf("Speaker", "Speakerphone", "स्पीकर")) == true
-            if (!onSpeaker) {
-                val audio = context.getSystemService(AudioManager::class.java)
-                @Suppress("DEPRECATION")
-                runCatching { audio?.isSpeakerphoneOn = true; onSpeaker = audio?.isSpeakerphoneOn == true }
-            }
         }
         return withScreen(mapOf(
             "success" to true,
-            "calling" to number,
-            "speaker" to onSpeaker,
+            "calling" to res.calling,
+            "speaker" to res.speaker,
             "next" to "The call is on (a SIM choice may be showing: pick one if so). Say one short line, then call end_conversation."
         ))
+    }
+
+    private fun callAndTalk(number: String?, goal: String, maxMinutes: Int?): Map<String, Any?> {
+        if (number.isNullOrBlank()) return mapOf("error" to "Give a phone number (use find_contact for a name)")
+        val handler = onCallAndTalk ?: return mapOf("error" to "Call agent capability is not available")
+        return handler(number, goal, maxMinutes)
     }
 
     // ---- Media ----
@@ -957,9 +1463,13 @@ class DeviceToolExecutor(
         val adapter = BluetoothAdapter.getDefaultAdapter() ?: return "Bluetooth hardware not supported"
 
         return try {
-            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
-                if (enabled) adapter.enable() else adapter.disable()
-                "Bluetooth ${if (enabled) "enabled" else "disabled"}"
+            // Android 12 asks for the Bluetooth permission at runtime; without it, the settings page instead
+            val allowed = Build.VERSION.SDK_INT < Build.VERSION_CODES.S ||
+                ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU && allowed) {
+                @android.annotation.SuppressLint("MissingPermission") // checked just above
+                val done = if (enabled) adapter.enable() else adapter.disable()
+                if (done) "Bluetooth ${if (enabled) "enabled" else "disabled"}" else "Bluetooth didn't switch; open Bluetooth settings and tap the switch"
             } else {
                 val intent = Intent(Settings.ACTION_BLUETOOTH_SETTINGS).apply {
                     addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)

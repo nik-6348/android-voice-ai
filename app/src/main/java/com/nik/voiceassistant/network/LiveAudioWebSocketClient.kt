@@ -1,5 +1,6 @@
 package com.nik.voiceassistant.network
 
+import android.os.SystemClock
 import android.util.Log
 import com.google.gson.Gson
 import com.google.gson.JsonParser
@@ -40,6 +41,9 @@ class LiveAudioWebSocketClient(
         private const val TAG = "LiveAudioWebSocket"
         // Tries in a row without getting a session before giving up
         private const val MAX_RECONNECTS = 8
+        // Sessions that may drop within the window before giving up (attempts resets with each session)
+        private const val MAX_DROPS = 6
+        private const val DROP_WINDOW_MS = 2 * 60_000L
         // Mic audio kept while (re)connecting, sent once the connection is up: ~8 s of 16 kHz PCM
         private const val MAX_QUEUED_BYTES = 16000 * 2 * 8
     }
@@ -47,16 +51,24 @@ class LiveAudioWebSocketClient(
     private val gson = Gson()
 
     private val reconnector = Executors.newSingleThreadScheduledExecutor()
-    private var webSocket: WebSocket? = null
+    // Guards replacing the socket (connect, reconnects and disconnect run on different threads)
+    private val lock = Any()
+    @Volatile private var webSocket: WebSocket? = null
     private val isConnected = AtomicBoolean(false)
+    // Bumped by connect() and disconnect(): a reconnect scheduled for an earlier conversation does nothing
+    @Volatile private var generation = 0
+    // The current connection got a working session ("session"), and when sessions dropped lately:
+    // without a cap a server that opens the session and then closes would be retried forever
+    @Volatile private var sessionUp = false
+    private val drops = ArrayDeque<Long>()
 
     // Reconnecting: the host closes WebSockets after a few minutes (Vercel: 300-800 s) and Gemini
     // resets sessions about every 10; a new connection with the latest resume handle continues
     // the same conversation, so the call just carries on
-    private var wsUrl = ""
-    private var apiKey = ""
+    @Volatile private var wsUrl = ""
+    @Volatile private var apiKey = ""
     // (resuming) -> system instructions; a fresh session (no handle) also gets the recent conversation
-    private var instructions: (Boolean) -> String = { "" }
+    @Volatile private var instructions: (Boolean) -> String = { "" }
     @Volatile private var resumeHandle: String? = null
     @Volatile private var userClosed = true
     @Volatile private var attempts = 0
@@ -94,86 +106,144 @@ class LiveAudioWebSocketClient(
         val base = if (raw.contains("?")) raw.substringBefore("?") else raw
         // setup=true: tools and instructions go in the first message; transcribe: the server's
         // speech-to-text writes the user's words (better Hindi than the voice model's)
-        this.wsUrl = "$base?model=${config.model}&voice=${config.voice}&search=${config.search}" +
-            "&setup=true&transcribe=true&transcribe_language=hi-IN,en-IN"
-        this.apiKey = config.apiKey
-        this.instructions = config.instructions
-        // Continue the last conversation (Gemini keeps it for a while) instead of starting from nothing
-        resumeHandle = config.resumeHandle
-        dropAudioUntil = 0L
-        attempts = 0
-        userClosed = false
-        open()
+        val gen = synchronized(lock) {
+            this.wsUrl = "$base?model=${config.model}&voice=${config.voice}&search=${config.search}" +
+                "&setup=true&transcribe=true&transcribe_language=hi-IN,en-IN"
+            this.apiKey = config.apiKey
+            this.instructions = config.instructions
+            // Continue the last conversation (Gemini keeps it for a while) instead of starting from nothing
+            resumeHandle = config.resumeHandle
+            dropAudioUntil = 0L
+            attempts = 0
+            synchronized(drops) { drops.clear() }
+            userClosed = false
+            ++generation
+        }
+        open(gen)
     }
 
-    private fun open() {
-        val handle = resumeHandle
-        val url = if (handle != null) "$wsUrl&resume=${URLEncoder.encode(handle, "UTF-8")}" else wsUrl
-        Log.i(TAG, "Connecting to WebSocket: $wsUrl${if (handle != null) " (resuming)" else ""}")
-        val request = Request.Builder()
-            .url(url)
-            .addHeader("X-API-Key", apiKey)
-            .build()
+    /** Whether this is still the live connection (checked under the lock: a callback can race open()). */
+    private fun isCurrent(ws: WebSocket): Boolean = synchronized(lock) { ws === webSocket }
 
-        webSocket = okHttpClient.newWebSocket(request, object : WebSocketListener() {
-            override fun onOpen(webSocket: WebSocket, response: Response) {
-                val setup = mapOf(
-                    "type" to "setup",
-                    "tools" to declarations(),
-                    "instructions" to instructions(resumeHandle != null)
-                )
+    /** A pasted key often carries a newline, space or zero-width character, which OkHttp rejects in a header. */
+    private fun cleanKey(key: String): String =
+        key.trim().filterNot { it.isWhitespace() || it.isISOControl() || Character.getType(it) == Character.FORMAT.toInt() }
+
+    /** Opens a new connection for conversation [gen]; never throws (it also runs on the reconnector thread). */
+    private fun open(gen: Int) {
+        val problem = synchronized(lock) {
+            if (gen != generation || userClosed) return
+            isConnected.set(false)
+            sessionUp = false
+            // A connection a retry or a second connect() replaces must not linger
+            webSocket?.let { old -> runCatching { old.close(1000, "replaced") } }
+            webSocket = null
+            val handle = resumeHandle
+            val url = if (handle != null) "$wsUrl&resume=${URLEncoder.encode(handle, "UTF-8")}" else wsUrl
+            Log.i(TAG, "Connecting to WebSocket: $wsUrl${if (handle != null) " (resuming)" else ""}")
+            // A blank or schemeless server URL, or a key OkHttp can't put in a header, throws here
+            val builder = try {
+                Request.Builder().url(url)
+            } catch (e: IllegalArgumentException) {
+                userClosed = true
+                return@synchronized "\"${wsUrl.substringBefore('?').ifBlank { "(empty)" }}\" isn't a ws:// or wss:// server address"
+            }
+            val request = try {
+                builder.header("X-API-Key", cleanKey(apiKey)).build()
+            } catch (e: IllegalArgumentException) {
+                // (OkHttp's message would quote the key: not shown)
+                userClosed = true
+                return@synchronized "the API key has characters that can't be sent; paste it again in Settings"
+            }
+            webSocket = okHttpClient.newWebSocket(request, socketListener())
+            null
+        } ?: return
+        listener.onError(IllegalArgumentException("Invalid server URL or API key: $problem"))
+    }
+
+    private fun socketListener() = object : WebSocketListener() {
+        override fun onOpen(webSocket: WebSocket, response: Response) {
+            if (!isCurrent(webSocket)) return // replaced while it was opening
+            // (built outside the lock: the instructions read the app's state)
+            val setup = mapOf(
+                "type" to "setup",
+                "tools" to declarations(),
+                "instructions" to instructions(resumeHandle != null)
+            )
+            val opened = synchronized(lock) {
+                // Replaced or disconnected meanwhile
+                if (webSocket !== this@LiveAudioWebSocketClient.webSocket || userClosed) return@synchronized false
                 webSocket.send(gson.toJson(setup))
                 // The server queues audio until its Gemini session is open
-                // (in ~1 s frames: the server holds at most 200 frames, and mic chunks are 32 ms)
+                // (in ~1 s frames: the server holds at most 200 frames, and mic chunks are 32 ms).
+                // isConnected flips inside the lock sendAudioChunk queues under, so live mic audio
+                // can't overtake the queued audio or be left in the queue
                 synchronized(queued) {
                     val all = java.io.ByteArrayOutputStream(queuedBytes)
                     while (queued.isNotEmpty()) all.write(queued.removeFirst())
                     queuedBytes = 0
                     val bytes = all.toByteArray()
                     for (i in bytes.indices step 32000) webSocket.send(bytes.toByteString(i, minOf(32000, bytes.size - i)))
+                    isConnected.set(true)
                 }
-                isConnected.set(true)
-                Log.i(TAG, "WebSocket connected successfully: ${response.code}")
-                if (attempts == 0) WakeWordManager.playWakeChime()
-                listener.onConnected()
+                true
             }
+            if (!opened) return
+            Log.i(TAG, "WebSocket connected successfully: ${response.code}")
+            if (attempts == 0) WakeWordManager.playWakeChime()
+            listener.onConnected()
+        }
 
-            override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
-                // Incoming binary frame is 24kHz 16-bit PCM Audio from Gemini Live
-                if (System.currentTimeMillis() < dropAudioUntil) return
-                if (!replyStarted) {
-                    replyStarted = true
-                    listener.onModelAudioStart()
-                }
-                audioTrackManager.enqueueAudioChunk(bytes.toByteArray())
+        override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
+            if (webSocket !== this@LiveAudioWebSocketClient.webSocket) return // an old connection
+            // Incoming binary frame is 24kHz 16-bit PCM Audio from Gemini Live
+            if (System.currentTimeMillis() < dropAudioUntil) return
+            if (!replyStarted) {
+                replyStarted = true
+                listener.onModelAudioStart()
             }
+            audioTrackManager.enqueueAudioChunk(bytes.toByteArray())
+        }
 
-            override fun onMessage(webSocket: WebSocket, text: String) {
-                handleJsonMessage(text)
-            }
+        override fun onMessage(webSocket: WebSocket, text: String) {
+            if (webSocket === this@LiveAudioWebSocketClient.webSocket) handleJsonMessage(text)
+        }
 
-            override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
-                Log.i(TAG, "WebSocket closing: $code / $reason")
-                webSocket.close(1000, null)
-            }
+        override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
+            Log.i(TAG, "WebSocket closing: $code / $reason")
+            webSocket.close(1000, null)
+        }
 
-            override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-                if (webSocket !== this@LiveAudioWebSocketClient.webSocket) return // an old connection
-                isConnected.set(false)
-                Log.i(TAG, "WebSocket closed: $code / $reason")
-                if (userClosed) listener.onDisconnected(reason) else scheduleReconnect("closed: ${reason.ifBlank { code.toString() }}")
-            }
+        override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+            if (!isCurrent(webSocket)) return // an old connection
+            isConnected.set(false)
+            Log.i(TAG, "WebSocket closed: $code / $reason")
+            if (userClosed) listener.onDisconnected(reason) else scheduleReconnect("closed: ${reason.ifBlank { code.toString() }}")
+        }
 
-            override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                if (webSocket !== this@LiveAudioWebSocketClient.webSocket) return
-                isConnected.set(false)
-                Log.e(TAG, "WebSocket failure: ${t.message}, response: ${response?.code}", t)
-                if (!userClosed) scheduleReconnect(t.message ?: "connection failed")
-            }
-        })
+        override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+            if (!isCurrent(webSocket)) return
+            isConnected.set(false)
+            Log.e(TAG, "WebSocket failure: ${t.message}, response: ${response?.code}", t)
+            if (!userClosed) scheduleReconnect(t.message ?: "connection failed")
+        }
     }
 
     private fun scheduleReconnect(reason: String) {
+        // Only drops of a working session count here (failed tries are capped by attempts)
+        if (sessionUp) {
+            val now = SystemClock.elapsedRealtime()
+            val tooMany = synchronized(drops) {
+                drops.addLast(now)
+                while (now - drops.first() > DROP_WINDOW_MS) drops.removeFirst()
+                drops.size > MAX_DROPS
+            }
+            if (tooMany) {
+                userClosed = true
+                listener.onError(RuntimeException("Connection keeps dropping ($reason): it dropped more than $MAX_DROPS times in 2 min, so stopped retrying. Check the network and try again"))
+                return
+            }
+        }
         attempts++
         if (attempts > MAX_RECONNECTS) {
             userClosed = true
@@ -189,19 +259,29 @@ class LiveAudioWebSocketClient(
         val delayMs = minOf(300L shl (attempts - 1), 8000L)
         AgentTrace.log(AgentTrace.Kind.NETWORK, "Reconnecting in $delayMs ms (attempt $attempts): $reason")
         listener.onReconnecting(attempts, reason)
-        reconnector.schedule({ if (!userClosed) open() }, delayMs, TimeUnit.MILLISECONDS)
+        val gen = generation
+        reconnector.schedule({ open(gen) }, delayMs, TimeUnit.MILLISECONDS)
     }
 
     /**
      * Sends raw 16kHz PCM audio chunk to the server.
      */
     override fun sendAudioChunk(chunk: ByteArray) {
-        if (!isConnected.get()) {
-            if (!userClosed) queueAudio(chunk) // still connecting: keep it for when we're up
+        // The socket is read before the flag: open() clears the flag before it swaps the socket
+        val ws = webSocket
+        if (ws != null && isConnected.get()) {
+            ws.send(chunk.toByteString(0, chunk.size))
             return
         }
-        val byteString = chunk.toByteString(0, chunk.size)
-        webSocket?.send(byteString)
+        synchronized(queued) {
+            // Checked again under the lock: onOpen may have just sent the queue and marked the connection up
+            val now = webSocket
+            if (now == null || !isConnected.get()) {
+                if (!userClosed) queueAudio(chunk) // still connecting: keep it for when we're up
+                return
+            }
+            now.send(chunk.toByteString(0, chunk.size))
+        }
     }
 
     /** Keeps audio to send as soon as the connection opens (the oldest is dropped past ~8 s). */
@@ -240,16 +320,19 @@ class LiveAudioWebSocketClient(
 
     override fun disconnect() {
         Log.i(TAG, "Disconnecting WebSocket")
-        userClosed = true
-        isConnected.set(false)
-        resumeHandle = null
-        synchronized(queued) { queued.clear(); queuedBytes = 0 }
-        try {
-            webSocket?.close(1000, "User disconnected")
-        } catch (e: Exception) {
-            Log.w(TAG, "Error closing webSocket: ${e.message}")
+        synchronized(lock) {
+            generation++
+            userClosed = true
+            isConnected.set(false)
+            resumeHandle = null
+            synchronized(queued) { queued.clear(); queuedBytes = 0 }
+            try {
+                webSocket?.close(1000, "User disconnected")
+            } catch (e: Exception) {
+                Log.w(TAG, "Error closing webSocket: ${e.message}")
+            }
+            webSocket = null
         }
-        webSocket = null
     }
 
     override fun isConnected(): Boolean = isConnected.get()
@@ -281,7 +364,10 @@ class LiveAudioWebSocketClient(
                 }
 
                 "session", "listening" -> {
-                    if (type == "session") attempts = 0 // a working session: reset the retry count
+                    if (type == "session") {
+                        attempts = 0 // a working session: reset the retry count
+                        sessionUp = true
+                    }
                     Log.i(TAG, "Listening: transcriber=${jsonObject.get("transcriber")}")
                 }
 
@@ -310,8 +396,9 @@ class LiveAudioWebSocketClient(
                     val callId = jsonObject.get("id")?.takeIf { !it.isJsonNull }?.asString
                     tools.submit(name, tools.parseArgs(jsonObject.get("args") ?: jsonObject.get("arguments")), callId) { result ->
                         // Always answer: Gemini waits for the tool response before it speaks again
-                        if (isConnected.get()) sendJson(gson.toJson(ToolCallResponse(id = callId, name = name, result = result)))
-                        else listener.onToolResultLost(name, tools.summary(result))
+                        val ws = webSocket
+                        val sent = isConnected.get() && ws != null && ws.send(gson.toJson(ToolCallResponse(id = callId, name = name, result = result)))
+                        if (!sent) listener.onToolResultLost(name, tools.summary(result))
                     }
                 }
 
@@ -324,7 +411,8 @@ class LiveAudioWebSocketClient(
                 }
 
                 else -> {
-                    Log.d(TAG, "Received other JSON: $jsonStr")
+                    // Type and size only: messages can carry the user's words
+                    Log.d(TAG, "Received other JSON: type=$type (${jsonStr.length} chars)")
                 }
             }
         } catch (e: Exception) {

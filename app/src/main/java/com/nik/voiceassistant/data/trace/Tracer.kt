@@ -3,9 +3,19 @@ package com.nik.voiceassistant.data.trace
 import android.content.Context
 import android.os.Build
 import android.util.Log
+import com.nik.voiceassistant.security.AgentPolicy
+import com.nik.voiceassistant.security.Redactor
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -19,6 +29,7 @@ import java.util.Date
 import java.util.Locale
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * OpenTelemetry-style tracing of the agent: every user request (spoken or typed) is one trace. Its
@@ -27,9 +38,14 @@ import java.util.concurrent.TimeUnit
  * result, duration, status). Plans, decisions, warnings, reconnects and errors are span events.
  * Attribute names follow the OpenTelemetry GenAI conventions (gen_ai.*).
  *
- * Finished traces are saved on the phone as OTLP/JSON lines (files/traces/otel/<day>.jsonl), so they
- * can be opened later, shared, or imported into Jaeger / Grafana Tempo; with an OTLP endpoint set,
- * each finished trace is also sent there (OTLP/HTTP JSON, POST <endpoint>/v1/traces).
+ * Finished traces are saved on the phone as OTLP/JSON lines (files/traces/otel/<day>.jsonl) while
+ * "Save activity logs" is on (Settings > Safety & Privacy), so they can be opened later, shared, or
+ * imported into Jaeger / Grafana Tempo; with an OTLP endpoint set, each finished trace is also sent
+ * there (OTLP/HTTP JSON, POST <endpoint>/v1/traces). Everything saved, shared or sent goes through
+ * Redactor first (otlp()), and all file and network work runs on a background thread.
+ *
+ * The live list (traces) is rebuilt at most every PUBLISH_MS and only while someone collects it,
+ * re-copying only the traces that changed, so recording stays cheap during a busy request.
  */
 object Tracer {
 
@@ -38,6 +54,8 @@ object Tracer {
     private const val MAX_TRACES = 60
     // Big values (screen listings) are cut to this many characters
     private const val MAX_VALUE = 16_000
+    // The live list is rebuilt at most this often
+    private const val PUBLISH_MS = 250L
 
     enum class Kind { REQUEST, LLM, TOOL, SESSION }
     enum class Status { UNSET, OK, ERROR }
@@ -104,7 +122,24 @@ object Tracer {
     @Volatile private var request: Span? = null
     @Volatile private var session: Span? = null
 
-    private val io = Executors.newSingleThreadExecutor()
+    private val io = Executors.newSingleThreadExecutor { r -> Thread(r, "tracer-io").apply { isDaemon = true } }
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
+    // Traces changed since the last publish, and the last snapshot of every trace (reused if unchanged)
+    private val changed = HashSet<String>()
+    private val snapshots = HashMap<String, TraceData>()
+    private val dirty = AtomicBoolean(false)
+    private val scheduled = AtomicBoolean(false)
+    private val allStale = AtomicBoolean(true)
+
+    init {
+        // Someone started watching (the Activity screen): show the latest right away
+        scope.launch {
+            _traces.subscriptionCount.map { it > 0 }.distinctUntilChanged().collect { watched ->
+                if (watched && dirty.get()) schedulePublish(0)
+            }
+        }
+    }
     private val http = OkHttpClient.Builder().callTimeout(10, TimeUnit.SECONDS).build()
     @Volatile private var dir: File? = null
     private var prefs: android.content.SharedPreferences? = null
@@ -117,7 +152,7 @@ object Tracer {
 
     fun init(context: Context) {
         if (dir != null) return
-        dir = File(context.filesDir, "traces/otel").apply { mkdirs() }
+        dir = File(context.filesDir, "traces/otel").also { d -> io.execute { d.mkdirs() } }
         prefs = context.getSharedPreferences("agent_trace", Context.MODE_PRIVATE).also { _otlpEndpoint.value = it.getString("otlp_endpoint", "").orEmpty() }
         val version = runCatching { context.packageManager.getPackageInfo(context.packageName, 0).versionName }.getOrNull()
         resource = JSONArray()
@@ -165,14 +200,14 @@ object Tracer {
         val text = listOfNotNull(r.attributes["user.input"], input.trim()).joinToString(" ")
         r.attributes["user.input"] = clip(text)
         r.name = "request: ${text.take(60)}"
-        publish()
+        publish(r.traceId)
     }
 
     /** Tokens the model used, added up on the request in progress. */
     fun addTokens(tokens: Long) {
         val r = request ?: return
         r.attributes["gen_ai.usage.total_tokens"] = ((r.attributes["gen_ai.usage.total_tokens"]?.toLongOrNull() ?: 0L) + tokens).toString()
-        publish()
+        publish(r.traceId)
     }
 
     /** The request in progress, starting one if the agent acts without one (e.g. a saved automation). */
@@ -202,7 +237,7 @@ object Tracer {
     fun setAttribute(span: Span?, key: String, value: Any?) {
         span ?: return
         value?.let { span.attributes[key] = clip(it.toString()) }
-        publish()
+        publish(span.traceId)
     }
 
     /** Sets an attribute on the request in progress (e.g. its goal). */
@@ -213,47 +248,78 @@ object Tracer {
         if (span.end == null) span.end = System.currentTimeMillis()
         span.status = status
         span.statusMessage = message
-        publish()
+        publish(span.traceId)
     }
 
     /** An event on a span, else on the request in progress, else on the conversation's trace. */
     fun event(name: String, attributes: Map<String, Any?> = emptyMap(), span: Span? = null) {
         val target = span ?: request ?: session ?: return
         target.events += SpanEvent(System.currentTimeMillis(), name, attributes.mapNotNull { (k, v) -> v?.let { k to clip(it.toString()) } }.toMap())
-        publish()
+        publish(target.traceId)
     }
 
     private fun newSpan(name: String, kind: Kind, parent: Span?, attributes: Map<String, Any?>): Span {
         val traceId = parent?.traceId ?: hex(16)
         val span = Span(traceId, hex(8), parent?.spanId, name, kind, System.currentTimeMillis())
         attributes.forEach { (k, v) -> v?.let { span.attributes[k] = clip(it.toString()) } }
-        live.getOrPut(traceId) { mutableListOf() } += span
-        while (live.size > MAX_TRACES) live.remove(live.keys.first())
-        publish()
+        synchronized(this) {
+            live.getOrPut(traceId) { mutableListOf() } += span
+            while (live.size > MAX_TRACES) live.remove(live.keys.first())
+        }
+        publish(traceId)
         return span
     }
 
     private fun clip(s: String) = if (s.length > MAX_VALUE) s.take(MAX_VALUE) + "… (${s.length - MAX_VALUE} more chars)" else s
 
-    private fun publish() {
-        val snapshot = synchronized(this) {
-            live.values.mapNotNull { spans -> spans.toList().takeIf { it.isNotEmpty() }?.map { it.snapshot() } }
+    /** Notes a change to a trace; the live list catches up shortly after, if anyone is watching. */
+    private fun publish(traceId: String?) {
+        dirty.set(true)
+        // Nobody watching: nothing to track, the next watcher gets a full rebuild
+        if (_traces.subscriptionCount.value == 0) { allStale.set(true); return }
+        if (traceId != null) synchronized(changed) { changed += traceId }
+        schedulePublish(PUBLISH_MS)
+    }
+
+    private fun schedulePublish(delayMs: Long) {
+        if (!scheduled.compareAndSet(false, true)) return
+        scope.launch {
+            delay(delayMs)
+            scheduled.set(false)
+            if (dirty.getAndSet(false)) rebuild()
         }
-        _traces.value = snapshot.filter { spans -> spans.any { it.parentId == null } }
-            .map { TraceData(it.first().traceId, it) }
-            .sortedByDescending { it.start }
+    }
+
+    /** The live list from the traces in memory: copies only the ones that changed. */
+    private fun rebuild() {
+        val all = allStale.getAndSet(false)
+        val ids = synchronized(changed) { changed.toSet().also { changed.clear() } }
+        val list = synchronized(this) {
+            snapshots.keys.retainAll(live.keys)
+            live.mapNotNull { (id, spans) ->
+                val cached = snapshots[id]
+                if (cached != null && !all && id !in ids) return@mapNotNull cached
+                val copy = spans.toList().takeIf { list -> list.any { it.parentId == null } }?.map { it.snapshot() } ?: return@mapNotNull null
+                TraceData(id, copy).also { snapshots[id] = it }
+            }
+        }
+        _traces.value = list.sortedByDescending { it.start }
     }
 
     // ---- Saving and exporting (OTLP/JSON) ----
 
     private fun persist(traceId: String) {
         val spans = synchronized(this) { live[traceId]?.map { it.snapshot() } } ?: return
-        val folder = dir ?: return
+        val folder = dir
+        val save = folder != null && AgentPolicy.current.saveActivityLogs
         val endpoint = _otlpEndpoint.value
+        if (!save && endpoint.isBlank()) return
         io.execute {
+            // Redacted here, so neither the file nor the collector gets codes or card numbers
             val payload = otlp(spans)
-            try {
-                File(folder, "${day.format(Date(spans.minOf { it.start }))}.jsonl").appendText(payload.toString() + "\n")
+            if (save && folder != null) try {
+                val name = synchronized(day) { day.format(Date(spans.minOf { it.start })) }
+                File(folder, "$name.jsonl").appendText(payload.toString() + "\n")
             } catch (e: Exception) {
                 Log.w(TAG, "Trace not saved: ${e.message}")
             }
@@ -273,7 +339,10 @@ object Tracer {
 
     private fun attr(key: String, value: String) = JSONObject().put("key", key).put("value", JSONObject().put("stringValue", value))
 
-    /** Spans as an OTLP/JSON ExportTraceServiceRequest. */
+    /**
+     * Spans as an OTLP/JSON ExportTraceServiceRequest, with every text value redacted (one-time
+     * codes, card numbers). Builds a large string for big traces: call it off the main thread.
+     */
     fun otlp(spans: List<SpanData>): JSONObject {
         val out = JSONArray()
         spans.forEach { s ->
@@ -281,23 +350,23 @@ object Tracer {
                 put("traceId", s.traceId)
                 put("spanId", s.spanId)
                 s.parentId?.let { put("parentSpanId", it) }
-                put("name", s.name)
+                put("name", Redactor.forStorage(s.name))
                 // INTERNAL = 1, CLIENT = 3 (calls out to the model)
                 put("kind", if (s.kind == Kind.LLM) 3 else 1)
                 put("startTimeUnixNano", (s.start * 1_000_000).toString())
                 put("endTimeUnixNano", ((s.end ?: s.start) * 1_000_000).toString())
                 put("attributes", JSONArray().apply {
                     put(attr("agent.span.kind", s.kind.name.lowercase()))
-                    s.attributes.forEach { (k, v) -> put(attr(k, v)) }
+                    s.attributes.forEach { (k, v) -> put(attr(k, Redactor.forStorage(v))) }
                 })
                 put("events", JSONArray().apply {
                     s.events.forEach { e ->
                         put(JSONObject().put("timeUnixNano", (e.time * 1_000_000).toString()).put("name", e.name)
-                            .put("attributes", JSONArray().apply { e.attributes.forEach { (k, v) -> put(attr(k, v)) } }))
+                            .put("attributes", JSONArray().apply { e.attributes.forEach { (k, v) -> put(attr(k, Redactor.forStorage(v))) } }))
                     }
                 })
                 put("status", JSONObject().put("code", when (s.status) { Status.OK -> 1; Status.ERROR -> 2; else -> 0 })
-                    .apply { s.statusMessage?.let { put("message", it) } })
+                    .apply { s.statusMessage?.let { put("message", Redactor.forStorage(it)) } })
             })
         }
         return JSONObject().put(
@@ -314,11 +383,18 @@ object Tracer {
     /** Days with saved traces (file names), newest first. */
     fun savedDays(): List<String> = dir?.listFiles()?.filter { it.name.endsWith(".jsonl") }?.map { it.name }?.sortedDescending().orEmpty()
 
-    /** The traces saved on a day, newest first. */
+    /** The traces saved on a day, newest first. Reads and parses the file: call it off the main thread. */
     fun readDay(name: String): List<TraceData> {
         val file = dir?.let { File(it, name) }?.takeIf { it.exists() } ?: return emptyList()
-        return file.readLines().mapNotNull { line -> runCatching { parse(JSONObject(line)) }.getOrNull() }.sortedByDescending { it.start }
+        return runCatching { file.readLines() }.getOrDefault(emptyList())
+            .mapNotNull { line -> runCatching { parse(JSONObject(line)) }.getOrNull() }.sortedByDescending { it.start }
     }
+
+    /** readDay on a background thread. */
+    suspend fun loadDay(name: String): List<TraceData> = withContext(Dispatchers.IO) { readDay(name) }
+
+    /** A trace as pretty OTLP JSON for sharing (redacted), built on a background thread. */
+    suspend fun exportJson(spans: List<SpanData>): String = withContext(Dispatchers.Default) { otlp(spans).toString(2) }
 
     private fun parse(o: JSONObject): TraceData? {
         val spans = o.getJSONArray("resourceSpans").getJSONObject(0).getJSONArray("scopeSpans").getJSONObject(0).getJSONArray("spans")
@@ -355,14 +431,24 @@ object Tracer {
 
     fun deleteDay(name: String) { io.execute { dir?.let { File(it, name) }?.delete() } }
 
-    fun deleteAll() {
-        synchronized(this) { live.clear(); request = null }
-        publish()
+    /** Deletes every saved trace and forgets the ones in memory. */
+    fun clearAll() {
+        synchronized(this) {
+            live.clear()
+            snapshots.clear()
+            request = null
+            session = null
+        }
+        _traces.value = emptyList()
         io.execute { dir?.listFiles()?.forEach { it.delete() } }
     }
 
-    /** Deletes saved days older than keepDays. */
+    /** Same as clearAll. */
+    fun deleteAll() = clearAll()
+
+    /** Deletes saved days older than keepDays (0 = keep everything). */
     fun prune(keepDays: Int) {
+        if (keepDays <= 0) return
         val cutoff = System.currentTimeMillis() - keepDays * 86_400_000L
         io.execute { dir?.listFiles()?.filter { it.lastModified() < cutoff }?.forEach { it.delete() } }
     }

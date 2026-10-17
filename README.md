@@ -1,6 +1,6 @@
 # 🎙️ Nik Jarvis — Native Android Voice Assistant
 
-Production-ready Native Android Voice Assistant built with **Kotlin**, **OkHttp WebSockets**, and **Jetpack Compose**. Directly connects to Gemini Live Real-time Audio WebSocket stream (`wss://voice.ai.nik6348.in/ws/live`) with hardware tool execution and barge-in capability.
+Native Android Voice Assistant built with **Kotlin**, **OkHttp WebSockets**, and **Jetpack Compose**. Connects to Gemini Live directly, or through the gateway server (Settings > Connection; default `BuildConfig.DEFAULT_WS_URL`), with hardware tool execution and barge-in capability.
 
 ---
 
@@ -81,3 +81,26 @@ When the assistant is speaking and the user begins talking (or when the backend 
 1. `AudioTrackManager.stopAndFlush()` is called immediately.
 2. The internal buffer and hardware queues are flushed without playing stale audio.
 3. The visualizer and speech state cleanly reset.
+
+---
+
+## 🔐 Safety & Privacy (Settings)
+
+The agent reads the screen, and everything on it (messages, web pages, notifications) reaches the model. So the risky checks run on the phone, outside the model (`security/ActionGuard.kt`), and only the user's own words count as asking:
+
+| Setting | Default | What it does |
+| :--- | :--- | :--- |
+| **Ask before actions** | Balanced | *Relaxed*: asks only before payments, wipes and dial codes (`*21*…#`). *Balanced*: also before calls, sending and deleting, unless the user asked for that in their own words. *Strict*: before every call, send, delete and payment. When an action needs an OK, the phone shows a yes / no; the model retries after a yes. |
+| **Hide OTPs & card numbers from the AI** | Off | Masks codes and card numbers in what the agent reads (it can't read an OTP for you then). Password fields are never read. |
+| **Auto-unlock** | Off | Types the saved PIN only on the real lock screen. Anyone who can talk to the locked phone can use it while on; two wrong PINs turn it off. The PIN is never logged or sent. |
+| **Save conversations** / keep for | On / 30 days | History on the phone; codes and card numbers are masked before saving. |
+| **Save activity logs** / screen contents / keep for | On / Off / 7 days | The Activity tab's logs and traces. |
+| **Start listening when the app opens** | On | |
+
+Nothing is included in cloud backups or device transfers (`allowBackup=false`, `res/xml/data_extraction_rules.xml`). Release builds are minified with R8 and drop `Log.v/d/i` (`app/proguard-rules.pro`).
+
+## 🧪 Tests
+
+```
+./gradlew testDebugUnitTest
+```

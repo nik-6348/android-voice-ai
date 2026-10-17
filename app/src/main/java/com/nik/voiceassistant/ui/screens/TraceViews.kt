@@ -3,15 +3,11 @@ package com.nik.voiceassistant.ui.screens
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
-import android.content.Intent
 import android.widget.Toast
-import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -20,7 +16,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -28,41 +23,63 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.ContentCopy
-import androidx.compose.material.icons.filled.ExpandLess
-import androidx.compose.material.icons.filled.ExpandMore
-import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.outlined.ContentCopy
+import androidx.compose.material.icons.outlined.ExpandLess
+import androidx.compose.material.icons.outlined.ExpandMore
+import androidx.compose.material.icons.outlined.Flag
+import androidx.compose.material.icons.outlined.Power
+import androidx.compose.material.icons.outlined.RecordVoiceOver
+import androidx.compose.material.icons.outlined.Share
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.pluralStringResource
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.google.gson.GsonBuilder
 import com.google.gson.JsonParser
+import com.nik.voiceassistant.R
 import com.nik.voiceassistant.data.trace.Tracer
 import com.nik.voiceassistant.data.trace.Tracer.Kind
 import com.nik.voiceassistant.data.trace.Tracer.SpanData
 import com.nik.voiceassistant.data.trace.Tracer.Status
 import com.nik.voiceassistant.data.trace.Tracer.TraceData
-import com.nik.voiceassistant.ui.theme.*
+import com.nik.voiceassistant.ui.components.Badge
+import com.nik.voiceassistant.ui.theme.NikTheme
+import com.nik.voiceassistant.ui.theme.Spacing
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -77,12 +94,16 @@ import java.util.Locale
 private val time = SimpleDateFormat("HH:mm:ss", Locale.US)
 private val pretty = GsonBuilder().setPrettyPrinting().disableHtmlEscaping().create()
 
-private fun kindColor(kind: Kind, status: Status): Color = when {
-    status == Status.ERROR -> RedStop
-    kind == Kind.REQUEST -> BrandCyan
-    kind == Kind.LLM -> BrandViolet
-    kind == Kind.TOOL -> Color(0xFF2DD4BF)
-    else -> TextSecondary
+@Composable
+private fun kindColor(kind: Kind, status: Status): Color {
+    val scheme = MaterialTheme.colorScheme
+    return when {
+        status == Status.ERROR -> scheme.error
+        kind == Kind.REQUEST -> scheme.primary
+        kind == Kind.LLM -> scheme.secondary
+        kind == Kind.TOOL -> scheme.tertiary
+        else -> scheme.outline
+    }
 }
 
 private fun duration(ms: Long?): String = when {
@@ -101,71 +122,91 @@ private fun TraceData.title(): String = when (root.kind) {
 @Composable
 fun TraceCard(trace: TraceData, onOpen: () -> Unit) {
     val root = trace.root
+    val scheme = MaterialTheme.colorScheme
+    val ext = NikTheme.extended
     val total = (trace.end ?: System.currentTimeMillis()) - trace.start
-    val status = when {
-        trace.end == null -> "running" to CyanAccent
-        root.status == Status.ERROR || trace.errorCount > 0 -> "${trace.errorCount} error${if (trace.errorCount == 1) "" else "s"}" to RedStop
-        else -> "ok" to GreenActive
+    val (statusText, statusBg, statusFg) = when {
+        trace.end == null -> Triple(stringResource(R.string.trace_running), scheme.primaryContainer, scheme.onPrimaryContainer)
+        root.status == Status.ERROR || trace.errorCount > 0 ->
+            Triple(pluralStringResource(R.plurals.trace_errors, trace.errorCount, trace.errorCount), scheme.errorContainer, scheme.onErrorContainer)
+        else -> Triple(stringResource(R.string.trace_ok), ext.successContainer, ext.onSuccessContainer)
     }
-    Column(
-        Modifier
+    Card(
+        shape = MaterialTheme.shapes.medium,
+        colors = CardDefaults.cardColors(containerColor = scheme.surfaceContainerLow),
+        modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(14.dp))
-            .background(SurfaceDark)
-            .border(1.dp, GlassBorder, RoundedCornerShape(14.dp))
-            .clickable(onClick = onOpen)
-            .padding(12.dp)
+            .clip(MaterialTheme.shapes.medium)
+            .clickable(onClickLabel = stringResource(R.string.action_open_trace), onClick = onOpen)
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.padding(Spacing.m - 4.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    if (root.kind == Kind.SESSION) Icons.Outlined.Power else Icons.Outlined.RecordVoiceOver,
+                    contentDescription = null, tint = scheme.primary, modifier = Modifier.size(18.dp)
+                )
+                Spacer(Modifier.width(Spacing.s))
+                Text(
+                    trace.title(), style = MaterialTheme.typography.titleSmall, color = scheme.onSurface,
+                    maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f)
+                )
+                Spacer(Modifier.width(Spacing.s))
+                Badge(statusText, container = statusBg, content = statusFg)
+            }
+            root.attributes["agent.goal"]?.let {
+                Spacer(Modifier.height(2.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Outlined.Flag, contentDescription = null, tint = scheme.secondary, modifier = Modifier.size(14.dp))
+                    Spacer(Modifier.width(Spacing.xs))
+                    Text(it, style = MaterialTheme.typography.bodySmall, color = scheme.secondary, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+            }
+            Spacer(Modifier.height(Spacing.xs))
             Text(
-                (if (root.kind == Kind.SESSION) "🔌 " else "🗣 ") + trace.title(),
-                color = TextPrimary, fontSize = 14.sp, fontWeight = FontWeight.SemiBold,
-                maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f)
+                "${time.format(Date(trace.start))} · ${duration(trace.end?.let { total })} · " +
+                    pluralStringResource(R.plurals.trace_tool_calls, trace.toolCount, trace.toolCount) +
+                    (root.attributes["gen_ai.usage.total_tokens"]?.let { " · $it tokens" } ?: ""),
+                style = MaterialTheme.typography.bodySmall, color = scheme.onSurfaceVariant
             )
-            Spacer(Modifier.width(8.dp))
-            Text(
-                status.first, color = status.second, fontSize = 11.sp, fontWeight = FontWeight.Bold,
-                modifier = Modifier.clip(CircleShape).background(status.second.copy(alpha = 0.12f)).padding(horizontal = 8.dp, vertical = 2.dp)
-            )
+            Spacer(Modifier.height(Spacing.s))
+            MiniWaterfall(trace, total)
         }
-        root.attributes["agent.goal"]?.let {
-            Spacer(Modifier.height(2.dp))
-            Text("🎯 $it", color = PurpleAccent, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-        }
-        Spacer(Modifier.height(6.dp))
-        Text(
-            "${time.format(Date(trace.start))} · ${duration(trace.end?.let { total })} · ${trace.toolCount} tool call${if (trace.toolCount == 1) "" else "s"}" +
-                (root.attributes["gen_ai.usage.total_tokens"]?.let { " · $it tokens" } ?: ""),
-            color = TextSecondary, fontSize = 11.sp
-        )
-        Spacer(Modifier.height(8.dp))
-        MiniWaterfall(trace, total)
     }
 }
 
-/** The spans of a trace as thin coloured bars on one line. */
+/** The spans of a trace as thin coloured bars on one line, drawn in one pass. */
 @Composable
 private fun MiniWaterfall(trace: TraceData, total: Long) {
-    BoxWithConstraints(Modifier.fillMaxWidth().height(6.dp).clip(CircleShape).background(Color.White.copy(alpha = 0.05f))) {
-        val w = maxWidth
-        trace.spans.filter { it.parentId != null }.forEach { s ->
-            val start = (s.start - trace.start).toFloat() / total.coerceAtLeast(1)
-            val len = ((s.end ?: System.currentTimeMillis()) - s.start).toFloat() / total.coerceAtLeast(1)
-            Box(
-                Modifier
-                    .offset(x = w * start.coerceIn(0f, 1f))
-                    .width((w * len.coerceIn(0f, 1f)).coerceAtLeast(2.dp))
-                    .height(6.dp)
-                    .background(kindColor(s.kind, s.status))
-            )
-        }
+    val track = MaterialTheme.colorScheme.surfaceContainerHighest
+    val now = System.currentTimeMillis()
+    val bars = trace.spans.filter { it.parentId != null }.map { s ->
+        Triple(
+            ((s.start - trace.start).toFloat() / total.coerceAtLeast(1)).coerceIn(0f, 1f),
+            (((s.end ?: now) - s.start).toFloat() / total.coerceAtLeast(1)).coerceIn(0f, 1f),
+            kindColor(s.kind, s.status)
+        )
     }
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .height(6.dp)
+            .clip(CircleShape)
+            .drawBehind {
+                drawRect(track)
+                val minW = 2.dp.toPx()
+                bars.forEach { (start, len, color) ->
+                    drawRect(color, topLeft = Offset(size.width * start, 0f), size = Size((size.width * len).coerceAtLeast(minW), size.height))
+                }
+            }
+    )
 }
 
 /** A trace opened: header, waterfall, and each span's details. */
 @Composable
 fun TraceDetail(trace: TraceData, onBack: () -> Unit) {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val scheme = MaterialTheme.colorScheme
     val root = trace.root
     val total = ((trace.end ?: System.currentTimeMillis()) - trace.start).coerceAtLeast(1)
     // Spans in time order, each with its depth under the root
@@ -173,37 +214,50 @@ fun TraceDetail(trace: TraceData, onBack: () -> Unit) {
         val byId = trace.spans.associateBy { it.spanId }
         trace.spans.associate { s -> s.spanId to generateSequence(s) { byId[it.parentId ?: ""] }.count() - 1 }
     }
-    val ordered = trace.spans.sortedWith(compareBy({ it.parentId != null }, { it.start }))
+    val ordered = remember(trace) { trace.spans.sortedWith(compareBy({ it.parentId != null }, { it.start })) }
+    val shareTitle = stringResource(R.string.share_trace_otlp)
 
     LazyColumn(
-        modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp),
-        contentPadding = PaddingValues(top = 8.dp, bottom = 90.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp)
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(start = Spacing.m, end = Spacing.m, top = Spacing.s, bottom = Spacing.l),
+        verticalArrangement = Arrangement.spacedBy(Spacing.s)
     ) {
         item {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back", tint = TextPrimary) }
-                Text("Trace", color = TextPrimary, fontSize = 20.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = stringResource(R.string.cd_back)) }
+                Text(
+                    stringResource(R.string.trace_title), style = MaterialTheme.typography.titleLarge,
+                    modifier = Modifier.weight(1f).semantics { heading() }
+                )
                 IconButton(onClick = {
-                    val json = pretty.toJson(JsonParser.parseString(Tracer.otlp(trace.spans).toString()))
-                    context.startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).setType("application/json").putExtra(Intent.EXTRA_TEXT, json), "Share trace (OTLP JSON)"))
-                }) { Icon(Icons.Default.Share, "Share", tint = TextSecondary) }
+                    // Redacted and capped; built off the main thread
+                    scope.launch {
+                        val json = Tracer.exportJson(trace.spans)
+                        shareText(context, json, "application/json", shareTitle)
+                    }
+                }) { Icon(Icons.Outlined.Share, contentDescription = stringResource(R.string.cd_share_trace)) }
             }
         }
         item {
-            Column(
-                Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(SurfaceCard).border(1.dp, GlassBorder, RoundedCornerShape(16.dp)).padding(14.dp)
+            Card(
+                shape = MaterialTheme.shapes.large,
+                colors = CardDefaults.cardColors(containerColor = scheme.surfaceContainerLow),
+                modifier = Modifier.fillMaxWidth()
             ) {
-                Text(trace.title(), color = TextPrimary, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
-                root.attributes["agent.goal"]?.let { Text("🎯 $it", color = PurpleAccent, fontSize = 12.sp) }
-                Spacer(Modifier.height(6.dp))
-                Text(
-                    "${time.format(Date(trace.start))} · ${duration(trace.end?.let { it - trace.start })} · ${trace.spans.size} spans · " +
-                        "${trace.toolCount} tool calls · ${trace.errorCount} errors" +
-                        (root.attributes["gen_ai.usage.total_tokens"]?.let { " · $it tokens" } ?: ""),
-                    color = TextSecondary, fontSize = 11.sp
-                )
-                Text("trace ${trace.traceId}", color = TextMuted, fontSize = 10.sp, fontFamily = FontFamily.Monospace)
+                Column(Modifier.padding(Spacing.m)) {
+                    Text(trace.title(), style = MaterialTheme.typography.titleMedium)
+                    root.attributes["agent.goal"]?.let {
+                        Text(stringResource(R.string.trace_goal, it), style = MaterialTheme.typography.bodySmall, color = scheme.secondary)
+                    }
+                    Spacer(Modifier.height(Spacing.xs))
+                    Text(
+                        "${time.format(Date(trace.start))} · ${duration(trace.end?.let { it - trace.start })} · ${trace.spans.size} spans · " +
+                            "${trace.toolCount} tool calls · ${trace.errorCount} errors" +
+                            (root.attributes["gen_ai.usage.total_tokens"]?.let { " · $it tokens" } ?: ""),
+                        style = MaterialTheme.typography.bodySmall, color = scheme.onSurfaceVariant
+                    )
+                    Text("trace ${trace.traceId}", style = MaterialTheme.typography.labelSmall, color = scheme.outline, fontFamily = FontFamily.Monospace)
+                }
             }
         }
         items(ordered, key = { it.spanId }) { span ->
@@ -214,62 +268,88 @@ fun TraceDetail(trace: TraceData, onBack: () -> Unit) {
 
 @Composable
 private fun SpanRow(span: SpanData, depth: Int, traceStart: Long, total: Long, context: Context) {
-    var open by remember { mutableStateOf(span.kind == Kind.TOOL && span.status == Status.ERROR) }
+    var open by rememberSaveable(span.spanId) { mutableStateOf(span.kind == Kind.TOOL && span.status == Status.ERROR) }
+    val scheme = MaterialTheme.colorScheme
     val color = kindColor(span.kind, span.status)
-    Column(
-        Modifier
+    val track = scheme.surfaceContainerHighest
+    Card(
+        shape = MaterialTheme.shapes.medium,
+        colors = CardDefaults.cardColors(containerColor = scheme.surfaceContainerLow),
+        modifier = Modifier
             .fillMaxWidth()
             .padding(start = (depth * 12).dp)
-            .clip(RoundedCornerShape(12.dp))
-            .background(SurfaceDark)
-            .clickable { open = !open }
-            .padding(10.dp)
+            .clip(MaterialTheme.shapes.medium)
+            .clickable(onClickLabel = stringResource(if (open) R.string.action_collapse else R.string.action_expand)) { open = !open }
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Box(Modifier.size(8.dp).clip(CircleShape).background(color))
-            Spacer(Modifier.width(6.dp))
-            Text(span.name, color = TextPrimary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
-            Text(duration(span.durationMs), color = if ((span.durationMs ?: 0) > 3000) Color(0xFFFBBF24) else TextSecondary, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
-            Icon(if (open) Icons.Default.ExpandLess else Icons.Default.ExpandMore, null, tint = TextMuted, modifier = Modifier.size(18.dp))
-        }
-        // Where it sits in the request's time
-        Spacer(Modifier.height(6.dp))
-        BoxWithConstraints(Modifier.fillMaxWidth().height(5.dp).clip(CircleShape).background(Color.White.copy(alpha = 0.05f))) {
-            val start = (span.start - traceStart).toFloat() / total
-            val len = ((span.end ?: System.currentTimeMillis()) - span.start).toFloat() / total
+        Column(Modifier.padding(Spacing.m - 4.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(Modifier.size(8.dp).clip(CircleShape).drawBehind { drawRect(color) })
+                Spacer(Modifier.width(Spacing.s))
+                Text(
+                    span.name, style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f)
+                )
+                Text(
+                    duration(span.durationMs), style = MaterialTheme.typography.labelSmall, fontFamily = FontFamily.Monospace,
+                    color = if ((span.durationMs ?: 0) > 3000) NikTheme.extended.warning else scheme.onSurfaceVariant
+                )
+                Icon(if (open) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore, contentDescription = null, tint = scheme.outline, modifier = Modifier.size(20.dp))
+            }
+            // Where it sits in the request's time
+            Spacer(Modifier.height(Spacing.s))
+            val start = ((span.start - traceStart).toFloat() / total).coerceIn(0f, 1f)
+            val len = (((span.end ?: System.currentTimeMillis()) - span.start).toFloat() / total).coerceIn(0f, 1f)
             Box(
-                Modifier.offset(x = maxWidth * start.coerceIn(0f, 1f)).width((maxWidth * len.coerceIn(0f, 1f)).coerceAtLeast(2.dp)).height(5.dp)
-                    .clip(CircleShape).background(color)
-            )
-        }
-        Text(
-            "+${duration(span.start - traceStart)} · ${span.kind.name.lowercase()} · ${span.status.name.lowercase()}" + (span.statusMessage?.let { " · $it" } ?: ""),
-            color = if (span.status == Status.ERROR) RedStop else TextMuted, fontSize = 10.sp, maxLines = if (open) 6 else 1, overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.padding(top = 4.dp)
-        )
-
-        if (open) {
-            // Tool input and output first, as formatted JSON
-            listOf("gen_ai.tool.call.arguments" to "Input", "gen_ai.tool.call.result" to "Output").forEach { (key, title) ->
-                span.attributes[key]?.let { JsonBlock(title, it, context) }
-            }
-            span.attributes.filterKeys { it != "gen_ai.tool.call.arguments" && it != "gen_ai.tool.call.result" }.forEach { (k, v) ->
-                Row(Modifier.padding(top = 6.dp)) {
-                    Text(k, color = TextSecondary, fontSize = 11.sp, fontFamily = FontFamily.Monospace, modifier = Modifier.weight(0.42f))
-                    SelectionContainer(Modifier.weight(0.58f)) { Text(v, color = TextPrimary, fontSize = 11.sp, fontFamily = FontFamily.Monospace) }
+                Modifier.fillMaxWidth().height(5.dp).drawBehind {
+                    drawRoundRect(track, cornerRadius = CornerRadius(size.height / 2))
+                    drawRoundRect(
+                        color, topLeft = Offset(size.width * start, 0f),
+                        size = Size((size.width * len).coerceAtLeast(2.dp.toPx()), size.height),
+                        cornerRadius = CornerRadius(size.height / 2)
+                    )
                 }
-            }
-            if (span.events.isNotEmpty()) {
-                Spacer(Modifier.height(8.dp))
-                Text("Events", color = TextSecondary, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                span.events.forEach { e ->
-                    Column(Modifier.padding(top = 4.dp).fillMaxWidth().clip(RoundedCornerShape(8.dp)).background(Color.White.copy(alpha = 0.04f)).padding(8.dp)) {
-                        Row {
-                            Text(e.name, color = if (e.name.contains("error") || e.name.contains("warning")) Color(0xFFFBBF24) else CyanAccent, fontSize = 11.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
-                            Text("+${duration(e.time - traceStart)}", color = TextMuted, fontSize = 10.sp, fontFamily = FontFamily.Monospace)
+            )
+            Text(
+                "+${duration(span.start - traceStart)} · ${span.kind.name.lowercase()} · ${span.status.name.lowercase()}" + (span.statusMessage?.let { " · $it" } ?: ""),
+                style = MaterialTheme.typography.labelSmall,
+                color = if (span.status == Status.ERROR) scheme.error else scheme.onSurfaceVariant,
+                maxLines = if (open) 6 else 1, overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(top = Spacing.xs)
+            )
+
+            if (open) {
+                // Tool input and output first, as formatted JSON
+                listOf("gen_ai.tool.call.arguments" to stringResource(R.string.trace_input), "gen_ai.tool.call.result" to stringResource(R.string.trace_output)).forEach { (key, title) ->
+                    span.attributes[key]?.let { JsonBlock(title, it, context) }
+                }
+                span.attributes.filterKeys { it != "gen_ai.tool.call.arguments" && it != "gen_ai.tool.call.result" }.forEach { (k, v) ->
+                    Row(Modifier.padding(top = Spacing.xs + 2.dp)) {
+                        Text(k, style = MaterialTheme.typography.labelSmall, color = scheme.onSurfaceVariant, fontFamily = FontFamily.Monospace, modifier = Modifier.weight(0.42f))
+                        SelectionContainer(Modifier.weight(0.58f)) {
+                            Text(v, style = MaterialTheme.typography.labelSmall, fontFamily = FontFamily.Monospace)
                         }
-                        e.attributes.forEach { (k, v) ->
-                            SelectionContainer { Text(if (k == "message") v else "$k: $v", color = TextPrimary, fontSize = 11.sp) }
+                    }
+                }
+                if (span.events.isNotEmpty()) {
+                    Spacer(Modifier.height(Spacing.s))
+                    Text(stringResource(R.string.trace_events), style = MaterialTheme.typography.labelMedium, color = scheme.onSurfaceVariant, fontWeight = FontWeight.Bold)
+                    span.events.forEach { e ->
+                        Surface(
+                            color = scheme.surfaceContainerHigh, shape = MaterialTheme.shapes.small,
+                            modifier = Modifier.padding(top = Spacing.xs).fillMaxWidth()
+                        ) {
+                            Column(Modifier.padding(Spacing.s)) {
+                                Row {
+                                    Text(
+                                        e.name, style = MaterialTheme.typography.labelMedium, modifier = Modifier.weight(1f),
+                                        color = if (e.name.contains("error") || e.name.contains("warning")) NikTheme.extended.warning else scheme.primary
+                                    )
+                                    Text("+${duration(e.time - traceStart)}", style = MaterialTheme.typography.labelSmall, color = scheme.outline, fontFamily = FontFamily.Monospace)
+                                }
+                                e.attributes.forEach { (k, v) ->
+                                    SelectionContainer { Text(if (k == "message") v else "$k: $v", style = MaterialTheme.typography.bodySmall) }
+                                }
+                            }
                         }
                     }
                 }
@@ -278,23 +358,31 @@ private fun SpanRow(span: SpanData, depth: Int, traceStart: Long, total: Long, c
     }
 }
 
-/** A JSON value, formatted, scrollable, copyable. */
+/** A JSON value, formatted (off the main thread), scrollable, copyable. */
 @Composable
 private fun JsonBlock(title: String, raw: String, context: Context) {
-    val text = remember(raw) { runCatching { pretty.toJson(JsonParser.parseString(raw)) }.getOrDefault(raw) }
-    Spacer(Modifier.height(8.dp))
+    val text by produceState(initialValue = raw, raw) {
+        value = withContext(Dispatchers.Default) { runCatching { pretty.toJson(JsonParser.parseString(raw)) }.getOrDefault(raw) }
+    }
+    val ext = NikTheme.extended
+    val copied = stringResource(R.string.copied, title)
+    Spacer(Modifier.height(Spacing.s))
     Row(verticalAlignment = Alignment.CenterVertically) {
-        Text(title, color = TextSecondary, fontSize = 11.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
-        Text("${raw.length} chars", color = TextMuted, fontSize = 10.sp)
+        Text(title, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f))
+        Text(stringResource(R.string.trace_chars, raw.length), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
         IconButton(onClick = {
             context.getSystemService(ClipboardManager::class.java)?.setPrimaryClip(ClipData.newPlainText(title, text))
-            Toast.makeText(context, "$title copied", Toast.LENGTH_SHORT).show()
-        }, modifier = Modifier.size(28.dp)) { Icon(Icons.Default.ContentCopy, "Copy", tint = TextMuted, modifier = Modifier.size(14.dp)) }
+            Toast.makeText(context.applicationContext, copied, Toast.LENGTH_SHORT).show()
+        }) { Icon(Icons.Outlined.ContentCopy, contentDescription = stringResource(R.string.cd_copy, title), modifier = Modifier.size(18.dp)) }
     }
-    Box(
-        Modifier.fillMaxWidth().heightIn(max = 280.dp).clip(RoundedCornerShape(8.dp)).background(Color(0xFF0B0F19))
-            .verticalScroll(rememberScrollState()).horizontalScroll(rememberScrollState()).padding(8.dp)
-    ) {
-        SelectionContainer { Text(text, color = Color(0xFFB5F5EC), fontSize = 11.sp, fontFamily = FontFamily.Monospace, lineHeight = 14.sp) }
+    Surface(color = ext.codeBackground, shape = MaterialTheme.shapes.small, modifier = Modifier.fillMaxWidth()) {
+        Box(
+            Modifier.heightIn(max = 280.dp)
+                .verticalScroll(rememberScrollState()).horizontalScroll(rememberScrollState()).padding(Spacing.s)
+        ) {
+            SelectionContainer {
+                Text(text, color = ext.codeText, style = MaterialTheme.typography.labelSmall, fontFamily = FontFamily.Monospace)
+            }
+        }
     }
 }

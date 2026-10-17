@@ -21,42 +21,74 @@ import android.util.Log
  *  - call volume at max (call audio is quieter than media; restored afterwards),
  *  - audio focus, so music / videos pause or duck and the mic hears the user, not the phone.
  */
-class CallAudio(context: Context) {
+class CallAudio(
+    context: Context,
+    // Another app took audio focus for good or for a while (an incoming phone call, a voice note):
+    // the conversation should pause / end instead of talking over it. Called on the main thread
+    private val onFocusLost: () -> Unit = {}
+) {
 
     companion object {
         private const val TAG = "CallAudio"
     }
 
     private val audio = context.getSystemService(AudioManager::class.java)
+    private val main = Handler(Looper.getMainLooper())
     private var savedMode = AudioManager.MODE_NORMAL
     private var focus: AudioFocusRequest? = null
     @Volatile private var active = false
 
-    fun enter() {
-        val am = audio ?: return
-        if (active) return
-        active = true
+    /**
+     * Idempotent. Returns false if audio focus was refused, e.g. a phone call is on; the phone's
+     * call audio is left alone then. allowInCall allows entering for call agent sessions where a phone call is expected.
+     */
+    @Synchronized
+    fun enter(allowInCall: Boolean = false): Boolean {
+        val am = audio ?: return false
+        if (active) return true
         try {
+            // A phone call owns the audio mode and routing: don't take them over unless explicitly intended for CallAgentSession
+            if (!allowInCall && (am.mode == AudioManager.MODE_IN_CALL || am.mode == AudioManager.MODE_RINGTONE)) {
+                Log.w(TAG, "Phone call in progress: not switching to call audio")
+                return false
+            }
+            active = true
             savedMode = am.mode
-            am.mode = AudioManager.MODE_IN_COMMUNICATION
+            if (!allowInCall) {
+                am.mode = AudioManager.MODE_IN_COMMUNICATION
+            }
             routeToSpeakerUnlessHeadset(am)
             // Do NOT force max volume: respect the user's chosen volume level on their device!
-            // Pause / duck other audio while we listen and talk (released when the conversation ends)
-            focus = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
-                .setAudioAttributes(
-                    AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
-                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                        .build()
-                )
-                .setOnAudioFocusChangeListener { }
-                .build()
-                .also { am.requestAudioFocus(it) }
+            if (!allowInCall) {
+                // Pause / duck other audio while we listen and talk (released when the conversation ends)
+                val request = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
+                    .setAudioAttributes(
+                        AudioAttributes.Builder()
+                            .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
+                            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                            .build()
+                    )
+                    .setOnAudioFocusChangeListener({ change ->
+                        Log.w(TAG, "Audio focus changed: $change")
+                        if (change == AudioManager.AUDIOFOCUS_LOSS || change == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT) {
+                            if (active) onFocusLost()
+                        }
+                    }, main)
+                    .build()
+                focus = request
+                if (am.requestAudioFocus(request) != AudioManager.AUDIOFOCUS_REQUEST_GRANTED) {
+                    Log.w(TAG, "Audio focus refused")
+                    return false
+                }
+            }
         } catch (e: Exception) {
             Log.w(TAG, "Couldn't set up call audio: ${e.message}")
         }
+        return true
     }
 
+    /** Idempotent: gives back focus, routing and the audio mode from before enter(). */
+    @Synchronized
     fun exit() {
         val am = audio ?: return
         if (!active) return
@@ -64,13 +96,15 @@ class CallAudio(context: Context) {
         try {
             focus?.let { am.abandonAudioFocusRequest(it) }
             focus = null
+            // Only undo our own mode: if a phone call has switched it meanwhile, leave the call's audio alone
+            val ours = am.mode == AudioManager.MODE_IN_COMMUNICATION
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 am.clearCommunicationDevice()
-            } else {
+            } else if (ours) {
                 @Suppress("DEPRECATION")
                 am.isSpeakerphoneOn = false
             }
-            am.mode = savedMode
+            if (ours) am.mode = savedMode
         } catch (e: Exception) {
             Log.w(TAG, "Couldn't restore audio: ${e.message}")
         }

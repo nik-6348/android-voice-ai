@@ -1,220 +1,214 @@
 package com.nik.voiceassistant.ui.screens
 
 import android.widget.Toast
-import androidx.compose.animation.*
-import androidx.compose.foundation.background
-import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.*
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.filled.StarBorder
+import androidx.compose.material.icons.outlined.Alarm
+import androidx.compose.material.icons.outlined.AutoAwesome
+import androidx.compose.material.icons.outlined.Bolt
+import androidx.compose.material.icons.outlined.Call
+import androidx.compose.material.icons.outlined.DeleteOutline
+import androidx.compose.material.icons.outlined.MusicNote
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.res.pluralStringResource
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.Dialog
+import com.nik.voiceassistant.R
 import com.nik.voiceassistant.VoiceAssistantViewModel
-import com.nik.voiceassistant.data.automation.AutomationStep
-import com.nik.voiceassistant.data.automation.AutomationTask
-import com.nik.voiceassistant.ui.theme.*
-import java.text.SimpleDateFormat
-import java.util.*
+import com.nik.voiceassistant.data.macro.Action
+import com.nik.voiceassistant.data.macro.Macro
+import com.nik.voiceassistant.data.macro.MacroEngine
+import com.nik.voiceassistant.data.macro.RecordedStep
+import com.nik.voiceassistant.data.macro.Trigger
+import com.nik.voiceassistant.ui.components.Badge
+import com.nik.voiceassistant.ui.components.ConfirmDialog
+import com.nik.voiceassistant.ui.components.EmptyState
+import com.nik.voiceassistant.ui.components.ScreenHeader
+import com.nik.voiceassistant.ui.theme.Spacing
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.update
+
+/**
+ * The automation running now. Kept outside the screen: the run outlives a rotation, and its
+ * callbacks only touch this and the application context, never the activity.
+ */
+private object AutomationRun {
+    data class Running(val macroId: String, val title: String, val progress: String)
+    val state = MutableStateFlow<Running?>(null)
+}
+
+private val Macro.stepCount get() = (action as? Action.Replay)?.steps?.size ?: 0
 
 @Composable
-fun AutomationsTab(
-    viewModel: VoiceAssistantViewModel
-) {
+fun AutomationsTab(viewModel: VoiceAssistantViewModel) {
     val context = LocalContext.current
     val automations by viewModel.automations.collectAsState()
-    var selectedFilter by remember { mutableStateOf("All") }
-    var isRunningTask by remember { mutableStateOf<AutomationTask?>(null) }
-    var runningProgress by remember { mutableStateOf("") }
-    var showCreateDialog by remember { mutableStateOf(false) }
+    val assistantName by viewModel.assistantName.collectAsState()
+    val running by AutomationRun.state.collectAsState()
+    var favoritesOnly by rememberSaveable { mutableStateOf(false) }
+    var showCreateDialog by rememberSaveable { mutableStateOf(false) }
+    var deleteId by rememberSaveable { mutableStateOf<String?>(null) }
 
-    val filteredTasks = remember(automations, selectedFilter) {
-        when (selectedFilter) {
-            "Favorites" -> automations.filter { it.isFavorite }
-            else -> automations
-        }
-    }
+    val shown = remember(automations, favoritesOnly) { if (favoritesOnly) automations.filter { it.isFavorite } else automations }
+    val startingText = stringResource(R.string.automation_starting)
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(horizontal = 16.dp)
-    ) {
-        // ---- Header ----
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(top = 12.dp, bottom = 12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
-        ) {
-            Column {
-                Text(
-                    text = "Task Automations",
-                    color = TextPrimary,
-                    fontSize = 22.sp,
-                    fontWeight = FontWeight.Bold
-                )
-                Text(
-                    text = "Execute multi-step tasks in 1 tap or voice",
-                    color = TextSecondary,
-                    fontSize = 12.sp
-                )
+    Column(Modifier.fillMaxSize().padding(horizontal = Spacing.m)) {
+        ScreenHeader(stringResource(R.string.automations_title), stringResource(R.string.automations_subtitle)) {
+            FilledTonalButton(onClick = { showCreateDialog = true }) {
+                Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(Spacing.xs))
+                Text(stringResource(R.string.action_new))
             }
+        }
 
-            Button(
-                onClick = { showCreateDialog = true },
-                colors = ButtonDefaults.buttonColors(containerColor = CyanAccent),
-                shape = RoundedCornerShape(20.dp),
-                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp)
+        Row(Modifier.fillMaxWidth().padding(bottom = Spacing.s), horizontalArrangement = Arrangement.spacedBy(Spacing.s)) {
+            FilterChip(selected = !favoritesOnly, onClick = { favoritesOnly = false }, label = { Text(stringResource(R.string.filter_all)) })
+            FilterChip(
+                selected = favoritesOnly, onClick = { favoritesOnly = true },
+                label = { Text(stringResource(R.string.automations_favorites)) },
+                leadingIcon = { Icon(Icons.Filled.Star, contentDescription = null, modifier = Modifier.size(18.dp)) }
+            )
+        }
+
+        if (shown.isEmpty()) {
+            EmptyState(
+                icon = Icons.Outlined.Bolt,
+                title = stringResource(if (favoritesOnly) R.string.automations_no_favorites else R.string.automations_empty_title),
+                message = stringResource(R.string.automations_empty_body),
+                modifier = Modifier.weight(1f)
             ) {
-                Icon(Icons.Default.Add, contentDescription = null, tint = BgDark, modifier = Modifier.size(18.dp))
-                Spacer(modifier = Modifier.width(4.dp))
-                Text("New", color = BgDark, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-            }
-        }
-
-        // ---- Filters ----
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(bottom = 12.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            listOf("All", "Favorites").forEach { filter ->
-                val selected = selectedFilter == filter
-                Box(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(16.dp))
-                        .background(if (selected) CyanAccent.copy(alpha = 0.2f) else SurfaceCard)
-                        .border(1.dp, if (selected) CyanAccent else GlassBorder, RoundedCornerShape(16.dp))
-                        .clickable { selectedFilter = filter }
-                        .padding(horizontal = 14.dp, vertical = 6.dp)
-                ) {
-                    Text(
-                        text = filter,
-                        color = if (selected) CyanAccent else TextSecondary,
-                        fontSize = 12.sp,
-                        fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal
-                    )
-                }
-            }
-        }
-
-        // ---- Automations List ----
-        if (filteredTasks.isEmpty()) {
-            Box(
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth(),
-                contentAlignment = Alignment.Center
-            ) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Icon(
-                        Icons.Default.Bolt,
-                        contentDescription = null,
-                        tint = TextMuted,
-                        modifier = Modifier.size(54.dp)
-                    )
-                    Spacer(modifier = Modifier.height(12.dp))
-                    Text(
-                        text = "No automations found",
-                        color = TextSecondary,
-                        fontSize = 15.sp,
-                        fontWeight = FontWeight.Medium
-                    )
-                    Spacer(modifier = Modifier.height(6.dp))
-                    Text(
-                        text = "Create a custom task to automate repeated steps.",
-                        color = TextMuted,
-                        fontSize = 12.sp
-                    )
-                }
+                Button(onClick = { showCreateDialog = true }) { Text(stringResource(R.string.automations_create)) }
             }
         } else {
             LazyColumn(
                 modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
-                contentPadding = PaddingValues(bottom = 80.dp)
+                verticalArrangement = Arrangement.spacedBy(Spacing.s),
+                contentPadding = PaddingValues(bottom = Spacing.l)
             ) {
-                items(filteredTasks, key = { it.id }) { task ->
+                items(shown, key = { it.id }) { macro ->
                     AutomationCard(
-                        task = task,
-                        isCurrentlyRunning = isRunningTask?.id == task.id,
+                        macro = macro,
+                        isRunning = running?.macroId == macro.id,
+                        anyRunning = running != null,
                         onRun = {
-                            isRunningTask = task
-                            runningProgress = "Starting ${task.title}…"
-                            viewModel.executeAutomation(
-                                task = task,
+                            val app = context.applicationContext
+                            AutomationRun.state.value = AutomationRun.Running(macro.id, macro.title, startingText)
+                            viewModel.runAutomation(
+                                macro = macro,
                                 onProgress = { step, total, desc ->
-                                    runningProgress = "Step $step/$total: $desc"
+                                    AutomationRun.state.update { it?.copy(progress = app.getString(R.string.automation_step, step, total, desc)) }
                                 },
-                                onComplete = { success, msg ->
-                                    isRunningTask = null
-                                    Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+                                onComplete = { result: MacroEngine.ReplayResult ->
+                                    AutomationRun.state.value = null
+                                    Toast.makeText(app, result.message, Toast.LENGTH_SHORT).show()
+                                    // A failed replay means the screen moved on since this was recorded: offer to relearn it
+                                    if (!result.ok) viewModel.recordAndExecuteAutomation(macro.instruction)
                                 }
                             )
                         },
-                        onToggleFavorite = { viewModel.toggleFavoriteAutomation(task.id) },
-                        onDelete = { viewModel.deleteAutomation(task.id) }
+                        onToggleFavorite = { viewModel.toggleFavoriteAutomation(macro.id) },
+                        onToggleEnabled = { viewModel.setAutomationEnabled(macro.id, it) },
+                        onDelete = { deleteId = macro.id }
                     )
                 }
             }
         }
     }
 
-    // ---- Running Progress Dialog ----
-    isRunningTask?.let { task ->
-        Dialog(onDismissRequest = { /* Don't dismiss while running */ }) {
-            Surface(
-                shape = RoundedCornerShape(20.dp),
-                color = SurfaceDark,
-                border = androidx.compose.foundation.BorderStroke(1.dp, CyanAccent.copy(alpha = 0.5f)),
-                modifier = Modifier.fillMaxWidth(0.9f)
-            ) {
-                Column(
-                    modifier = Modifier.padding(20.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
-                    CircularProgressIndicator(color = CyanAccent, modifier = Modifier.size(44.dp))
-                    Spacer(modifier = Modifier.height(16.dp))
-                    Text("Running Automation", color = TextPrimary, fontSize = 16.sp, fontWeight = FontWeight.Bold)
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text(task.title, color = CyanAccent, fontSize = 13.sp)
-                    Spacer(modifier = Modifier.height(10.dp))
-                    Text(runningProgress, color = TextSecondary, fontSize = 12.sp, maxLines = 2)
+    running?.let { run ->
+        AlertDialog(
+            onDismissRequest = { /* stays while it runs */ },
+            icon = { CircularProgressIndicator(Modifier.size(32.dp)) },
+            title = { Text(stringResource(R.string.automation_running)) },
+            text = {
+                Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
+                    Text(run.title, style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
+                    Spacer(Modifier.size(Spacing.s))
+                    Text(run.progress, style = MaterialTheme.typography.bodyMedium, maxLines = 3, modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite })
                 }
-            }
-        }
+            },
+            confirmButton = {}
+        )
     }
 
-    // ---- Create Custom Automation Dialog ----
+    deleteId?.let { id ->
+        val title = automations.firstOrNull { it.id == id }?.title.orEmpty()
+        ConfirmDialog(
+            title = stringResource(R.string.automation_delete_title),
+            message = stringResource(R.string.automation_delete_body, title),
+            confirmLabel = stringResource(R.string.action_delete),
+            dismissLabel = stringResource(R.string.action_cancel),
+            icon = Icons.Outlined.DeleteOutline,
+            onConfirm = { viewModel.deleteAutomation(id); deleteId = null },
+            onDismiss = { deleteId = null }
+        )
+    }
+
     if (showCreateDialog) {
+        val savedMsg = stringResource(R.string.automation_saved)
+        val learningMsg = stringResource(R.string.automation_learning, assistantName)
         CreateAutomationDialog(
+            assistantName = assistantName,
             onDismiss = { showCreateDialog = false },
-            onSave = { newTask ->
-                viewModel.saveAutomation(newTask)
+            onSave = { macro ->
+                viewModel.saveAutomation(macro)
                 showCreateDialog = false
-                Toast.makeText(context, "Automation saved!", Toast.LENGTH_SHORT).show()
+                Toast.makeText(context.applicationContext, savedMsg, Toast.LENGTH_SHORT).show()
             },
             onRecordWithAi = { instruction ->
                 viewModel.recordAndExecuteAutomation(instruction)
                 showCreateDialog = false
-                Toast.makeText(context, "AI is executing & learning this task live...", Toast.LENGTH_LONG).show()
+                Toast.makeText(context.applicationContext, learningMsg, Toast.LENGTH_LONG).show()
             }
         )
     }
@@ -222,149 +216,67 @@ fun AutomationsTab(
 
 @Composable
 fun AutomationCard(
-    task: AutomationTask,
-    isCurrentlyRunning: Boolean,
+    macro: Macro,
+    isRunning: Boolean,
+    anyRunning: Boolean,
     onRun: () -> Unit,
     onToggleFavorite: () -> Unit,
+    onToggleEnabled: (Boolean) -> Unit,
     onDelete: () -> Unit
 ) {
+    val scheme = MaterialTheme.colorScheme
+    val (icon: ImageVector, container, content) = when {
+        macro.action is Action.HandleCall -> Triple(Icons.Outlined.Call, scheme.secondaryContainer, scheme.onSecondaryContainer)
+        macro.triggers.any { it is Trigger.Scheduled } -> Triple(Icons.Outlined.Alarm, scheme.errorContainer, scheme.onErrorContainer)
+        macro.title.contains("music", true) || macro.title.contains("song", true) -> Triple(Icons.Outlined.MusicNote, scheme.tertiaryContainer, scheme.onTertiaryContainer)
+        else -> Triple(Icons.Outlined.Bolt, scheme.primaryContainer, scheme.onPrimaryContainer)
+    }
     Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .border(1.dp, GlassBorder, RoundedCornerShape(16.dp)),
-        shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(containerColor = SurfaceCard)
+        shape = MaterialTheme.shapes.large,
+        colors = CardDefaults.cardColors(containerColor = scheme.surfaceContainerLow),
+        modifier = Modifier.fillMaxWidth()
     ) {
-        Column(modifier = Modifier.padding(14.dp)) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                // Icon
-                Box(
-                    modifier = Modifier
-                        .size(42.dp)
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(
-                            when (task.iconName) {
-                                "alarm" -> Color(0xFFEF4444).copy(alpha = 0.2f)
-                                "music" -> BrandViolet.copy(alpha = 0.2f)
-                                else -> CyanAccent.copy(alpha = 0.2f)
-                            }
-                        ),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        imageVector = when (task.iconName) {
-                            "alarm" -> Icons.Default.Alarm
-                            "music" -> Icons.Default.MusicNote
-                            else -> Icons.Default.Bolt
-                        },
-                        contentDescription = null,
-                        tint = when (task.iconName) {
-                            "alarm" -> Color(0xFFEF4444)
-                            "music" -> BrandViolet
-                            else -> CyanAccent
-                        },
-                        modifier = Modifier.size(22.dp)
+        Column(Modifier.padding(start = Spacing.m, top = Spacing.m, end = Spacing.s, bottom = Spacing.s)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Surface(shape = MaterialTheme.shapes.medium, color = container, contentColor = content, modifier = Modifier.size(48.dp)) {
+                    Icon(icon, contentDescription = null, modifier = Modifier.padding(Spacing.s + 4.dp))
+                }
+                Spacer(Modifier.width(Spacing.m))
+                Column(Modifier.weight(1f)) {
+                    Text(macro.title, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(
+                        macro.description.ifBlank { macro.triggerSummary() }, style = MaterialTheme.typography.bodySmall, color = scheme.onSurfaceVariant,
+                        maxLines = 2, overflow = TextOverflow.Ellipsis
                     )
                 }
-
-                Spacer(modifier = Modifier.width(12.dp))
-
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = task.title,
-                        color = TextPrimary,
-                        fontSize = 15.sp,
-                        fontWeight = FontWeight.Bold,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    Spacer(modifier = Modifier.height(2.dp))
-                    Text(
-                        text = task.description,
-                        color = TextSecondary,
-                        fontSize = 11.sp,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
-
-                // Favorite
-                IconButton(onClick = onToggleFavorite, modifier = Modifier.size(32.dp)) {
+                Switch(checked = macro.enabled, onCheckedChange = onToggleEnabled)
+                IconButton(onClick = onToggleFavorite) {
                     Icon(
-                        imageVector = if (task.isFavorite) Icons.Default.Star else Icons.Default.StarBorder,
-                        contentDescription = "Favorite",
-                        tint = if (task.isFavorite) Color(0xFFFBBF24) else TextMuted,
-                        modifier = Modifier.size(20.dp)
+                        if (macro.isFavorite) Icons.Filled.Star else Icons.Filled.StarBorder,
+                        contentDescription = stringResource(if (macro.isFavorite) R.string.cd_unfavorite else R.string.cd_favorite, macro.title),
+                        tint = if (macro.isFavorite) scheme.tertiary else scheme.onSurfaceVariant
                     )
                 }
             }
-
-            Spacer(modifier = Modifier.height(10.dp))
-
-            // Step details & trigger info
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Box(
-                        modifier = Modifier
-                            .background(Glass, RoundedCornerShape(6.dp))
-                            .padding(horizontal = 7.dp, vertical = 2.dp)
-                    ) {
-                        Text(
-                            text = "${task.steps.size} ${if (task.steps.size == 1) "step" else "steps"}",
-                            color = TextMuted,
-                            fontSize = 10.sp,
-                            fontWeight = FontWeight.SemiBold
-                        )
-                    }
-
-                    Spacer(modifier = Modifier.width(6.dp))
-
-                    if (task.triggerPhrase.isNotBlank()) {
-                        Box(
-                            modifier = Modifier
-                                .background(BrandCyan.copy(alpha = 0.15f), RoundedCornerShape(6.dp))
-                                .padding(horizontal = 7.dp, vertical = 2.dp)
-                        ) {
-                            Text(
-                                text = "“${task.triggerPhrase}”",
-                                color = BrandCyan,
-                                fontSize = 10.sp,
-                                fontWeight = FontWeight.Medium
-                            )
-                        }
-                    }
+            Spacer(Modifier.size(Spacing.s))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Row(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(Spacing.xs), verticalAlignment = Alignment.CenterVertically) {
+                    if (macro.action is Action.Replay) Badge(pluralSteps(macro.stepCount))
+                    if (macro.action is Action.HandleCall) Badge("📞 AI Call", container = scheme.secondaryContainer, content = scheme.onSecondaryContainer)
+                    Badge(macro.triggerSummary(), container = scheme.tertiaryContainer, content = scheme.onTertiaryContainer, modifier = Modifier.weight(1f, fill = false))
                 }
-
-                // Action buttons
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    IconButton(
-                        onClick = onDelete,
-                        modifier = Modifier.size(30.dp)
-                    ) {
-                        Icon(Icons.Default.DeleteOutline, contentDescription = "Delete", tint = TextMuted, modifier = Modifier.size(16.dp))
+                IconButton(onClick = onDelete) {
+                    Icon(Icons.Outlined.DeleteOutline, contentDescription = stringResource(R.string.cd_delete_automation, macro.title))
+                }
+                if (macro.action is Action.Replay) {
+                    Button(onClick = onRun, enabled = !anyRunning) {
+                        if (isRunning) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                        else Icon(Icons.Filled.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(Spacing.xs))
+                        Text(stringResource(R.string.action_run))
                     }
-
-                    Spacer(modifier = Modifier.width(4.dp))
-
-                    Button(
-                        onClick = onRun,
-                        enabled = !isCurrentlyRunning,
-                        colors = ButtonDefaults.buttonColors(containerColor = GreenActive),
-                        shape = RoundedCornerShape(12.dp),
-                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
-                        modifier = Modifier.height(30.dp)
-                    ) {
-                        Icon(Icons.Default.PlayArrow, contentDescription = null, tint = BgDark, modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.width(2.dp))
-                        Text("RUN", color = BgDark, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                    }
+                } else if (macro.action is Action.HandleCall) {
+                    Badge("Auto-answers", container = scheme.surfaceContainerHigh, content = scheme.onSurfaceVariant)
                 }
             }
         }
@@ -372,251 +284,170 @@ fun AutomationCard(
 }
 
 @Composable
+private fun pluralSteps(n: Int): String = pluralStringResource(R.plurals.automation_steps, n, n)
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
 fun CreateAutomationDialog(
+    assistantName: String,
     onDismiss: () -> Unit,
-    onSave: (AutomationTask) -> Unit,
+    onSave: (Macro) -> Unit,
     onRecordWithAi: (instruction: String) -> Unit
 ) {
-    var mode by remember { mutableStateOf("ai") } // "ai" or "manual"
-    var aiInstruction by remember { mutableStateOf("") }
-    var title by remember { mutableStateOf("") }
-    var description by remember { mutableStateOf("") }
-    var trigger by remember { mutableStateOf("") }
-    var selectedActionType by remember { mutableStateOf("alarm") } // alarm, youtube, app
-    var customAppName by remember { mutableStateOf("") }
+    var aiMode by rememberSaveable { mutableStateOf(true) }
+    var aiInstruction by rememberSaveable { mutableStateOf("") }
+    var title by rememberSaveable { mutableStateOf("") }
+    var trigger by rememberSaveable { mutableStateOf("") }
+    var actionType by rememberSaveable { mutableStateOf("alarm") } // alarm, youtube, app, call
+    var customAppName by rememberSaveable { mutableStateOf("") }
+    var callerFilter by rememberSaveable { mutableStateOf("") }
+    var callGoal by rememberSaveable { mutableStateOf("") }
+    var callDiscloseAi by rememberSaveable { mutableStateOf(true) }
 
-    Dialog(onDismissRequest = onDismiss) {
-        Surface(
-            shape = RoundedCornerShape(22.dp),
-            color = SurfaceDark,
-            border = androidx.compose.foundation.BorderStroke(1.dp, GlassBorder),
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Column(modifier = Modifier.padding(20.dp)) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text("New Automation", color = TextPrimary, fontSize = 18.sp, fontWeight = FontWeight.Bold)
-                    IconButton(onClick = onDismiss, modifier = Modifier.size(28.dp)) {
-                        Icon(Icons.Default.Close, contentDescription = "Close", tint = TextMuted)
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        icon = { Icon(Icons.Outlined.AutoAwesome, contentDescription = null) },
+        title = { Text(stringResource(R.string.automation_new_title)) },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(Spacing.s)) {
+                SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+                    SegmentedButton(selected = aiMode, onClick = { aiMode = true }, shape = SegmentedButtonDefaults.itemShape(0, 2)) {
+                        Text(stringResource(R.string.automation_mode_ai))
+                    }
+                    SegmentedButton(selected = !aiMode, onClick = { aiMode = false }, shape = SegmentedButtonDefaults.itemShape(1, 2)) {
+                        Text(stringResource(R.string.automation_mode_manual))
                     }
                 }
-
-                Spacer(modifier = Modifier.height(10.dp))
-
-                // Mode Selector
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(SurfaceCard)
-                        .padding(3.dp),
-                    horizontalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .weight(1f)
-                            .clip(RoundedCornerShape(10.dp))
-                            .background(if (mode == "ai") CyanAccent.copy(alpha = 0.22f) else Color.Transparent)
-                            .border(if (mode == "ai") 1.dp else 0.dp, if (mode == "ai") CyanAccent else Color.Transparent, RoundedCornerShape(10.dp))
-                            .clickable { mode = "ai" }
-                            .padding(vertical = 8.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text("✨ AI Auto-Record", color = if (mode == "ai") CyanAccent else TextSecondary, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                    }
-
-                    Box(
-                        modifier = Modifier
-                            .weight(1f)
-                            .clip(RoundedCornerShape(10.dp))
-                            .background(if (mode == "manual") BrandViolet.copy(alpha = 0.22f) else Color.Transparent)
-                            .border(if (mode == "manual") 1.dp else 0.dp, if (mode == "manual") BrandViolet else Color.Transparent, RoundedCornerShape(10.dp))
-                            .clickable { mode = "manual" }
-                            .padding(vertical = 8.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text("🛠️ Manual Shortcut", color = if (mode == "manual") TextPrimary else TextSecondary, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(14.dp))
-
-                if (mode == "ai") {
-                    // ---- AI AUTO-RECORD: Single Instruction Mode ----
-                    Text(
-                        "Tell Shiv what to do once. AI will execute the steps live, record them, and save them for instant 1-tap runs in the future!",
-                        color = TextSecondary,
-                        fontSize = 12.sp,
-                        lineHeight = 16.sp
-                    )
-                    Spacer(modifier = Modifier.height(12.dp))
-
+                if (aiMode) {
+                    Text(stringResource(R.string.automation_ai_desc, assistantName), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     OutlinedTextField(
                         value = aiInstruction,
                         onValueChange = { aiInstruction = it },
-                        label = { Text("Task Instruction (Prompt)", color = TextSecondary) },
-                        placeholder = { Text("e.g. YouTube par Lofi chalao\nya 5:30 ka alarm lagao", color = TextMuted) },
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(12.dp),
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedTextColor = TextPrimary, unfocusedTextColor = TextPrimary,
-                            focusedBorderColor = CyanAccent, unfocusedBorderColor = GlassBorder,
-                            focusedContainerColor = SurfaceCard, unfocusedContainerColor = SurfaceCard
-                        ),
-                        minLines = 3,
-                        maxLines = 4
+                        label = { Text(stringResource(R.string.automation_instruction)) },
+                        placeholder = { Text("YouTube par Lofi chalao") },
+                        minLines = 3, maxLines = 5,
+                        modifier = Modifier.fillMaxWidth()
                     )
-
-                    Spacer(modifier = Modifier.height(18.dp))
-
-                    Button(
-                        onClick = {
-                            if (aiInstruction.isNotBlank()) {
-                                onRecordWithAi(aiInstruction.trim())
-                            }
-                        },
-                        enabled = aiInstruction.isNotBlank(),
-                        colors = ButtonDefaults.buttonColors(containerColor = CyanAccent),
-                        shape = RoundedCornerShape(14.dp),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(46.dp)
-                    ) {
-                        Icon(Icons.Default.Bolt, contentDescription = null, tint = BgDark, modifier = Modifier.size(18.dp))
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text("Let AI Do It & Record Steps", color = BgDark, fontWeight = FontWeight.Bold, fontSize = 13.5.sp)
-                    }
                 } else {
-                    // ---- MANUAL TEMPLATE MODE ----
-                    OutlinedTextField(
-                        value = title,
-                        onValueChange = { title = it },
-                        label = { Text("Task Title", color = TextSecondary) },
-                        placeholder = { Text("e.g. Set Night Alarm", color = TextMuted) },
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(12.dp),
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedTextColor = TextPrimary, unfocusedTextColor = TextPrimary,
-                            focusedBorderColor = CyanAccent, unfocusedBorderColor = GlassBorder,
-                            focusedContainerColor = SurfaceCard, unfocusedContainerColor = SurfaceCard
-                        ),
-                        singleLine = true
+                    Text(stringResource(R.string.automation_action), style = MaterialTheme.typography.labelLarge)
+                    val types = listOf(
+                        "alarm" to stringResource(R.string.automation_action_alarm),
+                        "youtube" to stringResource(R.string.automation_action_youtube),
+                        "app" to stringResource(R.string.automation_action_app),
+                        "call" to stringResource(R.string.automation_action_call)
                     )
-
-                    Spacer(modifier = Modifier.height(8.dp))
-
-                    OutlinedTextField(
-                        value = trigger,
-                        onValueChange = { trigger = it },
-                        label = { Text("Voice Trigger", color = TextSecondary) },
-                        placeholder = { Text("e.g. Raat ka alarm", color = TextMuted) },
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(12.dp),
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedTextColor = TextPrimary, unfocusedTextColor = TextPrimary,
-                            focusedBorderColor = CyanAccent, unfocusedBorderColor = GlassBorder,
-                            focusedContainerColor = SurfaceCard, unfocusedContainerColor = SurfaceCard
-                        ),
-                        singleLine = true
-                    )
-
-                    Spacer(modifier = Modifier.height(10.dp))
-
-                    Text("Action Type", color = TextPrimary, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
-                    Spacer(modifier = Modifier.height(6.dp))
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        listOf("alarm" to "Alarm", "youtube" to "YouTube", "app" to "Open App").forEach { (type, label) ->
-                            val selected = selectedActionType == type
-                            Box(
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .clip(RoundedCornerShape(10.dp))
-                                    .background(if (selected) CyanAccent.copy(alpha = 0.2f) else SurfaceCard)
-                                    .border(1.dp, if (selected) CyanAccent else GlassBorder, RoundedCornerShape(10.dp))
-                                    .clickable { selectedActionType = type }
-                                    .padding(vertical = 8.dp),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Text(label, color = if (selected) CyanAccent else TextSecondary, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+                        types.forEachIndexed { i, (type, label) ->
+                            SegmentedButton(selected = actionType == type, onClick = { actionType = type }, shape = SegmentedButtonDefaults.itemShape(i, types.size)) {
+                                Text(label, maxLines = 1)
                             }
                         }
                     }
-
-                    if (selectedActionType == "app") {
-                        Spacer(modifier = Modifier.height(8.dp))
+                    if (actionType == "call") {
                         OutlinedTextField(
-                            value = customAppName,
-                            onValueChange = { customAppName = it },
-                            label = { Text("App Name", color = TextSecondary) },
-                            placeholder = { Text("e.g. WhatsApp, Camera", color = TextMuted) },
-                            modifier = Modifier.fillMaxWidth(),
-                            shape = RoundedCornerShape(12.dp),
-                            colors = OutlinedTextFieldDefaults.colors(
-                                focusedTextColor = TextPrimary, unfocusedTextColor = TextPrimary,
-                                focusedBorderColor = CyanAccent, unfocusedBorderColor = GlassBorder,
-                                focusedContainerColor = SurfaceCard, unfocusedContainerColor = SurfaceCard
-                            ),
-                            singleLine = true
+                            value = title, onValueChange = { title = it },
+                            label = { Text(stringResource(R.string.automation_task_title)) },
+                            placeholder = { Text("e.g. Screen unknown calls") },
+                            singleLine = true, modifier = Modifier.fillMaxWidth()
                         )
+                        OutlinedTextField(
+                            value = callerFilter, onValueChange = { callerFilter = it },
+                            label = { Text(stringResource(R.string.automation_call_caller)) },
+                            placeholder = { Text(stringResource(R.string.automation_call_caller_hint)) },
+                            singleLine = true, modifier = Modifier.fillMaxWidth()
+                        )
+                        OutlinedTextField(
+                            value = callGoal, onValueChange = { callGoal = it },
+                            label = { Text(stringResource(R.string.automation_call_goal)) },
+                            placeholder = { Text(stringResource(R.string.automation_call_goal_hint)) },
+                            minLines = 2, maxLines = 4, modifier = Modifier.fillMaxWidth()
+                        )
+                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                            Text(stringResource(R.string.automation_call_disclose), style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+                            Switch(checked = callDiscloseAi, onCheckedChange = { callDiscloseAi = it })
+                        }
+                    } else {
+                        OutlinedTextField(
+                            value = title, onValueChange = { title = it },
+                            label = { Text(stringResource(R.string.automation_task_title)) },
+                            placeholder = { Text(stringResource(R.string.automation_task_title_hint)) },
+                            singleLine = true, modifier = Modifier.fillMaxWidth()
+                        )
+                        OutlinedTextField(
+                            value = trigger, onValueChange = { trigger = it },
+                            label = { Text(stringResource(R.string.automation_trigger)) },
+                            placeholder = { Text("Raat ka alarm") },
+                            singleLine = true, modifier = Modifier.fillMaxWidth()
+                        )
+                        if (actionType == "app") {
+                            OutlinedTextField(
+                                value = customAppName, onValueChange = { customAppName = it },
+                                label = { Text(stringResource(R.string.automation_app_name)) },
+                                placeholder = { Text("WhatsApp") },
+                                singleLine = true, modifier = Modifier.fillMaxWidth()
+                            )
+                        }
                     }
-
-                    Spacer(modifier = Modifier.height(16.dp))
-
-                    Button(
-                        onClick = {
-                            if (title.isBlank()) return@Button
-                            val steps = when (selectedActionType) {
+                }
+            }
+        },
+        confirmButton = {
+            if (aiMode) {
+                Button(onClick = { onRecordWithAi(aiInstruction.trim()) }, enabled = aiInstruction.isNotBlank()) {
+                    Text(stringResource(R.string.automation_do_and_record))
+                }
+            } else {
+                val canSave = if (actionType == "call") callGoal.isNotBlank() else title.isNotBlank()
+                Button(
+                    enabled = canSave,
+                    onClick = {
+                        if (actionType == "call") {
+                            val filter = callerFilter.trim().takeIf { it.isNotBlank() }
+                            val goal = callGoal.trim()
+                            val finalTitle = title.trim().ifBlank {
+                                if (filter == null) "Screen all incoming calls" else "Call agent for $filter"
+                            }
+                            onSave(
+                                Macro(
+                                    title = finalTitle,
+                                    description = "Answers matching calls and conducts AI conversation",
+                                    triggers = listOf(Trigger.IncomingCall(contactFilter = filter, contactLabel = filter)),
+                                    instruction = goal,
+                                    action = Action.HandleCall(goal = goal, discloseAi = callDiscloseAi)
+                                )
+                            )
+                        } else {
+                            val app = customAppName.trim().ifBlank { "Chrome" }
+                            val steps = when (actionType) {
                                 "alarm" -> listOf(
-                                    AutomationStep(
+                                    RecordedStep(
                                         toolName = "launch_intent",
                                         args = mapOf(
                                             "action" to "android.intent.action.SET_ALARM",
-                                            "extras" to mapOf("android.intent.extra.alarm.HOUR" to 6, "android.intent.extra.alarm.MINUTES" to 0, "android.intent.extra.alarm.SKIP_UI" to true)
+                                            // launch_intent takes extras as JSON text
+                                            "extras" to """{"android.intent.extra.alarm.HOUR":6,"android.intent.extra.alarm.MINUTES":0,"android.intent.extra.alarm.SKIP_UI":true}"""
                                         ),
                                         description = "Set 6:00 AM Alarm"
                                     )
                                 )
-                                "youtube" -> listOf(
-                                    AutomationStep(
-                                        toolName = "open_app",
-                                        args = mapOf("app_name" to "YouTube"),
-                                        description = "Open YouTube"
-                                    )
-                                )
-                                else -> listOf(
-                                    AutomationStep(
-                                        toolName = "open_app",
-                                        args = mapOf("app_name" to customAppName.ifBlank { "Chrome" }),
-                                        description = "Open ${customAppName.ifBlank { "Chrome" }}"
-                                    )
-                                )
+                                "youtube" -> listOf(RecordedStep(toolName = "open_app", args = mapOf("app_name" to "YouTube"), description = "Open YouTube"))
+                                else -> listOf(RecordedStep(toolName = "open_app", args = mapOf("app_name" to app), description = "Open $app"))
                             }
+                            val trig = trigger.trim().takeIf { it.isNotBlank() }
                             onSave(
-                                AutomationTask(
-                                    title = title,
-                                    description = description.ifBlank { "Manual automation shortcut" },
-                                    triggerPhrase = trigger,
-                                    iconName = if (selectedActionType == "alarm") "alarm" else "bolt",
-                                    steps = steps
+                                Macro(
+                                    title = title.trim(),
+                                    description = "Manual automation shortcut",
+                                    triggers = listOf(trig?.let { Trigger.Phrase(it) } ?: Trigger.Manual),
+                                    instruction = title.trim(),
+                                    action = Action.Replay(steps)
                                 )
                             )
-                        },
-                        enabled = title.isNotBlank(),
-                        colors = ButtonDefaults.buttonColors(containerColor = CyanAccent),
-                        shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text("Save Shortcut", color = BgDark, fontWeight = FontWeight.Bold)
+                        }
                     }
-                }
+                ) { Text(stringResource(R.string.action_save)) }
             }
-        }
-    }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.action_cancel)) } }
+    )
 }
