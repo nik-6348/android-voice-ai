@@ -136,6 +136,7 @@ fun SettingsTab(viewModel: VoiceAssistantViewModel) {
     val autoSleep by viewModel.autoSleep.collectAsState()
     val autoMute by viewModel.autoMute.collectAsState()
     val fastActionMode by viewModel.fastActionMode.collectAsState()
+    val silentAutomations by viewModel.silentAutomations.collectAsState()
     val policy by viewModel.policy.collectAsState()
     val isAgentEnabled by viewModel.isAgentEnabled.collectAsState()
     val otlpEndpoint by Tracer.otlpEndpoint.collectAsState()
@@ -259,6 +260,10 @@ fun SettingsTab(viewModel: VoiceAssistantViewModel) {
                     SwitchRow(
                         "Fast Action Mode", fastActionMode, { viewModel.setFastActionMode(it) },
                         description = "Act silently — no step-by-step narration while working; speaks only the final result. Actions also fire without waiting for speech to finish."
+                    )
+                    SwitchRow(
+                        "Silent Automations", silentAutomations, { viewModel.setSilentAutomations(it) },
+                        description = "Background automations (notifications, broadcasts, conditions) run without activating the mic or speaking a reply — they just act and finish quietly."
                     )
                 }
             }

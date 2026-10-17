@@ -284,6 +284,15 @@ class VoiceSession private constructor(val context: Context) {
         prefs.edit().putBoolean("fast_action_mode", enabled).apply()
     }
 
+    // Silent automations: background macros (notification, broadcast, condition) run without opening
+    // the mic or speaking any reply — they just act and finish.
+    private val _silentAutomations = MutableStateFlow(prefs.getBoolean("silent_automations", true))
+    val silentAutomations: StateFlow<Boolean> = _silentAutomations.asStateFlow()
+    fun setSilentAutomations(enabled: Boolean) {
+        _silentAutomations.value = enabled
+        prefs.edit().putBoolean("silent_automations", enabled).apply()
+    }
+
     /** Whether a conversation can start: the key the chosen connection needs is saved. */
     fun hasCredentials(): Boolean = if (_connectionMode.value == MODE_DIRECT) _hasGeminiKey.value else _apiKey.value.isNotBlank()
 
@@ -941,7 +950,10 @@ class VoiceSession private constructor(val context: Context) {
         // if the user had said it themself (this hand-off is why MacroDispatch doesn't depend on
         // VoiceSession directly — a background listener can't otherwise reach it)
         com.nik.voiceassistant.data.macro.MacroDispatch.onAgentGoalRequested = { instruction ->
-            scope.launch { sendText(instruction) }
+            scope.launch {
+                if (_silentAutomations.value) sendTextSilent(instruction)
+                else sendText(instruction)
+            }
         }
         com.nik.voiceassistant.data.macro.MacroDispatch.onCallGoalRequested = { macro ->
             val action = macro.action as? com.nik.voiceassistant.data.macro.Action.HandleCall
@@ -1018,7 +1030,19 @@ class VoiceSession private constructor(val context: Context) {
      * Starts a conversation. preroll: mic audio from just before (the "Hi Nik, …" the wake word
      * detector heard), sent first so a request spoken in the same breath isn't lost.
      */
-    fun start(preroll: ByteArray? = null) {
+    /** Send a macro instruction to the AI without opening the mic. Mic stays muted throughout. */
+    fun sendTextSilent(text: String) {
+        val t = text.trim()
+        if (t.isEmpty()) return
+        if (_isRecording.value && _connectionStatus.value == ConnectionStatus.CONNECTED) {
+            webSocketClient.sendText(t)
+        } else {
+            pendingText = t
+            start(keepMicMuted = true)
+        }
+    }
+
+    fun start(preroll: ByteArray? = null, keepMicMuted: Boolean = false) {
         scope.launch {
             if (_isRecording.value) return@launch
             if (callAgentSession.isActive) {
@@ -1042,7 +1066,7 @@ class VoiceSession private constructor(val context: Context) {
                 return@launch
             }
             webSocketClient = if (direct) directClient else relayClient
-            Log.i(TAG, "Conversation starting${if (preroll != null) " (wake word, ${preroll.size} bytes preroll)" else ""}")
+            Log.i(TAG, "Conversation starting${if (preroll != null) " (wake word, ${preroll.size} bytes preroll)" else ""}${if (keepMicMuted) " [silent macro]" else ""}")
             _connectionStatus.value = ConnectionStatus.CONNECTING
             endRequested = false
             touch()
@@ -1050,7 +1074,7 @@ class VoiceSession private constructor(val context: Context) {
             toolExecutor.resetPlan()
             _liveReply.value = ""
             replyTurnOpen = false
-            openMic()
+            if (!keepMicMuted) openMic()
             // The service keeps the mic and the process alive while the screen is off or the app is closed
             VoiceAssistantService.startConversation(context)
             if (!callAudio.enter() && inPhoneCall()) {

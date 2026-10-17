@@ -64,6 +64,8 @@ class VoiceAssistantViewModel(application: Application) : AndroidViewModel(appli
     val visionFrames: StateFlow<Boolean> = session.visionFrames
     val fastActionMode: StateFlow<Boolean> = session.fastActionMode
     fun setFastActionMode(enabled: Boolean) = session.setFastActionMode(enabled)
+    val silentAutomations: StateFlow<Boolean> = session.silentAutomations
+    fun setSilentAutomations(enabled: Boolean) = session.setSilentAutomations(enabled)
     fun hasCredentials(): Boolean = session.hasCredentials()
     fun clearKey(name: String) = session.clearKey(name)
     val isWakeWordEnabled: StateFlow<Boolean> = session.isWakeWordEnabled
