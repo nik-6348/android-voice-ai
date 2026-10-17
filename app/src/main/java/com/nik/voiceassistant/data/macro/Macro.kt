@@ -90,6 +90,34 @@ sealed class Trigger {
     data class Webhook(val path: String, val secret: String? = null, val label: String = "") : Trigger() {
         override fun describe() = "Webhook /${path.trimStart('/')}" + if (label.isNotBlank()) " ($label)" else ""
     }
+
+    /**
+     * Any Android broadcast intent. GenericBroadcastMonitor registers dynamically for every unique
+     * action found across all macros — no new monitor code needed for any new event.
+     * [extras]: key-value pairs that must ALL match the intent's extras (blank value = just key present).
+     * [label]: human-readable description shown in the UI.
+     */
+    data class BroadcastEvent(
+        val action: String,
+        val extras: Map<String, String> = emptyMap(),
+        val label: String = ""
+    ) : Trigger() {
+        override fun describe() = label.ifBlank { "System event: ${action.substringAfterLast('.')}" }
+    }
+
+    /**
+     * The AI periodically wakes up, evaluates [checkInstruction] using its tools (screen, apps, web),
+     * and calls report_condition(met=true/false). If met=true the macro's action instruction runs.
+     * [intervalMinutes]: how often to check. [stopOnMet]: disable this trigger after first fire.
+     */
+    data class Condition(
+        val checkInstruction: String,
+        val intervalMinutes: Int = 10,
+        val stopOnMet: Boolean = true,
+        val label: String = ""
+    ) : Trigger() {
+        override fun describe() = label.ifBlank { "When: ${checkInstruction.take(60)}" }
+    }
 }
 
 /** Extra conditions, all of which must hold for the trigger to actually run the macro. */

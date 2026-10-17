@@ -38,6 +38,8 @@ object MacroGson {
                 is Trigger.WifiConnected -> "wifi_connected"
                 Trigger.BootCompleted -> "boot"
                 is Trigger.Webhook -> "webhook"
+                is Trigger.BroadcastEvent -> "broadcast_event"
+                is Trigger.Condition -> "condition"
             }
             val obj = ctx.serialize(src, src.javaClass).asJsonObject
             obj.addProperty("type", type)
@@ -58,6 +60,8 @@ object MacroGson {
                 "wifi_connected" -> ctx.deserialize(obj, Trigger.WifiConnected::class.java)
                 "boot" -> Trigger.BootCompleted
                 "webhook" -> ctx.deserialize(obj, Trigger.Webhook::class.java)
+                "broadcast_event" -> ctx.deserialize(obj, Trigger.BroadcastEvent::class.java)
+                "condition" -> ctx.deserialize(obj, Trigger.Condition::class.java)
                 else -> Trigger.Manual
             }
         }
