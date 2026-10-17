@@ -274,6 +274,12 @@ class DeviceToolExecutor(
             required = listOf("enabled" to param("boolean", "true = on, false = off"))
         ),
         function(
+            "get_time",
+            "Returns the phone's current local date, time, day of week, and timezone — live from the device. " +
+                "Call this whenever the user asks what time or date it is, or when you need the current time for a calculation. " +
+                "Never guess or use the system-prompt time for a direct time question."
+        ),
+        function(
             "schedule_followup",
             "Schedules yourself to wake up later and run a fresh instruction on this device, even if the app isn't open " +
                 "then (e.g. the conversation ends before the wait is over). Use it when something needs time before it can " +
@@ -596,6 +602,15 @@ class DeviceToolExecutor(
                     }
                 }
 
+                "get_time" -> {
+                    val tz = java.util.TimeZone.getDefault()
+                    val now = java.util.Date()
+                    val date = java.text.SimpleDateFormat("EEEE, d MMMM yyyy", java.util.Locale.ENGLISH).also { it.timeZone = tz }.format(now)
+                    val time = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.ENGLISH).also { it.timeZone = tz }.format(now)
+                    val tzName = tz.getDisplayName(false, java.util.TimeZone.SHORT)
+                    mapOf("date" to date, "time" to time, "timezone" to tzName, "epoch_ms" to now.time)
+                }
+
                 "register_webhook" -> {
                     val path = str("path")?.trim()?.trimStart('/')?.lowercase()
                     val instruction = str("instruction")?.trim()
@@ -756,7 +771,9 @@ class DeviceToolExecutor(
             append("language ${java.util.Locale.getDefault().toLanguageTag()}, ")
             launcher?.let { append("home app $it, ") }
             defaultBrowser()?.let { append("browser $it, ") }
-            append("time ${java.text.SimpleDateFormat("EEE d MMM yyyy HH:mm", java.util.Locale.ENGLISH).format(java.util.Date())}")
+            val tz = java.util.TimeZone.getDefault()
+            val sdf = java.text.SimpleDateFormat("EEE d MMM yyyy HH:mm:ss", java.util.Locale.ENGLISH).also { it.timeZone = tz }
+            append("time ${sdf.format(java.util.Date())} ${tz.getDisplayName(false, java.util.TimeZone.SHORT)}")
         }
     }
 
