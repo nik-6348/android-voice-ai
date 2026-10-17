@@ -299,6 +299,72 @@ class DeviceToolExecutor(
                 "label" to param("string", "A short human-readable name, e.g. 'Pump done'"),
                 "secret" to param("string", "Optional shared-secret token. If set, callers must pass it as X-Webhook-Token header or ?token= query param.")
             )
+        ),
+        function(
+            "create_automation",
+            "Creates a new automation macro. FIRST understand fully what the user wants; ask one clarifying " +
+                "question at a time if anything is unclear (which app? which contact? which time?). Once clear, call this. " +
+                "trigger_type options: phrase (voice command), scheduled (time/day), broadcast_event (any Android system " +
+                "event — you know the intent action strings), condition (you check periodically using tools), webhook " +
+                "(HTTP call from same network), notification, incoming_call, missed_call, charger_connected, " +
+                "charger_disconnected, wifi_connected, boot, manual.",
+            required = listOf(
+                "title" to param("string", "Short human-readable name, e.g. 'Headphones → Spotify'"),
+                "trigger_type" to param("string", "phrase|scheduled|broadcast_event|condition|webhook|notification|incoming_call|missed_call|charger_connected|charger_disconnected|wifi_connected|boot|manual"),
+                "instruction" to param("string", "What to do when triggered — a complete AI instruction as if the user said it")
+            ),
+            optional = listOf(
+                "trigger_phrase" to param("string", "For phrase: the voice command phrase"),
+                "scheduled_hour" to param("integer", "For scheduled: hour 0-23"),
+                "scheduled_minute" to param("integer", "For scheduled: minute 0-59"),
+                "scheduled_days" to param("string", "For scheduled: comma-separated Calendar day numbers 1=Sun..7=Sat, blank=every day"),
+                "broadcast_action" to param("string", "For broadcast_event: Android intent action string e.g. android.intent.action.HEADSET_PLUG"),
+                "broadcast_extras" to param("string", "For broadcast_event: JSON {\"key\":\"value\"} pairs that must match intent extras. Blank value = key must exist. E.g. {\"state\":\"1\"} for headphones plugged in."),
+                "broadcast_label" to param("string", "For broadcast_event: human-readable trigger description"),
+                "condition_instruction" to param("string", "For condition: what to check each interval using tools (screen, apps, web)"),
+                "condition_interval_minutes" to param("integer", "For condition: check every N minutes (default 10)"),
+                "condition_stop_on_met" to param("boolean", "For condition: disable after first fire? (default true)"),
+                "condition_label" to param("string", "For condition: human-readable description"),
+                "webhook_path" to param("string", "For webhook: URL path (no slashes)"),
+                "webhook_secret" to param("string", "For webhook: optional token"),
+                "notification_package" to param("string", "For notification: app package name"),
+                "notification_app_label" to param("string", "For notification: app display name"),
+                "notification_title_contains" to param("string", "For notification: title must contain this"),
+                "notification_text_contains" to param("string", "For notification: body must contain this"),
+                "wifi_ssid" to param("string", "For wifi_connected: SSID to match (blank=any)"),
+                "call_contact_filter" to param("string", "For incoming/missed_call: phone number or 'unknown'"),
+                "call_contact_label" to param("string", "For incoming/missed_call: contact display name")
+            )
+        ),
+        function(
+            "list_automations",
+            "Lists all saved automations with their id, title, trigger summary, and enabled state. " +
+                "Use this before edit_automation or delete_automation to get the id."
+        ),
+        function(
+            "edit_automation",
+            "Edit an existing automation's title, instruction, or on/off state. For bigger changes " +
+                "(trigger type), delete and recreate with create_automation.",
+            required = listOf("id" to param("string", "Macro id from list_automations")),
+            optional = listOf(
+                "title" to param("string", "New title"),
+                "instruction" to param("string", "New instruction — what the AI should do when triggered"),
+                "enabled" to param("boolean", "true = on, false = off")
+            )
+        ),
+        function(
+            "delete_automation",
+            "Permanently delete an automation. Confirm with the user before calling this.",
+            required = listOf("id" to param("string", "Macro id from list_automations"))
+        ),
+        function(
+            "report_condition",
+            "INTERNAL: called only during a condition-check turn. Reports whether the condition is currently met. " +
+                "If met=true, the macro's action runs next. If met=false, the next check is already scheduled — end the turn silently.",
+            required = listOf(
+                "macro_id" to param("string", "The macro_id given in the condition check instruction"),
+                "met" to param("boolean", "true = condition IS met now, false = not yet")
+            )
         )
     )
 
@@ -542,6 +608,73 @@ class DeviceToolExecutor(
                     }
                 }
 
+                "create_automation" -> {
+                    val title = str("title")?.trim()
+                    val triggerType = str("trigger_type")?.trim()
+                    val instruction = str("instruction")?.trim()
+                    when {
+                        title.isNullOrBlank() -> mapOf("error" to "Give a title")
+                        triggerType.isNullOrBlank() -> mapOf("error" to "Give a trigger_type")
+                        instruction.isNullOrBlank() -> mapOf("error" to "Give an instruction")
+                        else -> createAutomation(title, triggerType, instruction, args)
+                    }
+                }
+
+                "list_automations" -> {
+                    val macros = com.nik.voiceassistant.data.macro.MacroStore.getAll(context)
+                    mapOf("automations" to macros.map { m ->
+                        mapOf("id" to m.id, "title" to m.title, "trigger" to m.triggerSummary(),
+                              "enabled" to m.enabled, "run_count" to m.runCount)
+                    }, "count" to macros.size)
+                }
+
+                "edit_automation" -> {
+                    val id = str("id")?.trim()
+                    if (id.isNullOrBlank()) return mapOf("error" to "Give the automation id from list_automations")
+                    val macros = com.nik.voiceassistant.data.macro.MacroStore.getAll(context)
+                    if (macros.none { it.id == id }) return mapOf("error" to "Automation not found. Use list_automations to get the id.")
+                    com.nik.voiceassistant.data.macro.MacroStore.update(context, id) { m ->
+                        m.copy(
+                            title = str("title")?.trim()?.ifBlank { null } ?: m.title,
+                            instruction = str("instruction")?.trim()?.ifBlank { null } ?: m.instruction,
+                            enabled = bool("enabled") ?: m.enabled
+                        )
+                    }
+                    val updated = com.nik.voiceassistant.data.macro.MacroStore.getAll(context).firstOrNull { it.id == id }
+                    com.nik.voiceassistant.service.GenericBroadcastMonitor.refresh(context) { null }
+                    mapOf("success" to true, "title" to (updated?.title ?: ""), "enabled" to (updated?.enabled ?: true))
+                }
+
+                "delete_automation" -> {
+                    val id = str("id")?.trim()
+                    if (id.isNullOrBlank()) return mapOf("error" to "Give the automation id")
+                    com.nik.voiceassistant.data.macro.MacroStore.delete(context, id)
+                    com.nik.voiceassistant.service.ConditionPollingEngine.cancel(context, id)
+                    com.nik.voiceassistant.service.ScheduledTriggerMonitor.cancel(context, id)
+                    com.nik.voiceassistant.service.GenericBroadcastMonitor.refresh(context) { null }
+                    mapOf("success" to true)
+                }
+
+                "report_condition" -> {
+                    val macroId = str("macro_id")?.trim()
+                    val met = bool("met")
+                    when {
+                        macroId.isNullOrBlank() -> mapOf("error" to "Give macro_id")
+                        met == null -> mapOf("error" to "Give met (true/false)")
+                        !met -> mapOf("result" to "not_met", "next" to "Condition not met. End this turn silently — do not speak to the user.")
+                        else -> {
+                            val macro = com.nik.voiceassistant.data.macro.MacroStore.getAll(context).firstOrNull { it.id == macroId }
+                                ?: return mapOf("error" to "Macro $macroId not found")
+                            val trig = macro.triggers.firstOrNull { it is com.nik.voiceassistant.data.macro.Trigger.Condition } as? com.nik.voiceassistant.data.macro.Trigger.Condition
+                            if (trig?.stopOnMet == true) {
+                                com.nik.voiceassistant.data.macro.MacroStore.update(context, macroId) { it.copy(enabled = false) }
+                                com.nik.voiceassistant.service.ConditionPollingEngine.cancel(context, macroId)
+                            }
+                            mapOf("result" to "met", "next" to "Condition IS MET. Now carry out this action for the user: ${macro.instruction}")
+                        }
+                    }
+                }
+
                 else -> mapOf("error" to "Unsupported tool '$toolName'")
             }
         } catch (e: Exception) {
@@ -706,6 +839,79 @@ class DeviceToolExecutor(
             "scheduled_in_minutes" to minutes,
             "next" to "Tell the user briefly that you'll check back in about $minutes minutes, then you can end this turn."
         )
+    }
+
+    private fun createAutomation(title: String, triggerType: String, instruction: String, args: Map<String, Any?>): Map<String, Any?> {
+        fun s(k: String) = args[k]?.toString()?.trim()?.ifBlank { null }
+        fun i(k: String) = args[k]?.toString()?.toIntOrNull()
+        fun b(k: String) = args[k]?.let { it == true || it.toString().equals("true", ignoreCase = true) }
+
+        val trigger: com.nik.voiceassistant.data.macro.Trigger = when (triggerType) {
+            "phrase" -> com.nik.voiceassistant.data.macro.Trigger.Phrase(s("trigger_phrase") ?: title)
+            "scheduled" -> {
+                val h = i("scheduled_hour") ?: return mapOf("error" to "Give scheduled_hour (0-23)")
+                val m = i("scheduled_minute") ?: 0
+                val days = s("scheduled_days")?.split(",")?.mapNotNull { it.trim().toIntOrNull() }?.toSet() ?: emptySet()
+                com.nik.voiceassistant.data.macro.Trigger.Scheduled(h, m, days)
+            }
+            "broadcast_event" -> {
+                val action = s("broadcast_action") ?: return mapOf("error" to "Give broadcast_action (Android intent action string)")
+                val extrasJson = s("broadcast_extras") ?: "{}"
+                val extras: Map<String, String> = try {
+                    @Suppress("UNCHECKED_CAST")
+                    com.google.gson.Gson().fromJson(extrasJson, Map::class.java) as? Map<String, String> ?: emptyMap()
+                } catch (_: Exception) { emptyMap() }
+                com.nik.voiceassistant.data.macro.Trigger.BroadcastEvent(action, extras, s("broadcast_label") ?: "")
+            }
+            "condition" -> {
+                val check = s("condition_instruction") ?: return mapOf("error" to "Give condition_instruction")
+                val interval = i("condition_interval_minutes") ?: 10
+                val stop = b("condition_stop_on_met") ?: true
+                com.nik.voiceassistant.data.macro.Trigger.Condition(check, interval, stop, s("condition_label") ?: "")
+            }
+            "webhook" -> {
+                val path = s("webhook_path") ?: return mapOf("error" to "Give webhook_path")
+                com.nik.voiceassistant.data.macro.Trigger.Webhook(path, s("webhook_secret"))
+            }
+            "notification" -> com.nik.voiceassistant.data.macro.Trigger.NotificationReceived(
+                s("notification_package"), s("notification_app_label"),
+                s("notification_title_contains"), s("notification_text_contains")
+            )
+            "incoming_call" -> com.nik.voiceassistant.data.macro.Trigger.IncomingCall(s("call_contact_filter"), s("call_contact_label"))
+            "missed_call"   -> com.nik.voiceassistant.data.macro.Trigger.MissedCall(s("call_contact_filter"), s("call_contact_label"))
+            "charger_connected"    -> com.nik.voiceassistant.data.macro.Trigger.ChargerConnected
+            "charger_disconnected" -> com.nik.voiceassistant.data.macro.Trigger.ChargerDisconnected
+            "wifi_connected" -> com.nik.voiceassistant.data.macro.Trigger.WifiConnected(s("wifi_ssid"))
+            "boot"   -> com.nik.voiceassistant.data.macro.Trigger.BootCompleted
+            "manual" -> com.nik.voiceassistant.data.macro.Trigger.Manual
+            else -> return mapOf("error" to "Unknown trigger_type '$triggerType'")
+        }
+
+        val macro = com.nik.voiceassistant.data.macro.Macro(
+            title = title,
+            triggers = listOf(trigger),
+            instruction = instruction,
+            action = com.nik.voiceassistant.data.macro.Action.AlwaysAsk
+        )
+        com.nik.voiceassistant.data.macro.MacroStore.save(context, macro)
+
+        // Arm the appropriate engine
+        when (trigger) {
+            is com.nik.voiceassistant.data.macro.Trigger.Scheduled ->
+                com.nik.voiceassistant.service.ScheduledTriggerMonitor.scheduleOne(context, macro)
+            is com.nik.voiceassistant.data.macro.Trigger.Condition ->
+                com.nik.voiceassistant.service.ConditionPollingEngine.scheduleOne(context, macro)
+            is com.nik.voiceassistant.data.macro.Trigger.BroadcastEvent ->
+                com.nik.voiceassistant.service.GenericBroadcastMonitor.refresh(context) { null }
+            is com.nik.voiceassistant.data.macro.Trigger.Webhook -> {
+                val ip = com.nik.voiceassistant.service.WebhookServer.localAddress(context) ?: "PHONE_IP"
+                return mapOf("success" to true, "id" to macro.id, "trigger" to trigger.describe(),
+                    "webhook_url" to "http://$ip:${com.nik.voiceassistant.service.WebhookServer.PORT}/webhook/${trigger.path}")
+            }
+            else -> {}
+        }
+        return mapOf("success" to true, "id" to macro.id, "trigger" to trigger.describe(),
+            "next" to "Automation '${title}' created. Tell the user it's saved and active.")
     }
 
     private fun registerWebhook(path: String, instruction: String, label: String, secret: String?): Map<String, Any?> {
