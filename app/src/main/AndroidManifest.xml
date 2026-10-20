@@ -37,6 +37,8 @@
     <uses-permission android:name="android.permission.CALL_PHONE" />
     <!-- Answer incoming calls directly when a macro matches (Action.HandleCall) -->
     <uses-permission android:name="android.permission.ANSWER_PHONE_CALLS" />
+    <!-- Headless SMS sending: send text messages directly without opening the Messages app -->
+    <uses-permission android:name="android.permission.SEND_SMS" />
 
     <!-- Contacts lookup for "call / message <name>" (find_contact tool), and to name a caller in a
          call-triggered macro ("jab Mummy ka call aaye…") -->

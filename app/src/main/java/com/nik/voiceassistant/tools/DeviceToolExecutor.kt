@@ -209,6 +209,33 @@ class DeviceToolExecutor(
             )
         ),
         function(
+            "send_sms",
+            "Sends a text SMS directly in the background via cellular radio without opening the Messages app or waking the screen. " +
+                "Give the destination phone number (or look it up with find_contact first) and the message text.",
+            required = listOf(
+                "number" to param("string", "Destination phone number, e.g. +919876543210"),
+                "message" to param("string", "Text of the SMS to send")
+            )
+        ),
+        function(
+            "reply_notification",
+            "Instantly replies to an incoming message (WhatsApp, Telegram, Signal, Google Messages, Slack, etc.) headlessly in the " +
+                "background using Android's notification direct reply, with ZERO UI opened and without waking the screen. " +
+                "Use this to answer incoming messages or auto-reply to notifications.",
+            required = listOf(
+                "message" to param("string", "Reply text to send")
+            ),
+            optional = listOf(
+                "sender" to param("string", "Sender name or contact to reply to (e.g. \"Papa\", \"Rahul\"). If omitted, replies to the latest incoming message"),
+                "app" to param("string", "App name or package (e.g. \"WhatsApp\", \"Telegram\", \"Messages\"). If omitted, matches any messaging app")
+            )
+        ),
+        function(
+            "list_recent_messages",
+            "Lists recent incoming messages and notifications that can be replied to headlessly in the background. " +
+                "Returns sender, app, message snippet, and whether direct reply is available."
+        ),
+        function(
             "media_control",
             "Controls whatever is playing (YouTube, Spotify, any player), even in the background or a floating player: " +
                 "pause / play / next / previous / stop. Use it to stop or pause music and videos.",
@@ -502,6 +529,27 @@ class DeviceToolExecutor(
                     val risk = if (ActionGuard.isDialCode(number)) ActionGuard.Risk.DIAL_CODE else ActionGuard.Risk.CALL
                     number?.let { gate(risk, "call_and_talk:${digits(it)}", "Call $it to: $goal", trusted) }
                         ?: callAndTalk(number, goal, maxMinutes)
+                }
+
+                "send_sms" -> {
+                    val number = str("number") ?: return mapOf("error" to "Give destination phone number")
+                    val message = str("message") ?: return mapOf("error" to "Give SMS message text")
+                    val risk = ActionGuard.Risk.SEND
+                    gate(risk, "sms:${digits(number)}", "Send SMS to $number: $message", trusted)
+                        ?: com.nik.voiceassistant.service.DirectSmsManager.sendSms(context, number, message)
+                }
+
+                "reply_notification" -> {
+                    val message = str("message") ?: return mapOf("error" to "Give reply message text")
+                    val sender = str("sender")
+                    val app = str("app")
+                    val risk = ActionGuard.Risk.SEND
+                    gate(risk, "reply:${sender ?: app ?: "msg"}", "Reply '$message' to ${sender ?: app ?: "message"}", trusted)
+                        ?: com.nik.voiceassistant.service.DirectReplyManager.reply(context, app, sender, message)
+                }
+
+                "list_recent_messages" -> {
+                    mapOf("messages" to com.nik.voiceassistant.service.DirectReplyManager.listActiveReplyable())
                 }
 
                 "show_choices" -> {

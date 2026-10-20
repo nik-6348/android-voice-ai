@@ -117,10 +117,13 @@ object MacroRecorder {
         "toggle_flashlight" -> "Toggle flashlight"
         "toggle_bluetooth" -> "Toggle Bluetooth"
         "media_control" -> "Media: ${args["action"] ?: ""}"
+        "send_sms" -> "Send SMS to ${args["number"] ?: "recipient"}"
+        "reply_notification" -> "Reply '${args["message"] ?: ""}'"
         else -> "Run $toolName"
     }
 
     private fun delayFor(toolName: String): Long = when (toolName) {
+        "send_sms", "reply_notification" -> 300L
         "open_app", "launch_intent", "open_website" -> 1600L
         "type_text" -> 1000L
         "tap", "scroll", "swipe" -> 800L

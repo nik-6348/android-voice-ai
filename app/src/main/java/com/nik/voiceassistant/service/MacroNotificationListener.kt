@@ -63,6 +63,9 @@ class MacroNotificationListener : NotificationListenerService() {
 
         Log.d(TAG, "Notification received: pkg=${sbn.packageName} app='$appLabel' title='$title'")
 
+        // Register with DirectReplyManager for headless background replies (WhatsApp, Telegram, etc.)
+        DirectReplyManager.register(applicationContext, sbn, appLabel, title, text)
+
         val matches = MacroEngine.matching(applicationContext) { trigger ->
             trigger is Trigger.NotificationReceived && triggerMatches(trigger, sbn.packageName, appLabel, title, text)
         }
@@ -71,6 +74,7 @@ class MacroNotificationListener : NotificationListenerService() {
         val executor = VoiceSession.get(applicationContext).getToolExecutor()
         val triggerData = buildMap {
             put("app", appLabel)
+            put("package", sbn.packageName)
             if (title.isNotBlank()) put("from", title)
             if (text.isNotBlank()) put("content", text)
         }
@@ -93,5 +97,7 @@ class MacroNotificationListener : NotificationListenerService() {
         return true
     }
 
-    override fun onNotificationRemoved(sbn: StatusBarNotification?) {}
+    override fun onNotificationRemoved(sbn: StatusBarNotification?) {
+        DirectReplyManager.unregister(sbn?.key)
+    }
 }

@@ -32,7 +32,7 @@ class ToolCallRunner(
         private val ACTING = setOf(
             "tap", "long_press", "type_text", "scroll", "swipe", "navigate",
             "open_app", "launch_intent", "open_website", "navigate_back",
-            "unlock_phone", "make_call", "send_sms", "toggle_flashlight",
+            "unlock_phone", "make_call", "send_sms", "reply_notification", "toggle_flashlight",
             "toggle_bluetooth", "media_control", "system_action", "search_settings"
         )
     }

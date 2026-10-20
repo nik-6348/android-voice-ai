@@ -44,6 +44,9 @@ object MacroDispatch {
             appendLine()
             appendLine("--- Trigger context ---")
             triggerData.forEach { (k, v) -> appendLine("$k: $v") }
+            if (triggerData.containsKey("from") || triggerData.containsKey("app")) {
+                appendLine("Tip: To reply to this message headlessly without opening the app or waking the screen, call reply_notification.")
+            }
         }
         when (val action = macro.action) {
             is Action.Replay -> if (action.steps.isNotEmpty()) {
