@@ -3,8 +3,14 @@ package com.nik.voiceassistant.ui.components
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -13,7 +19,9 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.withFrameNanos
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
@@ -23,8 +31,12 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.drawscope.scale
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import com.nik.voiceassistant.R
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.collectLatest
@@ -82,9 +94,8 @@ enum class OrbMode(val animates: Boolean) {
 }
 
 /**
- * The assistant's hero: a soft sphere in the theme's primary → tertiary colours. It swells with the
- * voice, sways while speaking, has a turning arc while connecting or thinking, a ring that follows
- * the user's voice while listening, and goes quiet (no frames at all) when idle.
+ * The assistant's hero: featuring the cyber Trishul logo with reactive audio glow,
+ * pulse wave rings, rotating arcs, and voice amplitude scaling.
  */
 @Composable
 fun VoiceOrb(
@@ -97,54 +108,107 @@ fun VoiceOrb(
     val c1 by animateColorAsState(
         when (mode) {
             OrbMode.ERROR -> scheme.error
-            OrbMode.IDLE, OrbMode.MUTED -> scheme.secondary
-            else -> scheme.primary
+            OrbMode.SPEAKING -> Color(0xFFFFD700) // Gold
+            OrbMode.IDLE, OrbMode.MUTED -> Color(0xFF00E5FF) // Cyber Cyan
+            else -> Color(0xFF00E5FF)
         }, tween(500), label = "orb1"
     )
     val c2 by animateColorAsState(
         when (mode) {
             OrbMode.ERROR -> scheme.errorContainer
-            OrbMode.IDLE, OrbMode.MUTED -> scheme.primary
-            else -> scheme.tertiary
+            OrbMode.SPEAKING -> Color(0xFFFF9100)
+            OrbMode.IDLE, OrbMode.MUTED -> Color(0xFF1C7DFF) // Electric Blue
+            else -> Color(0xFF9B72CB)
         }, tween(500), label = "orb2"
     )
+
+    val lv = level.value
+    val t = clock.value
+    val sway = if (mode == OrbMode.SPEAKING) 0.03f * sin(t * 2.4f) else 0f
+    val scaleFactor = 1f + 0.12f * lv + sway
+
     Box(
-        modifier.drawWithCache {
+        modifier = modifier,
+        contentAlignment = Alignment.Center
+    ) {
+        // Dynamic glowing aura & reactive audio ripples behind the logo
+        Canvas(modifier = Modifier.fillMaxSize()) {
             val r0 = size.minDimension / 2f
-            val baseR = r0 * 0.56f
+            val baseR = r0 * 0.72f
             val c = Offset(size.width / 2f, size.height / 2f)
+
+            // Outer reactive glow
             val halo = Brush.radialGradient(
-                listOf(c1.copy(alpha = 0.30f), c2.copy(alpha = 0.10f), Color.Transparent), center = c, radius = r0
+                listOf(c1.copy(alpha = 0.45f + 0.35f * lv), c2.copy(alpha = 0.15f), Color.Transparent),
+                center = c, radius = r0 * (0.85f + 0.25f * lv)
             )
-            val body = Brush.linearGradient(
-                listOf(c1, c2), start = Offset(c.x - baseR, c.y - baseR), end = Offset(c.x + baseR, c.y + baseR)
-            )
-            val sheenCenter = Offset(c.x - baseR * 0.35f, c.y - baseR * 0.4f)
-            val sheen = Brush.radialGradient(listOf(Color.White.copy(alpha = 0.38f), Color.Transparent), center = sheenCenter, radius = baseR * 0.75f)
-            val arc = Brush.sweepGradient(listOf(c1.copy(alpha = 0f), c1, c2, c1.copy(alpha = 0f)), center = c)
+            drawCircle(halo, r0, c)
+
+            // Dynamic rings when active
             val stroke = Stroke(width = r0 * 0.035f)
-            onDrawBehind {
-                val t = clock.value
-                val lv = level.value
-                val sway = if (mode == OrbMode.SPEAKING) 0.03f * sin(t * 2.4f) else 0f
-                // Halo, brighter and wider with the voice
-                scale(0.82f + 0.25f * lv, c) { drawCircle(halo, r0, c) }
-                when (mode) {
-                    OrbMode.CONNECTING, OrbMode.THINKING -> rotate(t * (if (mode == OrbMode.THINKING) 160f else 240f), c) {
-                        drawCircle(arc, radius = baseR * 1.22f, center = c, style = stroke)
+            when (mode) {
+                OrbMode.CONNECTING, OrbMode.THINKING -> {
+                    val arc = Brush.sweepGradient(listOf(c1.copy(alpha = 0f), c1, c2, c1.copy(alpha = 0f)), center = c)
+                    rotate(t * (if (mode == OrbMode.THINKING) 160f else 240f), c) {
+                        drawCircle(arc, radius = baseR * 1.15f, center = c, style = stroke)
                     }
-                    OrbMode.LISTENING -> drawCircle(
-                        c1.copy(alpha = 0.25f + 0.45f * lv), radius = baseR * (1.16f + 0.22f * lv), center = c, style = stroke
+                }
+                OrbMode.LISTENING -> {
+                    drawCircle(
+                        c1.copy(alpha = 0.35f + 0.45f * lv),
+                        radius = baseR * (1.08f + 0.22f * lv),
+                        center = c,
+                        style = stroke
                     )
-                    else -> {}
+                    drawCircle(
+                        c2.copy(alpha = 0.20f + 0.25f * lv),
+                        radius = baseR * (1.20f + 0.28f * lv),
+                        center = c,
+                        style = Stroke(width = r0 * 0.025f)
+                    )
                 }
-                scale(1f + 0.16f * lv + sway, c) {
-                    drawCircle(body, baseR, c)
-                    drawCircle(sheen, baseR, c)
+                OrbMode.SPEAKING -> {
+                    drawCircle(
+                        c1.copy(alpha = 0.40f + 0.40f * lv),
+                        radius = baseR * (1.10f + 0.18f * lv),
+                        center = c,
+                        style = stroke
+                    )
                 }
+                else -> {}
             }
         }
-    )
+
+        // The Cyber Trishul Logo Image with audio reactivity & neon border
+        Box(
+            modifier = Modifier
+                .fillMaxSize(0.76f)
+                .graphicsLayer {
+                    scaleX = scaleFactor
+                    scaleY = scaleFactor
+                }
+                .clip(CircleShape)
+                .background(Color(0xFF080C14))
+                .border(
+                    width = 2.dp,
+                    brush = Brush.linearGradient(
+                        listOf(
+                            c1.copy(alpha = 0.85f + 0.15f * lv),
+                            c2.copy(alpha = 0.65f + 0.35f * lv)
+                        )
+                    ),
+                    shape = CircleShape
+                ),
+            contentAlignment = Alignment.Center
+        ) {
+            Image(
+                painter = painterResource(R.drawable.app_logo),
+                contentDescription = "Nik Voice Assistant",
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize()
+            )
+        }
+    }
 }
 
 /** Four rounded bars that move with the voice; flat dots when quiet. */
