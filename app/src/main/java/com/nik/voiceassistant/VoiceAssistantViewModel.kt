@@ -207,16 +207,22 @@ class VoiceAssistantViewModel(application: Application) : AndroidViewModel(appli
         }
     }
 
-    /** Replays a macro's recorded steps. On failure, the caller should offer to re-record it live. */
+    /** Replays a macro's recorded steps. On failure or if AI-driven, runs via AI and auto-ends. */
     fun runAutomation(
         macro: com.nik.voiceassistant.data.macro.Macro,
         onProgress: (stepIndex: Int, total: Int, desc: String) -> Unit,
         onComplete: (result: com.nik.voiceassistant.data.macro.MacroEngine.ReplayResult) -> Unit
     ) {
         viewModelScope.launch {
-            val result = com.nik.voiceassistant.data.macro.MacroEngine.replay(getApplication(), macro, session.getToolExecutor(), onProgress)
-            refreshAutomations()
-            onComplete(result)
+            val steps = (macro.action as? com.nik.voiceassistant.data.macro.Action.Replay)?.steps.orEmpty()
+            if (steps.isNotEmpty()) {
+                val result = com.nik.voiceassistant.data.macro.MacroEngine.replay(getApplication(), macro, session.getToolExecutor(), onProgress)
+                refreshAutomations()
+                onComplete(result)
+            } else {
+                recordAndExecuteAutomation(macro.instruction)
+                onComplete(com.nik.voiceassistant.data.macro.MacroEngine.ReplayResult(true, message = "Running \"${macro.title}\" with AI…"))
+            }
         }
     }
 
@@ -225,6 +231,6 @@ class VoiceAssistantViewModel(application: Application) : AndroidViewModel(appli
         val clean = instruction.trim()
         if (clean.isBlank()) return
         com.nik.voiceassistant.data.macro.MacroRecorder.start(clean)
-        session.sendText(clean)
+        session.sendAutomation(clean, silent = false)
     }
 }

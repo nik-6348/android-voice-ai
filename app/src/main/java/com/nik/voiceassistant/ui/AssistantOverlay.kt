@@ -39,9 +39,14 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.Image
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.OpenInNew
+import androidx.compose.material.icons.filled.Bolt
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MicOff
@@ -50,6 +55,9 @@ import androidx.compose.material.icons.outlined.Lightbulb
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.sp
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.State
@@ -728,10 +736,42 @@ class AssistantOverlay(private val session: VoiceSession) {
                         // Orb and name: drag to move too. Kept apart from the buttons, whose taps
                         // the drag handling would otherwise swallow.
                         Row(Modifier.weight(1f).dragsWindow(), verticalAlignment = Alignment.CenterVertically) {
-                            VoiceOrb(level, orbMode, Modifier.size(36.dp).clearAndSetSemantics {}, clock)
+                            Box(contentAlignment = Alignment.Center) {
+                                Image(
+                                    painter = painterResource(R.drawable.app_logo),
+                                    contentDescription = null,
+                                    modifier = Modifier
+                                        .size(38.dp)
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .border(
+                                            1.dp,
+                                            Brush.linearGradient(listOf(Color(0xFF00E5FF), Color(0xFFFFD700))),
+                                            RoundedCornerShape(10.dp)
+                                        )
+                                )
+                                if (working || speaking) {
+                                    val pulseColor = if (working) Color(0xFF00E5FF) else Color(0xFFFFD700)
+                                    Box(
+                                        Modifier
+                                            .size(42.dp)
+                                            .border(1.5.dp, pulseColor, RoundedCornerShape(12.dp))
+                                    )
+                                }
+                            }
                             Spacer(Modifier.width(Spacing.s + 2.dp))
                             Column(Modifier.weight(1f)) {
-                                Text(name, style = MaterialTheme.typography.titleSmall, color = scheme.onSurface, maxLines = 1)
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(name, style = MaterialTheme.typography.titleSmall, color = scheme.onSurface, maxLines = 1)
+                                    VoiceBars(
+                                        level = level,
+                                        active = speaking || (!muted && level.value > 0.05f),
+                                        clock = clock,
+                                        colors = listOf(Color(0xFF00E5FF), Color(0xFFFFD700)),
+                                        idleColor = scheme.outlineVariant,
+                                        width = 20.dp,
+                                        height = 12.dp
+                                    )
+                                }
                                 StatusText(state, active = working || connecting, clock = clock)
                             }
                         }
@@ -848,79 +888,296 @@ class AssistantOverlay(private val session: VoiceSession) {
         }
     }
 
-    /** The plan in one compact block: goal, segmented progress, current step, latest thought. */
+    /** The plan in an attractive, engaging and crisp block: goal, progress, step-by-step list, and live thought. */
     @Composable
     private fun PlanStrip(goal: String, steps: List<String>, currentStep: Int, status: String, note: String, clock: State<Float>) {
-        val scheme = MaterialTheme.colorScheme
-        val ext = NikTheme.extended
+        val total = steps.size
+        val step = if (total == 0) 0 else currentStep.coerceIn(1, total)
+        val finished = status == "done"
+        val blocked = status == "blocked"
+        val working = status == "working"
+        var showAllSteps by remember { mutableStateOf(false) }
+
+        val cyanAccent = Color(0xFF00E5FF)
+        val goldAccent = Color(0xFFFFD700)
+        val cardBorderBrush = Brush.horizontalGradient(
+            listOf(cyanAccent.copy(alpha = 0.5f), goldAccent.copy(alpha = 0.35f), cyanAccent.copy(alpha = 0.2f))
+        )
+
         Column(
             Modifier
                 .padding(end = Spacing.s)
                 .fillMaxWidth()
-                .clip(RoundedCornerShape(16.dp))
-                .background(scheme.surfaceContainerHighest)
-                .padding(horizontal = Spacing.m - 4.dp, vertical = Spacing.s + 2.dp)
+                .clip(RoundedCornerShape(18.dp))
+                .border(1.dp, cardBorderBrush, RoundedCornerShape(18.dp))
+                .background(Color(0xFF0F1420))
+                .padding(Spacing.m - 2.dp)
         ) {
-            Text(goal, style = MaterialTheme.typography.labelLarge, color = scheme.onSurface, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            val total = steps.size
+            // Header: Goal badge + Status chip
+            Row(
+                Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                    Box(
+                        Modifier
+                            .size(22.dp)
+                            .clip(RoundedCornerShape(6.dp))
+                            .background(cyanAccent.copy(alpha = 0.15f)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            Icons.Filled.Bolt,
+                            contentDescription = null,
+                            tint = cyanAccent,
+                            modifier = Modifier.size(14.dp)
+                        )
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        text = "GOAL",
+                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                        color = cyanAccent,
+                        letterSpacing = 1.2.sp
+                    )
+                }
+
+                // Status chip
+                val (chipText, chipBg, chipFg) = when {
+                    finished -> Triple("DONE", Color(0x3300E676), Color(0xFF00E676))
+                    blocked -> Triple("WAITING", Color(0x33FFB300), Color(0xFFFFB300))
+                    working -> Triple("RUNNING", Color(0x3300E5FF), cyanAccent)
+                    else -> Triple(status.uppercase(), Color(0x22FFFFFF), Color.White)
+                }
+                Box(
+                    Modifier
+                        .clip(RoundedCornerShape(50))
+                        .background(chipBg)
+                        .padding(horizontal = 8.dp, vertical = 2.dp)
+                ) {
+                    Text(
+                        chipText,
+                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
+                        color = chipFg
+                    )
+                }
+            }
+
+            // Goal Title
+            Spacer(Modifier.height(6.dp))
+            Text(
+                goal.ifBlank { "Executing Task" },
+                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
+                color = Color.White,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
+
+            // Progress Bar & Step Counter
             if (total > 0) {
-                val step = currentStep.coerceIn(1, total)
-                val blocked = status == "blocked"
-                val pulsing = status == "working"
-                val doneColor = scheme.primary
-                val track = scheme.outlineVariant
-                val nowColor = if (blocked) ext.warning else scheme.primary
-                Spacer(Modifier.height(Spacing.s))
-                Row(Modifier.clearAndSetSemantics {}, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                Spacer(Modifier.height(10.dp))
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        "Step $step of $total",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = cyanAccent
+                    )
+                    Text(
+                        "${((step.toFloat() / total) * 100).toInt()}%",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Color.White.copy(alpha = 0.7f)
+                    )
+                }
+                Spacer(Modifier.height(6.dp))
+
+                // Segmented Progress Track with Cyan & Gold Glow
+                Row(
+                    Modifier.fillMaxWidth().clearAndSetSemantics {},
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
                     for (i in 1..total) {
-                        val done = i < step
-                        val current = i == step
+                        val isDone = i < step || finished
+                        val isCurrent = i == step && !finished
                         Box(
                             Modifier
                                 .weight(1f)
-                                .height(4.dp)
-                                .clip(CircleShape)
+                                .height(5.dp)
+                                .clip(RoundedCornerShape(2.dp))
                                 .drawBehind {
                                     when {
-                                        done -> drawRect(doneColor)
-                                        current -> {
-                                            drawRect(track)
-                                            val pulse = if (pulsing) 0.5f + 0.5f * sin(clock.value * 4f) else 0.6f
-                                            drawRect(nowColor, size = Size(size.width * (0.35f + 0.4f * pulse), size.height))
+                                        isDone -> drawRect(cyanAccent)
+                                        isCurrent -> {
+                                            drawRect(Color(0xFF1E2638))
+                                            val pulse = if (working) 0.5f + 0.5f * sin(clock.value * 5f) else 0.7f
+                                            drawRect(
+                                                Brush.horizontalGradient(listOf(cyanAccent, goldAccent)),
+                                                size = Size(size.width * (0.3f + 0.7f * pulse), size.height)
+                                            )
                                         }
-                                        else -> drawRect(track)
+                                        else -> drawRect(Color(0xFF1E2638))
                                     }
                                 }
                         )
                     }
                 }
-                Spacer(Modifier.height(6.dp))
-                Text(
-                    stringResource(R.string.overlay_step, step, total, steps.getOrElse(step - 1) { "" }),
-                    style = MaterialTheme.typography.bodySmall, color = scheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis
-                )
+
+                // Steps Breakdown: Clean, engaging, properly listed
+                Spacer(Modifier.height(10.dp))
+                val displayedSteps = if (showAllSteps || total <= 2) steps.indices.toList() else listOf(step - 1)
+
+                Column(
+                    Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(Color(0xFF090D15))
+                        .padding(horizontal = 10.dp, vertical = 6.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    displayedSteps.forEach { idx ->
+                        val stepNumber = idx + 1
+                        val isDone = finished || stepNumber < step
+                        val isCurrent = !finished && stepNumber == step
+                        val stepText = steps.getOrElse(idx) { "" }
+
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            if (isDone) {
+                                Box(
+                                    Modifier
+                                        .size(18.dp)
+                                        .clip(CircleShape)
+                                        .background(Color(0x3300E676)),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        Icons.Filled.Check,
+                                        contentDescription = null,
+                                        tint = Color(0xFF00E676),
+                                        modifier = Modifier.size(12.dp)
+                                    )
+                                }
+                            } else if (isCurrent) {
+                                val pulseDot = if (working) 0.6f + 0.4f * sin(clock.value * 6f) else 1f
+                                Box(
+                                    Modifier
+                                        .size(18.dp)
+                                        .clip(CircleShape)
+                                        .background(cyanAccent.copy(alpha = 0.25f * pulseDot)),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Box(
+                                        Modifier
+                                            .size(8.dp)
+                                            .clip(CircleShape)
+                                            .background(cyanAccent)
+                                    )
+                                }
+                            } else {
+                                Box(
+                                    Modifier
+                                        .size(18.dp)
+                                        .clip(CircleShape)
+                                        .border(1.dp, Color.White.copy(alpha = 0.25f), CircleShape),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        "$stepNumber",
+                                        style = MaterialTheme.typography.labelSmall.copy(fontSize = 9.sp),
+                                        color = Color.White.copy(alpha = 0.4f)
+                                    )
+                                }
+                            }
+
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                text = "$stepNumber. $stepText",
+                                style = MaterialTheme.typography.bodySmall.copy(
+                                    fontWeight = if (isCurrent) FontWeight.SemiBold else FontWeight.Normal
+                                ),
+                                color = when {
+                                    isCurrent -> Color.White
+                                    isDone -> Color.White.copy(alpha = 0.5f)
+                                    else -> Color.White.copy(alpha = 0.4f)
+                                },
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                    }
+
+                    // Toggle expand if there are > 2 steps
+                    if (total > 2) {
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(6.dp))
+                                .clickable { showAllSteps = !showAllSteps }
+                                .padding(vertical = 3.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.Center
+                        ) {
+                            Text(
+                                if (showAllSteps) "Hide steps" else "View all $total steps",
+                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
+                                color = cyanAccent
+                            )
+                            Icon(
+                                if (showAllSteps) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
+                                contentDescription = null,
+                                tint = cyanAccent,
+                                modifier = Modifier.size(14.dp)
+                            )
+                        }
+                    }
+                }
             }
-            // Always one line, so a new thought doesn't change the card's height
-            Spacer(Modifier.height(6.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Outlined.Lightbulb, contentDescription = null, tint = scheme.tertiary, modifier = Modifier.size(14.dp))
+
+            // Live Thought / Note
+            Spacer(Modifier.height(8.dp))
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(Color(0xFF131A29))
+                    .padding(horizontal = 8.dp, vertical = 5.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    Icons.Outlined.Lightbulb,
+                    contentDescription = null,
+                    tint = goldAccent,
+                    modifier = Modifier.size(13.dp)
+                )
                 Spacer(Modifier.width(6.dp))
                 Text(
                     note.ifBlank { stringResource(R.string.overlay_working_on_it) },
-                    style = MaterialTheme.typography.bodySmall, fontStyle = FontStyle.Italic, maxLines = 1, overflow = TextOverflow.Ellipsis,
-                    color = if (status == "blocked") ext.warning else scheme.onSurfaceVariant
+                    style = MaterialTheme.typography.bodySmall.copy(fontStyle = FontStyle.Italic),
+                    color = if (blocked) Color(0xFFFFB300) else Color.White.copy(alpha = 0.85f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
                 )
             }
         }
     }
 
     /**
-     * Mini: the orb and the mic. The orb shows what's going on; tap it to open the card again, drag
+     * Mini: the floating Shiv cyber trishul icon and the mic. Tap it to open the card again, drag
      * it to move. TalkBack: double-tap opens it, and the actions menu moves it.
      */
     @Composable
     private fun Mini(orbMode: OrbMode, muted: Boolean, level: State<Float>, clock: State<Float>, onExpand: () -> Unit) {
         val name by session.assistantName.collectAsState()
+        val plan by session.plan.collectAsState()
+        val working = plan?.status == "working" || orbMode == OrbMode.THINKING
+        val speaking = orbMode == OrbMode.SPEAKING
         val expandLabel = stringResource(R.string.overlay_expand, name)
         val openAction = stringResource(R.string.action_expand)
         val actions = moveActions()
@@ -938,7 +1195,35 @@ class AssistantOverlay(private val session: VoiceSession) {
                     },
                 contentAlignment = Alignment.Center
             ) {
-                VoiceOrb(level, orbMode, Modifier.size(44.dp), clock)
+                // Reactive halo pulse while working or talking
+                val haloAlpha = if (working) 0.5f + 0.3f * sin(clock.value * 5f) else (level.value * 0.8f).coerceIn(0f, 0.8f)
+                if (haloAlpha > 0.05f) {
+                    Box(
+                        Modifier
+                            .size(48.dp)
+                            .clip(CircleShape)
+                            .background(
+                                Brush.radialGradient(
+                                    listOf(
+                                        (if (working) Color(0xFF00E5FF) else Color(0xFFFFD700)).copy(alpha = haloAlpha),
+                                        Color.Transparent
+                                    )
+                                )
+                            )
+                    )
+                }
+                Image(
+                    painter = painterResource(R.drawable.app_logo),
+                    contentDescription = null,
+                    modifier = Modifier
+                        .size(42.dp)
+                        .clip(CircleShape)
+                        .border(
+                            1.5.dp,
+                            if (working) Color(0xFF00E5FF) else if (speaking) Color(0xFFFFD700) else Color(0x6600E5FF),
+                            CircleShape
+                        )
+                )
             }
             Spacer(Modifier.width(2.dp))
             MicButton(muted, level, 40.dp)

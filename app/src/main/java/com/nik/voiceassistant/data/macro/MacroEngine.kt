@@ -25,7 +25,7 @@ object MacroEngine {
      * macros, and ones with no steps to replay, are skipped (nothing to run).
      */
     fun findByPhrase(context: Context, query: String): Macro? {
-        val clean = normalize(query).replace(Regex("^(hi|hey|ok|hello)\\s+\\S+\\s+"), "")
+        val clean = normalizeQuery(query)
         if (clean.isBlank()) return null
         fun matches(phrase: String): Boolean {
             val p = normalize(phrase)
@@ -36,6 +36,30 @@ object MacroEngine {
         val candidates = MacroStore.getAll(context).filter { it.enabled && it.action is Action.Replay && (it.action as Action.Replay).steps.isNotEmpty() }
         val byTrigger = candidates.firstOrNull { m -> m.triggers.any { it is Trigger.Phrase && matches(it.phrase) } }
         return byTrigger ?: candidates.firstOrNull { matches(it.title) }
+    }
+
+    /**
+     * Matches any enabled macro (Replay or AlwaysAsk) by trigger phrase or title.
+     */
+    fun findAnyByPhrase(context: Context, query: String): Macro? {
+        val clean = normalizeQuery(query)
+        if (clean.isBlank()) return null
+        fun matches(phrase: String): Boolean {
+            val p = normalize(phrase)
+            if (p.isBlank() || !clean.startsWith(p)) return false
+            val rest = clean.removePrefix(p).trim()
+            return rest.isEmpty() || rest.split(" ").size <= 2
+        }
+        val all = MacroStore.getAll(context).filter { it.enabled }
+        val byTrigger = all.firstOrNull { m -> m.triggers.any { it is Trigger.Phrase && matches(it.phrase) } }
+        return byTrigger ?: all.firstOrNull { matches(it.title) }
+    }
+
+    private fun normalizeQuery(query: String): String {
+        return normalize(query)
+            .replace(Regex("^(hi|hey|ok|hello)\\s+\\S+\\s+"), "")
+            .replace(Regex("^(run automation|start automation|automation chalao|chalao automation|run macro|automation run karo|chalao|play)\\s+"), "")
+            .trim()
     }
 
     private fun normalize(s: String) = s.lowercase().replace(Regex("[^\\p{L}\\p{N}\\s]"), " ").replace(Regex("\\s+"), " ").trim()

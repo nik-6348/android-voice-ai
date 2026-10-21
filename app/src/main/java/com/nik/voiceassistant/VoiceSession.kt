@@ -402,6 +402,8 @@ class VoiceSession private constructor(val context: Context) {
 
     // Set when a background macro runs silently: watchdog ends session as soon as work+speech done
     @Volatile private var silentMacroRun = false
+    // Set when an automation runs: auto-ends session immediately upon completion without listening
+    @Volatile private var isAutomationRun = false
 
     /** Called when a conversation ends by itself (bye or idle), so the service can listen for "Hi Nik" again. */
     @Volatile var onConversationEnded: (() -> Unit)? = null
@@ -446,7 +448,14 @@ class VoiceSession private constructor(val context: Context) {
             }
             // Recording stops when the goal is clearly over (done or blocked-as-failed), not at the
             // AI's first spoken line: that used to end every recording before a single step ran
-            if (plan != null && (plan.status == "done" || plan.status == "failed")) onRecordingMaybeDone(plan.status)
+            if (plan != null && (plan.status == "done" || plan.status == "failed")) {
+                taskInProgressUntil = 0L
+                onRecordingMaybeDone(plan.status)
+                if (isAutomationRun) {
+                    reopenWhenDone = false
+                    endRequested = true
+                }
+            }
         },
         onCallAndTalk = { number, goal, maxMinutes ->
             val maxDurationMs = (maxMinutes ?: 5) * 60_000L
@@ -475,6 +484,11 @@ class VoiceSession private constructor(val context: Context) {
     private fun onRecordingMaybeDone(status: String?) {
         val macro = MacroRecorder.note(status) ?: return
         finishRecordedMacro(macro)
+        if (isAutomationRun) {
+            taskInProgressUntil = 0L
+            reopenWhenDone = false
+            endRequested = true
+        }
     }
 
     private fun finishRecordedMacro(macro: com.nik.voiceassistant.data.macro.Macro) {
@@ -804,8 +818,20 @@ class VoiceSession private constructor(val context: Context) {
                 if (replyTurnOpen && _liveReply.value.isNotBlank()) AgentTrace.log(AgentTrace.Kind.REPLY, _liveReply.value)
                 traceTurnComplete(if (replyTurnOpen) _liveReply.value else "")
                 replyTurnOpen = false
-                // The watchdog opens the mic once the reply has played and no tool is running
-                reopenWhenDone = true
+                if (isAutomationRun || silentMacroRun) {
+                    reopenWhenDone = false
+                    taskInProgressUntil = 0L
+                    endRequested = true
+                    if (silentMacroRun || !audioTrackManager.isAudible()) {
+                        scope.launch {
+                            delay(250)
+                            endConversation("Automation complete")
+                        }
+                    }
+                } else {
+                    // The watchdog opens the mic once the reply has played and no tool is running
+                    reopenWhenDone = true
+                }
             }
 
             override fun onToolExecuted(toolName: String, args: Map<String, Any?>, resultSummary: String) {
@@ -954,8 +980,7 @@ class VoiceSession private constructor(val context: Context) {
         // VoiceSession directly — a background listener can't otherwise reach it)
         com.nik.voiceassistant.data.macro.MacroDispatch.onAgentGoalRequested = { instruction ->
             scope.launch {
-                if (_silentAutomations.value) sendTextSilent(instruction)
-                else sendText(instruction)
+                sendAutomation(instruction, silent = _silentAutomations.value)
             }
         }
         com.nik.voiceassistant.data.macro.MacroDispatch.onCallGoalRequested = { macro ->
@@ -1033,19 +1058,40 @@ class VoiceSession private constructor(val context: Context) {
      * Starts a conversation. preroll: mic audio from just before (the "Hi Nik, …" the wake word
      * detector heard), sent first so a request spoken in the same breath isn't lost.
      */
-    /** Send a macro instruction to the AI without opening the mic or playing any TTS reply. */
-    fun sendTextSilent(text: String) {
+    /** Send an automation instruction to the AI. If silent, mic is kept muted and no audio TTS is played. */
+    fun sendAutomation(text: String, silent: Boolean = true) {
         val t = text.trim()
         if (t.isEmpty()) return
-        val silentInstruction = "(BACKGROUND AUTOMATION — do NOT speak, do NOT greet, do NOT confirm. Just perform the action silently.) $t"
-        silentMacroRun = true
-        audioTrackManager.mutePlayback = true
-        if (_isRecording.value && _connectionStatus.value == ConnectionStatus.CONNECTED) {
-            webSocketClient.sendText(silentInstruction)
+        isAutomationRun = true
+        reopenWhenDone = false
+        taskInProgressUntil = 0L
+        if (silent) {
+            val silentInstruction = "(BACKGROUND AUTOMATION — do NOT speak, do NOT greet, do NOT confirm. Just perform the action silently.) $t"
+            silentMacroRun = true
+            audioTrackManager.mutePlayback = true
+            if (_isRecording.value && _connectionStatus.value == ConnectionStatus.CONNECTED) {
+                webSocketClient.sendText(silentInstruction)
+            } else {
+                pendingText = silentInstruction
+                start(keepMicMuted = true)
+            }
         } else {
-            pendingText = silentInstruction
-            start(keepMicMuted = true)
+            val automationInstruction = "(AUTOMATION — perform the action and report the result in one short sentence. Do NOT ask follow-up questions.) $t"
+            silentMacroRun = false
+            audioTrackManager.mutePlayback = false
+            addTranscript("system", "⚡ Automation running: $t")
+            if (_isRecording.value && _connectionStatus.value == ConnectionStatus.CONNECTED) {
+                webSocketClient.sendText(automationInstruction)
+            } else {
+                pendingText = automationInstruction
+                start(keepMicMuted = true)
+            }
         }
+    }
+
+    /** Send a macro instruction to the AI without opening the mic or playing any TTS reply. */
+    fun sendTextSilent(text: String) {
+        sendAutomation(text, silent = true)
     }
 
     fun start(preroll: ByteArray? = null, keepMicMuted: Boolean = false) {
@@ -1129,6 +1175,9 @@ class VoiceSession private constructor(val context: Context) {
         watchdog = null
         audioRecordManager.stopRecording()
         _isRecording.value = false
+        isAutomationRun = false
+        silentMacroRun = false
+        taskInProgressUntil = 0L
         _micAmplitude.value = 0f
         _activeToolStatus.value = null
         _isMicMuted.value = true
@@ -1147,9 +1196,12 @@ class VoiceSession private constructor(val context: Context) {
     private fun endConversation(reason: String? = null) {
         if (!_isRecording.value) return
         val wasSilent = silentMacroRun
+        val wasAuto = isAutomationRun
         silentMacroRun = false
+        isAutomationRun = false
+        taskInProgressUntil = 0L
         audioTrackManager.mutePlayback = false
-        Log.i(TAG, "Conversation ended${if (wasSilent) " [silent macro]" else ""}")
+        Log.i(TAG, "Conversation ended${if (wasSilent) " [silent macro]" else if (wasAuto) " [automation]" else ""}")
         AgentTrace.log(AgentTrace.Kind.SESSION, "Conversation ended")
         MacroRecorder.finishOnConversationEnd()?.let { finishRecordedMacro(it) }
         shutDown()
@@ -1185,6 +1237,8 @@ class VoiceSession private constructor(val context: Context) {
                 val actualInstruction = prompt.substring(prefix.length).trim().removePrefix(":").removePrefix("-").trim()
                 if (actualInstruction.isNotBlank()) {
                     recordingReplaces = null
+                    isAutomationRun = true
+                    reopenWhenDone = false
                     MacroRecorder.start(actualInstruction)
                     addTranscript("system", "⏺️ Recording: \"$actualInstruction\". Saved once the goal is done.")
                     return false // Let it continue to Gemini so the AI performs the actual task
@@ -1196,17 +1250,30 @@ class VoiceSession private constructor(val context: Context) {
         // A step that fails (the screen changed since it was recorded) falls back to a fresh AI run,
         // which re-records the macro from what the AI actually did this time (self-healing).
         if (!MacroRecorder.isRecording()) {
-            val matched = MacroEngine.findByPhrase(context, prompt)
+            val matched = MacroEngine.findAnyByPhrase(context, prompt)
             if (matched != null) {
-                addTranscript("assistant", "Running \"${matched.title}\"…")
-                scope.launch {
-                    val result = MacroEngine.replay(context, matched, toolExecutor) { stepIdx, total, desc ->
-                        addTranscript("system", "[$stepIdx/$total] $desc")
+                isAutomationRun = true
+                reopenWhenDone = false
+                val steps = (matched.action as? com.nik.voiceassistant.data.macro.Action.Replay)?.steps.orEmpty()
+                if (steps.isNotEmpty()) {
+                    addTranscript("assistant", "Running \"${matched.title}\"…")
+                    scope.launch {
+                        val result = MacroEngine.replay(context, matched, toolExecutor) { stepIdx, total, desc ->
+                            addTranscript("system", "[$stepIdx/$total] $desc")
+                        }
+                        if (result.ok) {
+                            addTranscript("assistant", "Done! \"${matched.title}\" complete.")
+                            delay(500)
+                            endConversation("Automation \"${matched.title}\" complete")
+                        } else {
+                            retryWithAi(matched, "⚠️ ${result.message}")
+                        }
                     }
-                    if (result.ok) addTranscript("assistant", "Done! \"${matched.title}\" complete.")
-                    else retryWithAi(matched, "⚠️ ${result.message}")
+                    return true
+                } else {
+                    sendAutomation(matched.instruction, silent = false)
+                    return true
                 }
-                return true
             }
         }
 
@@ -1217,6 +1284,8 @@ class VoiceSession private constructor(val context: Context) {
     private fun retryWithAi(macro: com.nik.voiceassistant.data.macro.Macro, reason: String) {
         addTranscript("system", reason)
         recordingReplaces = macro
+        isAutomationRun = true
+        reopenWhenDone = false
         MacroRecorder.start(macro.instruction, title = macro.title, replacingId = macro.id)
         addTranscript("user", macro.instruction)
         AgentTrace.log(AgentTrace.Kind.USER, "(automation retry) ${macro.instruction}")
@@ -1225,7 +1294,7 @@ class VoiceSession private constructor(val context: Context) {
         if (_isRecording.value && _connectionStatus.value == ConnectionStatus.CONNECTED) sendTextNow(macro.instruction)
         else {
             pendingText = macro.instruction
-            start()
+            start(keepMicMuted = true)
         }
     }
 
@@ -1270,22 +1339,21 @@ class VoiceSession private constructor(val context: Context) {
                 val audible = audioTrackManager.isAudible()
                 silentSince = if (audible) 0L else if (silentSince == 0L) now else silentSince
                 val quietFor = if (silentSince == 0L) 0L else now - silentSince
-                val isBusy = audible || webSocketClient.isToolRunning() || now < taskInProgressUntil
+                val isBusy = audible || webSocketClient.isToolRunning() || (!isAutomationRun && !silentMacroRun && now < taskInProgressUntil)
                 // The assistant is done (turn over, voice quiet, no tool for a moment): the user's turn
                 // A task still in progress keeps it closed (noise can't derail the task), unless the agent has gone idle
                 val taskRunning = toolExecutor.plan?.status == "working" && now - maxOf(lastToolEnd, lastActivity) < TASK_IDLE_REOPEN_MS
-                if (!silentMacroRun && reopenWhenDone && _isMicMuted.value && _autoMute.value && quietFor >= MIC_REOPEN_QUIET_MS &&
+                if (!isAutomationRun && !silentMacroRun && reopenWhenDone && _isMicMuted.value && _autoMute.value && quietFor >= MIC_REOPEN_QUIET_MS &&
                     !webSocketClient.isToolRunning() && now - lastToolEnd >= MIC_REOPEN_QUIET_MS && !endRequested && !taskRunning
                 ) openMic()
                 when {
-                    // "bye" always ends, even with auto-sleep off
-                    endRequested && quietFor >= END_AFTER_SILENT_MS -> { endConversation(); return@launch }
-                    // Silent macro: end as soon as work and any speech are done (no waiting for user input)
-                    // Only count down AFTER we've been connected and had at least one tool/reply (lastActivity > 0 check)
-                    silentMacroRun && _connectionStatus.value == ConnectionStatus.CONNECTED &&
-                        lastActivity > 0L && now - lastActivity > 2000L && !isBusy && quietFor >= 1500L -> {
-                        Log.i(TAG, "Silent macro completed — ending session")
-                        endConversation()
+                    // "bye" or completed task ends, even with auto-sleep off
+                    endRequested && quietFor >= END_AFTER_SILENT_MS -> { endConversation("Task completed"); return@launch }
+                    // Silent macro or completed automation: end as soon as work and any speech are done (no waiting for user input)
+                    (silentMacroRun || isAutomationRun) && _connectionStatus.value == ConnectionStatus.CONNECTED &&
+                        (lastToolEnd > 0L || lastActivity > 0L) && !webSocketClient.isToolRunning() && quietFor >= 400L && !taskRunning -> {
+                        Log.i(TAG, "Automation completed — ending session immediately")
+                        endConversation("Automation complete")
                         return@launch
                     }
                     // Idle auto-sleep only when the toggle is on and no goal/task is currently executing

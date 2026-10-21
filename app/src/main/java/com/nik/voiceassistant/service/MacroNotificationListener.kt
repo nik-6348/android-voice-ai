@@ -51,25 +51,31 @@ class MacroNotificationListener : NotificationListenerService() {
 
     private fun handle(sbn: StatusBarNotification) {
         if (sbn.packageName == packageName) return // never trigger on our own notifications
-        val extras = sbn.notification?.extras ?: return
-        val title = Redactor.forModel(extras.getCharSequence(Notification.EXTRA_TITLE)?.toString().orEmpty())
-        val text = Redactor.forModel(extras.getCharSequence(Notification.EXTRA_TEXT)?.toString().orEmpty())
-        if (title.isBlank() && text.isBlank()) return
+        val notification = sbn.notification ?: return
         val appLabel = try {
             packageManager.getApplicationLabel(packageManager.getApplicationInfo(sbn.packageName, 0)).toString()
         } catch (e: PackageManager.NameNotFoundException) {
             sbn.packageName
         }
 
-        Log.d(TAG, "Notification received: pkg=${sbn.packageName} app='$appLabel' title='$title'")
+        val (rawTitle, rawText) = extractDetails(notification)
+        val title = Redactor.forModel(rawTitle)
+        val text = Redactor.forModel(rawText)
+
+        Log.i(TAG, "Notification received: pkg=${sbn.packageName} app='$appLabel' sender='$title' text='${text.take(60)}'")
 
         // Register with DirectReplyManager for headless background replies (WhatsApp, Telegram, etc.)
         DirectReplyManager.register(applicationContext, sbn, appLabel, title, text)
 
+        if (title.isBlank() && text.isBlank()) {
+            Log.d(TAG, "Notification has no text/title, skipping macro match: ${sbn.packageName}")
+            return
+        }
+
         val matches = MacroEngine.matching(applicationContext) { trigger ->
             trigger is Trigger.NotificationReceived && triggerMatches(trigger, sbn.packageName, appLabel, title, text)
         }
-        Log.d(TAG, "Macro matches for '${sbn.packageName}': ${matches.size}")
+        Log.i(TAG, "Macro matches for '${sbn.packageName}': ${matches.size}")
         if (matches.isEmpty()) return
         val executor = VoiceSession.get(applicationContext).getToolExecutor()
         val triggerData = buildMap {
@@ -85,12 +91,60 @@ class MacroNotificationListener : NotificationListenerService() {
     }
 
     /**
+     * Extracts title and text reliably across standard notifications and MessagingStyle (WhatsApp, Telegram).
+     */
+    private fun extractDetails(notification: Notification): Pair<String, String> {
+        val extras = notification.extras ?: return Pair("", "")
+        var title = extras.getCharSequence(Notification.EXTRA_TITLE)?.toString()
+            ?: extras.getCharSequence(Notification.EXTRA_TITLE_BIG)?.toString()
+            ?: ""
+        var text = extras.getCharSequence(Notification.EXTRA_TEXT)?.toString()
+            ?: extras.getCharSequence(Notification.EXTRA_BIG_TEXT)?.toString()
+            ?: ""
+
+        // For WhatsApp, Telegram, Google Messages (MessagingStyle)
+        try {
+            val messagingStyle = androidx.core.app.NotificationCompat.MessagingStyle.extractMessagingStyleFromNotification(notification)
+            if (messagingStyle != null) {
+                if (title.isBlank()) {
+                    title = messagingStyle.conversationTitle?.toString()
+                        ?: messagingStyle.user.name?.toString()
+                        ?: ""
+                }
+                val lastMsg = messagingStyle.messages.lastOrNull()
+                if (lastMsg != null) {
+                    if (text.isBlank()) {
+                        text = lastMsg.text?.toString().orEmpty()
+                    }
+                    if (title.isBlank()) {
+                        title = lastMsg.person?.name?.toString().orEmpty()
+                    }
+                }
+            }
+        } catch (_: Exception) {}
+
+        // Fallback for summary notifications with text lines
+        if (text.isBlank()) {
+            val lines = extras.getCharSequenceArray(Notification.EXTRA_TEXT_LINES)
+            if (!lines.isNullOrEmpty()) {
+                text = lines.lastOrNull()?.toString().orEmpty()
+            }
+        }
+
+        if (title.isBlank()) {
+            title = extras.getCharSequence(Notification.EXTRA_SUB_TEXT)?.toString().orEmpty()
+        }
+
+        return Pair(title.trim(), text.trim())
+    }
+
+    /**
      * A trigger with no app filter would fire on every notification from every app, so it needs at
      * least a package or a visible app name to narrow it down; title/text are optional extra filters.
      */
     private fun triggerMatches(t: Trigger.NotificationReceived, pkg: String, appLabel: String, title: String, text: String): Boolean {
         if (t.packageName.isNullOrBlank() && t.appLabel.isNullOrBlank()) return false
-        t.packageName?.takeIf { it.isNotBlank() }?.let { if (!it.equals(pkg, ignoreCase = true)) return false }
+        t.packageName?.takeIf { it.isNotBlank() }?.let { if (!it.equals(pkg, ignoreCase = true) && !pkg.contains(it, ignoreCase = true)) return false }
         t.appLabel?.takeIf { it.isNotBlank() }?.let { if (!appLabel.contains(it, ignoreCase = true)) return false }
         t.titleContains?.takeIf { it.isNotBlank() }?.let { if (!title.contains(it, ignoreCase = true)) return false }
         t.textContains?.takeIf { it.isNotBlank() }?.let { if (!text.contains(it, ignoreCase = true)) return false }

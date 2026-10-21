@@ -20,6 +20,7 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.StarBorder
+import androidx.compose.foundation.clickable
 import androidx.compose.material.icons.outlined.Alarm
 import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.Bolt
@@ -27,6 +28,12 @@ import androidx.compose.material.icons.outlined.Call
 import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.MusicNote
+import androidx.compose.material.icons.outlined.Visibility
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -100,6 +107,7 @@ fun AutomationsTab(viewModel: VoiceAssistantViewModel) {
     var showCreateDialog by rememberSaveable { mutableStateOf(false) }
     var deleteId by rememberSaveable { mutableStateOf<String?>(null) }
     var editMacro by rememberSaveable { mutableStateOf<String?>(null) }
+    var viewMacroId by rememberSaveable { mutableStateOf<String?>(null) }
 
     val shown = remember(automations, favoritesOnly) { if (favoritesOnly) automations.filter { it.isFavorite } else automations }
     val startingText = stringResource(R.string.automation_starting)
@@ -161,7 +169,8 @@ fun AutomationsTab(viewModel: VoiceAssistantViewModel) {
                         onToggleFavorite = { viewModel.toggleFavoriteAutomation(macro.id) },
                         onToggleEnabled = { viewModel.setAutomationEnabled(macro.id, it) },
                         onDelete = { deleteId = macro.id },
-                        onEdit = { editMacro = macro.id }
+                        onEdit = { editMacro = macro.id },
+                        onViewDetails = { viewMacroId = macro.id }
                     )
                 }
             }
@@ -211,6 +220,37 @@ fun AutomationsTab(viewModel: VoiceAssistantViewModel) {
         }
     }
 
+    viewMacroId?.let { id ->
+        val macro = automations.firstOrNull { it.id == id }
+        if (macro != null) {
+            ViewAutomationDetailsDialog(
+                macro = macro,
+                anyRunning = running != null,
+                onDismiss = { viewMacroId = null },
+                onEdit = {
+                    viewMacroId = null
+                    editMacro = id
+                },
+                onRun = {
+                    viewMacroId = null
+                    val app = context.applicationContext
+                    AutomationRun.state.value = AutomationRun.Running(macro.id, macro.title, startingText)
+                    viewModel.runAutomation(
+                        macro = macro,
+                        onProgress = { step, total, desc ->
+                            AutomationRun.state.update { it?.copy(progress = app.getString(R.string.automation_step, step, total, desc)) }
+                        },
+                        onComplete = { result: MacroEngine.ReplayResult ->
+                            AutomationRun.state.value = null
+                            Toast.makeText(app, result.message, Toast.LENGTH_SHORT).show()
+                            if (!result.ok) viewModel.recordAndExecuteAutomation(macro.instruction)
+                        }
+                    )
+                }
+            )
+        }
+    }
+
     if (showCreateDialog) {
         val savedMsg = stringResource(R.string.automation_saved)
         val learningMsg = stringResource(R.string.automation_learning, assistantName)
@@ -240,7 +280,8 @@ fun AutomationCard(
     onToggleFavorite: () -> Unit,
     onToggleEnabled: (Boolean) -> Unit,
     onDelete: () -> Unit,
-    onEdit: () -> Unit
+    onEdit: () -> Unit,
+    onViewDetails: () -> Unit
 ) {
     val scheme = MaterialTheme.colorScheme
     val (icon: ImageVector, container, content) = when {
@@ -252,7 +293,7 @@ fun AutomationCard(
     Card(
         shape = MaterialTheme.shapes.large,
         colors = CardDefaults.cardColors(containerColor = scheme.surfaceContainerLow),
-        modifier = Modifier.fillMaxWidth()
+        modifier = Modifier.fillMaxWidth().clickable(onClick = onViewDetails)
     ) {
         Column(Modifier.padding(start = Spacing.m, top = Spacing.m, end = Spacing.s, bottom = Spacing.s)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -274,6 +315,9 @@ fun AutomationCard(
                         contentDescription = stringResource(if (macro.isFavorite) R.string.cd_unfavorite else R.string.cd_favorite, macro.title),
                         tint = if (macro.isFavorite) scheme.tertiary else scheme.onSurfaceVariant
                     )
+                }
+                IconButton(onClick = onViewDetails) {
+                    Icon(Icons.Outlined.Visibility, contentDescription = "View details of ${macro.title}")
                 }
                 IconButton(onClick = onEdit) {
                     Icon(Icons.Outlined.Edit, contentDescription = "Edit ${macro.title}")
@@ -512,5 +556,282 @@ fun EditAutomationDialog(
             }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
+    )
+}
+
+@Composable
+fun ViewAutomationDetailsDialog(
+    macro: Macro,
+    anyRunning: Boolean,
+    onDismiss: () -> Unit,
+    onEdit: () -> Unit,
+    onRun: () -> Unit
+) {
+    val scheme = MaterialTheme.colorScheme
+    val lastRunStr = remember(macro.lastRunAt) {
+        macro.lastRunAt?.let { SimpleDateFormat("dd MMM, hh:mm a", Locale.getDefault()).format(Date(it)) } ?: "Never run yet"
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Outlined.Visibility, contentDescription = null, tint = scheme.primary)
+                Spacer(Modifier.width(Spacing.s))
+                Column {
+                    Text(macro.title, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(
+                        if (macro.enabled) "Active Automation" else "Disabled Automation",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (macro.enabled) scheme.primary else scheme.onSurfaceVariant
+                    )
+                }
+            }
+        },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(Spacing.m)
+            ) {
+                // Badges row
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(Spacing.xs),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    when (macro.action) {
+                        is Action.Replay -> Badge("⚡ Fast Replay (${macro.action.steps.size} steps)", container = scheme.primaryContainer, content = scheme.onPrimaryContainer)
+                        Action.AlwaysAsk -> Badge("🧠 Live AI Agent", container = scheme.secondaryContainer, content = scheme.onSecondaryContainer)
+                        is Action.HandleCall -> Badge("📞 Auto Call Agent", container = scheme.tertiaryContainer, content = scheme.onTertiaryContainer)
+                    }
+                    if (macro.triggers.any { it is Trigger.NotificationReceived }) {
+                        Badge("⚡ Headless Zero-UI", container = scheme.tertiaryContainer, content = scheme.onTertiaryContainer)
+                    }
+                }
+
+                // Execution Stats Card
+                Card(
+                    shape = MaterialTheme.shapes.medium,
+                    colors = CardDefaults.cardColors(containerColor = scheme.surfaceContainerHigh),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(Spacing.s + 2.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column {
+                            Text("Total Runs: ${macro.runCount}", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold)
+                            Text("Last: $lastRunStr", style = MaterialTheme.typography.labelSmall, color = scheme.onSurfaceVariant)
+                        }
+                        if (macro.lastRunOk != null) {
+                            Badge(
+                                if (macro.lastRunOk == true) "Success" else "Failed",
+                                container = if (macro.lastRunOk == true) scheme.primaryContainer else scheme.errorContainer,
+                                content = if (macro.lastRunOk == true) scheme.onPrimaryContainer else scheme.onErrorContainer
+                            )
+                        }
+                    }
+                }
+
+                // Section 1: Trigger / Flow Summary
+                Column(verticalArrangement = Arrangement.spacedBy(Spacing.xs)) {
+                    Text(
+                        "1. Trigger (Kab start hoga)",
+                        style = MaterialTheme.typography.titleSmall,
+                        color = scheme.primary,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Card(
+                        shape = MaterialTheme.shapes.medium,
+                        colors = CardDefaults.cardColors(containerColor = scheme.surfaceContainer),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(Modifier.padding(Spacing.s + 4.dp), verticalArrangement = Arrangement.spacedBy(Spacing.xs)) {
+                            Text(
+                                macro.triggerSummary(),
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            macro.triggers.forEach { trigger ->
+                                val detail = when (trigger) {
+                                    is Trigger.NotificationReceived -> {
+                                        val filters = buildList {
+                                            if (!trigger.packageName.isNullOrBlank()) add("App pkg: ${trigger.packageName}")
+                                            if (!trigger.appLabel.isNullOrBlank()) add("App name: ${trigger.appLabel}")
+                                            if (!trigger.titleContains.isNullOrBlank()) add("Sender filter: \"${trigger.titleContains}\"")
+                                            if (!trigger.textContains.isNullOrBlank()) add("Text filter: \"${trigger.textContains}\"")
+                                        }
+                                        if (filters.isEmpty()) "Any incoming notification" else filters.joinToString(" • ")
+                                    }
+                                    is Trigger.Scheduled -> {
+                                        val timeStr = String.format(Locale.getDefault(), "%02d:%02d", trigger.hour, trigger.minute)
+                                        "Scheduled at $timeStr"
+                                    }
+                                    is Trigger.Phrase -> "Spoken Voice Command: \"${trigger.phrase}\""
+                                    is Trigger.IncomingCall -> "Incoming call from: ${trigger.contactLabel ?: trigger.contactFilter ?: "Any caller"}"
+                                    is Trigger.MissedCall -> "Missed call from: ${trigger.contactLabel ?: trigger.contactFilter ?: "Any caller"}"
+                                    is Trigger.WifiConnected -> "Wi-Fi connects to: ${trigger.ssidContains ?: "Any network"}"
+                                    is Trigger.Webhook -> "HTTP Webhook /${trigger.path.trimStart('/')}"
+                                    is Trigger.Condition -> "Condition check every ${trigger.intervalMinutes}m: \"${trigger.checkInstruction}\""
+                                    is Trigger.BroadcastEvent -> "System broadcast: ${trigger.action}"
+                                    else -> trigger.describe()
+                                }
+                                Text(
+                                    detail,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = scheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // Section 2: Instructions & Execution Steps
+                Column(verticalArrangement = Arrangement.spacedBy(Spacing.xs)) {
+                    Text(
+                        "2. Execution Workflow (Kya run hoga)",
+                        style = MaterialTheme.typography.titleSmall,
+                        color = scheme.primary,
+                        fontWeight = FontWeight.Bold
+                    )
+
+                    // Instruction box
+                    if (macro.instruction.isNotBlank()) {
+                        Card(
+                            shape = MaterialTheme.shapes.medium,
+                            colors = CardDefaults.cardColors(containerColor = scheme.surfaceContainer),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(Modifier.padding(Spacing.s + 4.dp), verticalArrangement = Arrangement.spacedBy(Spacing.xs)) {
+                                Text("Goal / Instruction:", style = MaterialTheme.typography.labelSmall, color = scheme.primary, fontWeight = FontWeight.Bold)
+                                Text(macro.instruction, style = MaterialTheme.typography.bodyMedium)
+                            }
+                        }
+                    }
+
+                    // Steps breakdown
+                    when (val act = macro.action) {
+                        is Action.Replay -> {
+                            if (act.steps.isEmpty()) {
+                                Text(
+                                    "No recorded steps saved yet. Run once with AI to learn exact steps.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = scheme.onSurfaceVariant
+                                )
+                            } else {
+                                Column(verticalArrangement = Arrangement.spacedBy(Spacing.xs)) {
+                                    act.steps.forEachIndexed { idx, step ->
+                                        Card(
+                                            shape = MaterialTheme.shapes.small,
+                                            colors = CardDefaults.cardColors(containerColor = scheme.surfaceContainerHigh),
+                                            modifier = Modifier.fillMaxWidth()
+                                        ) {
+                                            Column(Modifier.padding(Spacing.s + 2.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                                Row(
+                                                    modifier = Modifier.fillMaxWidth(),
+                                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                                    verticalAlignment = Alignment.CenterVertically
+                                                ) {
+                                                    Text(
+                                                        "Step ${idx + 1}: ${step.toolName}",
+                                                        style = MaterialTheme.typography.bodyMedium,
+                                                        fontWeight = FontWeight.Bold,
+                                                        color = scheme.primary
+                                                    )
+                                                    Text(
+                                                        "${step.delayMs}ms",
+                                                        style = MaterialTheme.typography.labelSmall,
+                                                        color = scheme.onSurfaceVariant
+                                                    )
+                                                }
+                                                if (step.description.isNotBlank()) {
+                                                    Text(
+                                                        step.description,
+                                                        style = MaterialTheme.typography.bodySmall,
+                                                        color = scheme.onSurface
+                                                    )
+                                                }
+                                                if (step.args.isNotEmpty()) {
+                                                    val argsStr = step.args.entries.joinToString(", ") { "${it.key}: \"${it.value}\"" }
+                                                    Text(
+                                                        argsStr,
+                                                        style = MaterialTheme.typography.labelSmall,
+                                                        fontFamily = FontFamily.Monospace,
+                                                        color = scheme.onSurfaceVariant,
+                                                        maxLines = 3,
+                                                        overflow = TextOverflow.Ellipsis
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        Action.AlwaysAsk -> {
+                            Card(
+                                shape = MaterialTheme.shapes.small,
+                                colors = CardDefaults.cardColors(containerColor = scheme.surfaceContainerHigh),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Column(Modifier.padding(Spacing.s + 4.dp), verticalArrangement = Arrangement.spacedBy(Spacing.xs)) {
+                                    Text("🤖 Dynamic AI Pipeline (Runtime):", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold)
+                                    Text(
+                                        "1. Event Context: Captures sender, message, or sensor trigger dynamically.\n" +
+                                        "2. AI Reasoning: Gemini Live evaluates instruction against live context.\n" +
+                                        "3. Headless Action: Dispatches reply_notification or send_sms without opening apps or turning on screen.\n" +
+                                        "4. Completion: Finishes silently in the background.",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = scheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+                        }
+
+                        is Action.HandleCall -> {
+                            Card(
+                                shape = MaterialTheme.shapes.small,
+                                colors = CardDefaults.cardColors(containerColor = scheme.surfaceContainerHigh),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Column(Modifier.padding(Spacing.s + 4.dp), verticalArrangement = Arrangement.spacedBy(Spacing.xs)) {
+                                    Text("📞 Acoustic In-Call Handling:", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold)
+                                    Text("Goal: ${act.goal}", style = MaterialTheme.typography.bodySmall)
+                                    Text("Disclose AI: ${if (act.discloseAi) "Yes" else "No"}", style = MaterialTheme.typography.labelSmall, color = scheme.onSurfaceVariant)
+                                    Text("Max Duration: ${act.maxDurationMs / 60000} mins", style = MaterialTheme.typography.labelSmall, color = scheme.onSurfaceVariant)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Row(horizontalArrangement = Arrangement.spacedBy(Spacing.xs)) {
+                if (macro.action is Action.Replay) {
+                    Button(onClick = onRun, enabled = !anyRunning) {
+                        Icon(Icons.Filled.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(Spacing.xs))
+                        Text("Run")
+                    }
+                }
+                FilledTonalButton(onClick = onEdit) {
+                    Icon(Icons.Outlined.Edit, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(Spacing.xs))
+                    Text("Edit")
+                }
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Close")
+            }
+        }
     )
 }

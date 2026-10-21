@@ -9,7 +9,10 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.ErrorOutline
@@ -74,16 +77,23 @@ fun PlanCard(
         else -> Triple(stringResource(R.string.plan_status_working), scheme.primaryContainer, scheme.onPrimaryContainer)
     }
 
+    val cyanAccent = Color(0xFF00E5FF)
+    val goldAccent = Color(0xFFFFD700)
+    val cardBorder = Brush.horizontalGradient(listOf(cyanAccent.copy(alpha = 0.35f), goldAccent.copy(alpha = 0.2f)))
+
     Card(
-        modifier = modifier.fillMaxWidth().animateContentSize(),
+        modifier = modifier
+            .fillMaxWidth()
+            .border(1.dp, cardBorder, MaterialTheme.shapes.large)
+            .animateContentSize(),
         shape = MaterialTheme.shapes.large,
         colors = CardDefaults.cardColors(containerColor = scheme.surfaceContainerHigh)
     ) {
         Column(Modifier.padding(Spacing.m)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Outlined.Route, contentDescription = null, tint = scheme.primary, modifier = Modifier.size(20.dp))
+                Icon(Icons.Outlined.Route, contentDescription = null, tint = cyanAccent, modifier = Modifier.size(20.dp))
                 Spacer(Modifier.width(Spacing.s))
-                Text(stringResource(R.string.plan_title), style = MaterialTheme.typography.labelLarge, color = scheme.primary, modifier = Modifier.weight(1f))
+                Text(stringResource(R.string.plan_title), style = MaterialTheme.typography.labelLarge, color = cyanAccent, modifier = Modifier.weight(1f))
                 Badge(statusLabel, container = statusContainer, content = statusContent)
             }
             Spacer(Modifier.size(Spacing.s))
@@ -100,7 +110,7 @@ fun PlanCard(
                         .fillMaxWidth()
                         .clip(MaterialTheme.shapes.extraSmall)
                         .semantics { contentDescription = progressText },
-                    color = if (status == "failed") scheme.error else scheme.primary,
+                    color = if (status == "failed") scheme.error else cyanAccent,
                     trackColor = scheme.surfaceContainerHighest
                 )
                 Spacer(Modifier.size(Spacing.s))
@@ -133,7 +143,7 @@ fun PlanCard(
                             contentDescription = null,
                             tint = when {
                                 done -> ext.success
-                                now -> scheme.primary
+                                now -> cyanAccent
                                 else -> scheme.outline
                             },
                             modifier = Modifier.padding(top = 2.dp).size(16.dp)
