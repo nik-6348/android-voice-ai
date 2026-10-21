@@ -784,7 +784,7 @@ class AssistantOverlay(private val session: VoiceSession) {
             }
 
             // Plan: segmented progress, current step and the assistant's thinking
-            plan?.takeIf { it.status != "done" }?.let { p ->
+            plan?.let { p ->
                 Spacer(Modifier.height(Spacing.s + 4.dp))
                 PlanStrip(
                     goal = safeString(p.goal),

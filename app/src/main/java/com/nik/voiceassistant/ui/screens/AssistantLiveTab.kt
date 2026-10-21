@@ -225,7 +225,7 @@ fun AssistantLiveTab(
             } else {
                 Column(Modifier.fillMaxSize()) {
                     CompactStatus(phase, statusText, mainLabel, level, clock, onMainButton)
-                    plan?.takeIf { it.status != "done" }?.let { p ->
+                    plan?.let { p ->
                         PlanCard(p, toolStatus = null, modifier = Modifier.padding(horizontal = Spacing.m, vertical = Spacing.xs))
                     }
                     Transcript(transcripts, assistantName, Modifier.weight(1f))

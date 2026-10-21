@@ -438,9 +438,42 @@ class DeviceToolExecutor(
      * Runs one tool call. trusted: the user started it themself (an automation they ran), which
      * counts as asking for calls / sends / deletes; payments and wipes still need their yes.
      */
+    private val passiveTools = setOf(
+        "update_plan", "read_screen", "look_at_screen", "list_apps",
+        "find_contact", "list_recent_messages", "list_automations",
+        "end_conversation", "wait"
+    )
+
+    private fun ensurePlanForAction(toolName: String, args: Map<String, Any?>) {
+        if (toolName in passiveTools) return
+        val current = plan
+        if (current == null || current.status in setOf("done", "failed")) {
+            val userGoal = userText().lines().lastOrNull { it.isNotBlank() }?.trim()
+                ?: when (toolName) {
+                    "open_app" -> "Open ${args["app_name"] ?: args["name"] ?: "app"}"
+                    "open_website" -> "Search/Open ${args["url_or_search"] ?: "website"}"
+                    "make_call" -> "Call ${args["number"] ?: "contact"}"
+                    "send_sms" -> "Send SMS to ${args["number"] ?: "recipient"}"
+                    "reply_notification" -> "Reply to message"
+                    "search_settings" -> "Find setting ${args["query"] ?: ""}"
+                    "launch_intent" -> "Launch ${args["action"] ?: "screen"}"
+                    "research" -> "Research ${args["question"] ?: "steps"}"
+                    else -> "Execute $toolName"
+                }
+            updatePlan(
+                goal = userGoal,
+                steps = listOf(userGoal, "Verify on screen and complete"),
+                currentStep = 1,
+                status = "working",
+                note = "Starting direct execution"
+            )
+        }
+    }
+
     override fun execute(toolName: String, arguments: Map<String, Any?>?, trusted: Boolean): Map<String, Any?> = actionLock.withLock {
         // Arguments can hold message text and numbers: only the tool name is logged
         Log.i(TAG, "Executing tool: $toolName")
+        ensurePlanForAction(toolName, arguments.orEmpty())
         val result = run(toolName, arguments.orEmpty(), trusted)
         withProgressCheck(toolName, arguments.orEmpty(), result)
     }
@@ -587,8 +620,8 @@ class DeviceToolExecutor(
                     ?: mapOf("error" to AGENT_OFF)
 
                 "update_plan" -> updatePlan(
-                    goal = str("goal") ?: plan?.goal ?: "",
-                    steps = str("steps")?.let { s -> runCatching { JsonParser.parseString(s).asJsonArray.map { it.asString } }.getOrNull() },
+                    goal = str("goal") ?: plan?.goal ?: userText().lines().lastOrNull { it.isNotBlank() }?.trim() ?: "Current task",
+                    steps = parseSteps(args["steps"] ?: args["step_list"]),
                     currentStep = int("current_step"),
                     status = str("status"),
                     note = str("note")
@@ -852,15 +885,56 @@ class DeviceToolExecutor(
         }
     }
 
+    private fun parseSteps(raw: Any?): List<String>? {
+        if (raw == null) return null
+        when (raw) {
+            is Collection<*> -> {
+                val list = raw.mapNotNull { it?.toString()?.trim() }.filter { it.isNotBlank() }
+                if (list.isNotEmpty()) return list
+            }
+            is Array<*> -> {
+                val list = raw.mapNotNull { it?.toString()?.trim() }.filter { it.isNotBlank() }
+                if (list.isNotEmpty()) return list
+            }
+        }
+        val text = raw.toString().trim()
+        if (text.isBlank()) return null
+
+        val fromJson = runCatching {
+            val elem = JsonParser.parseString(text)
+            if (elem.isJsonArray) {
+                elem.asJsonArray.mapNotNull { runCatching { it.asString.trim() }.getOrNull() }.filter { it.isNotBlank() }
+            } else null
+        }.getOrNull()
+        if (!fromJson.isNullOrEmpty()) return fromJson
+
+        val stripped = if (text.startsWith("[") && text.endsWith("]")) {
+            text.substring(1, text.length - 1)
+        } else {
+            text
+        }
+        val items = if (stripped.contains("\n")) {
+            stripped.lines().map { it.trim().removePrefix("-").removePrefix("•").trim() }
+        } else if (stripped.contains(",")) {
+            stripped.split(",").map { it.trim().removeSurrounding("\"").removeSurrounding("'").trim() }
+        } else {
+            listOf(stripped.trim().removeSurrounding("\"").removeSurrounding("'").trim())
+        }
+        return items.filter { it.isNotBlank() }.takeIf { it.isNotEmpty() }
+    }
+
     /** Starts the plan for a new goal, or updates the current one. */
     private fun updatePlan(goal: String, steps: List<String>?, currentStep: Int?, status: String?, note: String?): Map<String, Any?> {
-        if (goal.isBlank()) return mapOf("error" to "Give the goal")
+        val effectiveGoal = goal.ifBlank { plan?.goal ?: userText().lines().lastOrNull { it.isNotBlank() }?.trim() ?: "Current task" }
         val old = plan
-        val sameGoal = old != null && old.goal.equals(goal, ignoreCase = true) && old.status !in setOf("done", "failed")
+        val sameGoal = old != null && old.goal.equals(effectiveGoal, ignoreCase = true) && old.status !in setOf("done", "failed")
+        val resolvedSteps = steps?.filter { it.isNotBlank() }?.takeIf { it.isNotEmpty() }
+            ?: old?.steps.takeIf { sameGoal }?.takeIf { it.isNotEmpty() }
+            ?: listOf(effectiveGoal, "Verify on screen and complete")
         val next = TaskPlan(
-            goal = goal,
-            steps = steps?.filter { it.isNotBlank() }?.takeIf { it.isNotEmpty() } ?: old?.steps.takeIf { sameGoal }.orEmpty(),
-            currentStep = currentStep ?: old?.currentStep.takeIf { sameGoal } ?: 1,
+            goal = effectiveGoal,
+            steps = resolvedSteps,
+            currentStep = (currentStep ?: old?.currentStep.takeIf { sameGoal } ?: 1).coerceIn(1, resolvedSteps.size),
             status = status ?: "working",
             note = note,
             tried = if (sameGoal) old!!.tried else java.util.Collections.synchronizedSet(mutableSetOf()),
@@ -873,8 +947,7 @@ class DeviceToolExecutor(
             "blocked" -> mapOf(
                 "saved" to true,
                 "untried_approaches" to approaches.filterKeys { it !in next.tried }.values.toList().ifEmpty { approaches.values.toList() },
-                "next" to "Pick the most promising untried approach and keep going; the goal isn't lost. " +
-                    "Only after several different approaches failed, tell the user exactly what is stopping you."
+                "next" to "Pick the most promising untried approach or search the web/browser for exact steps on this phone ({DEVICE}). Never give up (kabhi bhi haar nahi manna hai)."
             )
             "done", "failed" -> mapOf("saved" to true, "next" to "Check the screen shows the result, then tell the user the outcome in one short sentence.")
             else -> mapOf("saved" to true, "next" to "Carry on with step ${next.currentStep}; say in one short line what you're doing.")
@@ -1096,7 +1169,7 @@ class DeviceToolExecutor(
         val untried = approaches.filterKeys { it !in (plan?.tried ?: emptySet<String>()) }.values.toList().ifEmpty { approaches.values.toList() }
         val why = if (repeats >= 3) "You have made this same call $repeats times" else "The screen hasn't changed after the last ${sameScreenStreak + 1} actions"
         return result + mapOf(
-            "progress_warning" to "$why: this route isn't working. Stop repeating it and switch approach (call update_plan with status blocked and what you'll try).",
+            "progress_warning" to "$why: direct action is not progressing. Do NOT give up (kabhi bhi haar nahi manna hai)! Immediately call research or open_website with Google search for exact steps on this phone ({DEVICE}), update_plan with the researched steps, and follow them.",
             "untried_approaches" to untried
         )
     }
