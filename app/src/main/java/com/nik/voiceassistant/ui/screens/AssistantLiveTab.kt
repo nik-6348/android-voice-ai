@@ -100,6 +100,7 @@ import com.nik.voiceassistant.TranscriptItem
 import com.nik.voiceassistant.VoiceAssistantViewModel
 import com.nik.voiceassistant.ui.components.OrbMode
 import com.nik.voiceassistant.ui.components.PlanCard
+import com.nik.voiceassistant.ui.components.TaskCompletionCard
 import com.nik.voiceassistant.ui.components.VoiceBars
 import com.nik.voiceassistant.ui.components.VoiceOrb
 import com.nik.voiceassistant.ui.components.activeWithHold
@@ -227,7 +228,16 @@ fun AssistantLiveTab(
                 Column(Modifier.fillMaxSize()) {
                     CompactStatus(phase, statusText, mainLabel, level, clock, onMainButton)
                     plan?.let { p ->
-                        PlanCard(p, toolStatus = null, modifier = Modifier.padding(horizontal = Spacing.m, vertical = Spacing.xs))
+                        if (p.status == "done") {
+                            TaskCompletionCard(
+                                plan = p,
+                                onViewDetails = { /* TODO Task 5: open trace/timeline dialog */ },
+                                onNewTask = { viewModel.startNewChat() },
+                                modifier = Modifier.padding(horizontal = Spacing.m, vertical = Spacing.xs)
+                            )
+                        } else {
+                            PlanCard(p, toolStatus = null, modifier = Modifier.padding(horizontal = Spacing.m, vertical = Spacing.xs))
+                        }
                     }
                     Transcript(transcripts, assistantName, Modifier.weight(1f))
                 }
