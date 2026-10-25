@@ -107,6 +107,10 @@ class VoiceAssistantViewModel(application: Application) : AndroidViewModel(appli
 
     val choices: StateFlow<Choices?> = session.choices
 
+    val automationReview: StateFlow<com.nik.voiceassistant.data.macro.AutomationReview?> = session.automationReview
+    fun approveAutomationReview() = session.approvePendingReview()
+    fun cancelAutomationReview() = session.cancelPendingReview()
+
     fun pickChoice(option: String) = session.pickChoice(option)
 
     fun setWakeWordEnabled(enabled: Boolean) = session.setWakeWordEnabled(enabled)
@@ -188,6 +192,37 @@ class VoiceAssistantViewModel(application: Application) : AndroidViewModel(appli
             com.nik.voiceassistant.data.macro.MacroStore.update(getApplication(), id) { it.copy(title = title.trim(), instruction = instruction.trim()) }
             refreshAutomations()
         }
+    }
+
+    fun saveUpdatedMacro(macro: com.nik.voiceassistant.data.macro.Macro) {
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            com.nik.voiceassistant.data.macro.MacroStore.save(getApplication(), macro)
+            if (macro.enabled && macro.triggers.any { it is com.nik.voiceassistant.data.macro.Trigger.Scheduled }) {
+                com.nik.voiceassistant.service.ScheduledTriggerMonitor.scheduleOne(getApplication(), macro)
+            } else {
+                com.nik.voiceassistant.service.ScheduledTriggerMonitor.cancel(getApplication(), macro.id)
+            }
+            com.nik.voiceassistant.service.GenericBroadcastMonitor.refresh(getApplication()) { null }
+            refreshAutomations()
+        }
+    }
+
+    fun editAutomationWithAi(macro: com.nik.voiceassistant.data.macro.Macro, userPrompt: String) {
+        val clean = userPrompt.trim()
+        if (clean.isBlank()) return
+        val aiInstruction = """
+            You are editing the saved automation '${macro.title}' (ID: ${macro.id}).
+            Current trigger: ${macro.triggerSummary()}
+            Current constraints: ${macro.constraints.joinToString { it.describe() }.ifEmpty { "None" }}
+            Current action: ${macro.instruction}
+            
+            The user says: "$clean"
+            
+            Carefully update the automation by calling edit_automation(id="${macro.id}", ...).
+            Set the appropriate trigger, action/instruction, or constraints (like constraint_wifi_only, constraint_battery_at_least, scheduled_hour, etc.) as requested by the user.
+            Once you call edit_automation, confirm the changes in one brief sentence.
+        """.trimIndent()
+        session.sendAutomation(aiInstruction, silent = false)
     }
 
     fun toggleFavoriteAutomation(id: String) {

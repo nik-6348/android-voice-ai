@@ -197,7 +197,9 @@ class AssistantOverlay(private val session: VoiceSession) {
 
     fun bind(scope: CoroutineScope, appVisible: StateFlow<Boolean>) {
         scope.launch {
-            combine(session.isRecording, appVisible) { live, visible -> live && !visible }
+            combine(session.isRecording, appVisible, session.isSilentAutomation) { live, visible, silent ->
+                live && !visible && !silent
+            }
                 .distinctUntilChanged()
                 .collect {
                     wanted = it
@@ -697,6 +699,7 @@ class AssistantOverlay(private val session: VoiceSession) {
         val transcripts by session.transcripts.collectAsState()
         val plan by session.plan.collectAsState()
         val choices by session.choices.collectAsState()
+        val automationReview by session.automationReview.collectAsState()
         val tool by session.activeToolStatus.collectAsState()
         val scheme = MaterialTheme.colorScheme
 
@@ -827,8 +830,20 @@ class AssistantOverlay(private val session: VoiceSession) {
                     .semantics { liveRegion = LiveRegionMode.Polite }
             )
 
+            // Automation Review UI (3 Pillars)
+            AnimatedVisibility(automationReview != null, enter = fadeIn() + expandVertically(), exit = fadeOut() + shrinkVertically()) {
+                automationReview?.let { review ->
+                    com.nik.voiceassistant.ui.components.AutomationReviewCard(
+                        review = review,
+                        onApprove = { session.approvePendingReview() },
+                        onCancel = { session.cancelPendingReview() },
+                        modifier = Modifier.padding(top = Spacing.s, end = Spacing.s)
+                    )
+                }
+            }
+
             // Options to tap (show_choices)
-            AnimatedVisibility(choices != null, enter = fadeIn() + expandVertically(), exit = fadeOut() + shrinkVertically()) {
+            AnimatedVisibility(choices != null && automationReview == null, enter = fadeIn() + expandVertically(), exit = fadeOut() + shrinkVertically()) {
                 Column(Modifier.padding(top = Spacing.s + 2.dp, end = Spacing.s)) {
                     choices?.let { c ->
                         Text(safeString(c.question), style = MaterialTheme.typography.labelLarge, color = scheme.onSurfaceVariant)

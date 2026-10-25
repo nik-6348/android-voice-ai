@@ -132,6 +132,7 @@ fun AssistantLiveTab(
     val isAgentEnabled by viewModel.isAgentEnabled.collectAsState()
     val isWakeWordEnabled by viewModel.isWakeWordEnabled.collectAsState()
     val choices by viewModel.choices.collectAsState()
+    val automationReview by viewModel.automationReview.collectAsState()
     val assistantName by viewModel.assistantName.collectAsState()
     val sessionTitle by viewModel.currentSessionTitle.collectAsState()
     val sessionId by viewModel.currentSessionId.collectAsState()
@@ -242,7 +243,17 @@ fun AssistantLiveTab(
             )
         }
 
-        AnimatedVisibility(visible = choices != null, enter = fadeIn() + expandVertically(), exit = fadeOut() + shrinkVertically()) {
+        AnimatedVisibility(visible = automationReview != null, enter = fadeIn() + expandVertically(), exit = fadeOut() + shrinkVertically()) {
+            automationReview?.let { review ->
+                com.nik.voiceassistant.ui.components.AutomationReviewCard(
+                    review = review,
+                    onApprove = { viewModel.approveAutomationReview() },
+                    onCancel = { viewModel.cancelAutomationReview() }
+                )
+            }
+        }
+
+        AnimatedVisibility(visible = choices != null && automationReview == null, enter = fadeIn() + expandVertically(), exit = fadeOut() + shrinkVertically()) {
             choices?.let { open ->
                 ChoicesCard(safeString(open.question), safeList<String>(open.options)) { viewModel.pickChoice(it) }
             }

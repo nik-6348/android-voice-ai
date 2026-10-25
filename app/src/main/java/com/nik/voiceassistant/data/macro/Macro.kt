@@ -123,20 +123,69 @@ sealed class Trigger {
 /** Extra conditions, all of which must hold for the trigger to actually run the macro. */
 sealed class Constraint {
     abstract fun describe(): String
+    abstract fun isMet(context: android.content.Context): Boolean
 
     data class TimeWindow(val fromHour: Int, val fromMinute: Int, val toHour: Int, val toMinute: Int) : Constraint() {
         override fun describe() = String.format("Between %02d:%02d and %02d:%02d", fromHour, fromMinute, toHour, toMinute)
+        override fun isMet(context: android.content.Context): Boolean {
+            val cal = java.util.Calendar.getInstance()
+            val currentMinutes = cal.get(java.util.Calendar.HOUR_OF_DAY) * 60 + cal.get(java.util.Calendar.MINUTE)
+            val fromMinutes = fromHour * 60 + fromMinute
+            val toMinutes = toHour * 60 + toMinute
+            return if (fromMinutes <= toMinutes) {
+                currentMinutes in fromMinutes..toMinutes
+            } else {
+                currentMinutes >= fromMinutes || currentMinutes <= toMinutes
+            }
+        }
     }
+
     data class Days(val days: Set<Int>) : Constraint() {
         override fun describe(): String {
             val names = listOf("", "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat")
             return "On " + days.sorted().joinToString(", ") { names[it] }
         }
+        override fun isMet(context: android.content.Context): Boolean {
+            val currentDay = java.util.Calendar.getInstance().get(java.util.Calendar.DAY_OF_WEEK)
+            return days.isEmpty() || currentDay in days
+        }
     }
-    data class BatteryAtLeast(val percent: Int) : Constraint() { override fun describe() = "Battery at least $percent%" }
-    data class BatteryAtMost(val percent: Int) : Constraint() { override fun describe() = "Battery at most $percent%" }
-    object WifiConnected : Constraint() { override fun describe() = "Wi-Fi connected" }
-    object ScreenOff : Constraint() { override fun describe() = "Screen is off" }
+
+    data class BatteryAtLeast(val percent: Int) : Constraint() {
+        override fun describe() = "Battery at least $percent%"
+        override fun isMet(context: android.content.Context): Boolean {
+            val bm = context.getSystemService(android.os.BatteryManager::class.java)
+            val level = bm?.getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_CAPACITY) ?: 100
+            return level >= percent
+        }
+    }
+
+    data class BatteryAtMost(val percent: Int) : Constraint() {
+        override fun describe() = "Battery at most $percent%"
+        override fun isMet(context: android.content.Context): Boolean {
+            val bm = context.getSystemService(android.os.BatteryManager::class.java)
+            val level = bm?.getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_CAPACITY) ?: 100
+            return level <= percent
+        }
+    }
+
+    object WifiConnected : Constraint() {
+        override fun describe() = "Wi-Fi connected"
+        override fun isMet(context: android.content.Context): Boolean {
+            val cm = context.getSystemService(android.net.ConnectivityManager::class.java) ?: return false
+            val net = cm.activeNetwork ?: return false
+            val caps = cm.getNetworkCapabilities(net) ?: return false
+            return caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI)
+        }
+    }
+
+    object ScreenOff : Constraint() {
+        override fun describe() = "Screen is off"
+        override fun isMet(context: android.content.Context): Boolean {
+            val pm = context.getSystemService(android.os.PowerManager::class.java)
+            return pm?.isInteractive == false
+        }
+    }
 }
 
 /** What a macro does once triggered. */
@@ -168,3 +217,17 @@ data class RecordedStep(
     val description: String = "",
     val delayMs: Long = 600L
 )
+
+/**
+ * Review state shown on screen before saving/arming an automation.
+ * Represents the 3 pillars: Trigger, Action, Constraints.
+ */
+data class AutomationReview(
+    val title: String,
+    val triggerSummary: String,
+    val actionSummary: String,
+    val constraintsSummary: String,
+    val onApprove: () -> Unit,
+    val onCancel: () -> Unit
+)
+

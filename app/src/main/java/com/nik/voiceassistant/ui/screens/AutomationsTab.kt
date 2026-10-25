@@ -27,10 +27,12 @@ import androidx.compose.material.icons.outlined.Bolt
 import androidx.compose.material.icons.outlined.Call
 import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.Edit
-import androidx.compose.material.icons.outlined.MusicNote
-import androidx.compose.material.icons.outlined.Visibility
+import androidx.compose.material.icons.outlined.Info
+import androidx.compose.material.icons.outlined.Lock
+import androidx.compose.material.icons.outlined.PlayCircle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import com.nik.voiceassistant.data.macro.Constraint
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -212,9 +214,15 @@ fun AutomationsTab(viewModel: VoiceAssistantViewModel) {
             EditAutomationDialog(
                 macro = macro,
                 onDismiss = { editMacro = null },
-                onSave = { title, instruction ->
-                    viewModel.updateAutomation(id, title, instruction)
+                onSave = { updated ->
+                    viewModel.saveUpdatedMacro(updated)
                     editMacro = null
+                    Toast.makeText(context.applicationContext, "Automation updated", Toast.LENGTH_SHORT).show()
+                },
+                onEditWithAi = { prompt ->
+                    viewModel.editAutomationWithAi(macro, prompt)
+                    editMacro = null
+                    Toast.makeText(context.applicationContext, "Updating with AI...", Toast.LENGTH_SHORT).show()
                 }
             )
         }
@@ -287,7 +295,7 @@ fun AutomationCard(
     val (icon: ImageVector, container, content) = when {
         macro.action is Action.HandleCall -> Triple(Icons.Outlined.Call, scheme.secondaryContainer, scheme.onSecondaryContainer)
         macro.triggers.any { it is Trigger.Scheduled } -> Triple(Icons.Outlined.Alarm, scheme.errorContainer, scheme.onErrorContainer)
-        macro.title.contains("music", true) || macro.title.contains("song", true) -> Triple(Icons.Outlined.MusicNote, scheme.tertiaryContainer, scheme.onTertiaryContainer)
+        macro.title.contains("music", true) || macro.title.contains("song", true) -> Triple(Icons.Outlined.PlayCircle, scheme.tertiaryContainer, scheme.onTertiaryContainer)
         else -> Triple(Icons.Outlined.Bolt, scheme.primaryContainer, scheme.onPrimaryContainer)
     }
     Card(
@@ -317,7 +325,7 @@ fun AutomationCard(
                     )
                 }
                 IconButton(onClick = onViewDetails) {
-                    Icon(Icons.Outlined.Visibility, contentDescription = "View details of ${macro.title}")
+                    Icon(Icons.Outlined.Info, contentDescription = "View details of ${macro.title}")
                 }
                 IconButton(onClick = onEdit) {
                     Icon(Icons.Outlined.Edit, contentDescription = "Edit ${macro.title}")
@@ -517,45 +525,312 @@ fun CreateAutomationDialog(
     )
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun EditAutomationDialog(
     macro: Macro,
     onDismiss: () -> Unit,
-    onSave: (title: String, instruction: String) -> Unit
+    onSave: (Macro) -> Unit,
+    onEditWithAi: (String) -> Unit
 ) {
+    val initialTrig = macro.triggers.firstOrNull()
     var title by rememberSaveable { mutableStateOf(macro.title) }
     var instruction by rememberSaveable { mutableStateOf(macro.instruction) }
+    var naturalAiPrompt by rememberSaveable { mutableStateOf("") }
+
+    // Trigger state
+    var triggerCategory by rememberSaveable {
+        mutableStateOf(
+            when (initialTrig) {
+                is Trigger.Scheduled -> "scheduled"
+                is Trigger.NotificationReceived -> "notification"
+                is Trigger.WifiConnected -> "wifi"
+                Trigger.ChargerConnected, Trigger.ChargerDisconnected -> "charger"
+                is Trigger.Phrase -> "phrase"
+                else -> "manual"
+            }
+        )
+    }
+
+    var schedHour by rememberSaveable { mutableStateOf((initialTrig as? Trigger.Scheduled)?.hour ?: 8) }
+    var schedMin by rememberSaveable { mutableStateOf((initialTrig as? Trigger.Scheduled)?.minute ?: 0) }
+    var notifApp by rememberSaveable { mutableStateOf((initialTrig as? Trigger.NotificationReceived)?.appLabel ?: "WhatsApp") }
+    var notifText by rememberSaveable { mutableStateOf((initialTrig as? Trigger.NotificationReceived)?.textContains ?: "") }
+    var wifiSsid by rememberSaveable { mutableStateOf((initialTrig as? Trigger.WifiConnected)?.ssidContains ?: "") }
+    var phraseText by rememberSaveable { mutableStateOf((initialTrig as? Trigger.Phrase)?.phrase ?: macro.title) }
+    var chargerPlugged by rememberSaveable { mutableStateOf(initialTrig !is Trigger.ChargerDisconnected) }
+
+    // Constraints state (Tasker/MacroDroid style)
+    var wifiConstraint by rememberSaveable { mutableStateOf(macro.constraints.any { it is Constraint.WifiConnected }) }
+    var screenOffConstraint by rememberSaveable { mutableStateOf(macro.constraints.any { it is Constraint.ScreenOff }) }
+    var batteryMinStr by rememberSaveable {
+        mutableStateOf(macro.constraints.filterIsInstance<Constraint.BatteryAtLeast>().firstOrNull()?.percent?.toString() ?: "")
+    }
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        icon = { Icon(Icons.Outlined.Edit, contentDescription = null) },
-        title = { Text("Edit Automation") },
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Outlined.Edit, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                Spacer(Modifier.width(Spacing.s))
+                Text("Edit Automation", style = MaterialTheme.typography.titleLarge)
+            }
+        },
         text = {
-            Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(Spacing.s)) {
-                OutlinedTextField(
-                    value = title,
-                    onValueChange = { title = it },
-                    label = { Text("Title") },
-                    singleLine = true,
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(Spacing.m)
+            ) {
+                // --- SECTION 0: Natural Language Prompt (AI Edit) ---
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f)),
                     modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(Modifier.padding(Spacing.m), verticalArrangement = Arrangement.spacedBy(Spacing.xs)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Outlined.AutoAwesome, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(Spacing.xs))
+                            Text("Edit with Natural Language (AI)", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
+                        }
+                        Text(
+                            "Type in plain words what to change (e.g. \"Trigger shaam 8 baje kar do aur sirf WiFi par chale\"):",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        OutlinedTextField(
+                            value = naturalAiPrompt,
+                            onValueChange = { naturalAiPrompt = it },
+                            placeholder = { Text("e.g. Trigger 9:00 PM kar do aur sirf WiFi par chale") },
+                            modifier = Modifier.fillMaxWidth(),
+                            minLines = 2,
+                            maxLines = 4
+                        )
+                        Button(
+                            onClick = { onEditWithAi(naturalAiPrompt) },
+                            enabled = naturalAiPrompt.isNotBlank(),
+                            modifier = Modifier.align(Alignment.End)
+                        ) {
+                            Icon(Icons.Outlined.AutoAwesome, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(Spacing.xs))
+                            Text("Apply with AI")
+                        }
+                    }
+                }
+
+                Text(
+                    "— OR EDIT MANUALLY (3 PILLARS) —",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.outline,
+                    modifier = Modifier.align(Alignment.CenterHorizontally)
                 )
-                Text("Trigger: ${macro.triggerSummary()}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                OutlinedTextField(
-                    value = instruction,
-                    onValueChange = { instruction = it },
-                    label = { Text("AI Prompt / Steps") },
-                    minLines = 4,
-                    maxLines = 10,
+
+                // --- PILLAR 1: TRIGGER (When) ---
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)),
                     modifier = Modifier.fillMaxWidth()
-                )
+                ) {
+                    Column(Modifier.padding(Spacing.m), verticalArrangement = Arrangement.spacedBy(Spacing.s)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Outlined.Bolt, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(Spacing.xs))
+                            Text("1. TRIGGER (Kab chalega)", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                        }
+
+                        val trigTypes = listOf(
+                            "scheduled" to "Time",
+                            "notification" to "Notification",
+                            "wifi" to "Wi-Fi",
+                            "charger" to "Charger",
+                            "phrase" to "Voice Phrase"
+                        )
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(Spacing.xs)) {
+                            trigTypes.take(3).forEach { (type, label) ->
+                                FilterChip(
+                                    selected = triggerCategory == type,
+                                    onClick = { triggerCategory = type },
+                                    label = { Text(label, style = MaterialTheme.typography.bodySmall) }
+                                )
+                            }
+                        }
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(Spacing.xs)) {
+                            trigTypes.drop(3).forEach { (type, label) ->
+                                FilterChip(
+                                    selected = triggerCategory == type,
+                                    onClick = { triggerCategory = type },
+                                    label = { Text(label, style = MaterialTheme.typography.bodySmall) }
+                                )
+                            }
+                        }
+
+                        when (triggerCategory) {
+                            "scheduled" -> {
+                                Text("Scheduled Time (24h format):", style = MaterialTheme.typography.bodySmall)
+                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(Spacing.s)) {
+                                    OutlinedTextField(
+                                        value = schedHour.toString(),
+                                        onValueChange = { schedHour = it.toIntOrNull()?.coerceIn(0, 23) ?: 0 },
+                                        label = { Text("Hour (0-23)") },
+                                        modifier = Modifier.weight(1f),
+                                        singleLine = true
+                                    )
+                                    OutlinedTextField(
+                                        value = String.format("%02d", schedMin),
+                                        onValueChange = { schedMin = it.toIntOrNull()?.coerceIn(0, 59) ?: 0 },
+                                        label = { Text("Min (0-59)") },
+                                        modifier = Modifier.weight(1f),
+                                        singleLine = true
+                                    )
+                                }
+                            }
+                            "notification" -> {
+                                OutlinedTextField(
+                                    value = notifApp,
+                                    onValueChange = { notifApp = it },
+                                    label = { Text("App (e.g. WhatsApp, Telegram)") },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    singleLine = true
+                                )
+                                OutlinedTextField(
+                                    value = notifText,
+                                    onValueChange = { notifText = it },
+                                    label = { Text("Text / Keyword filter (optional)") },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    singleLine = true
+                                )
+                            }
+                            "wifi" -> {
+                                OutlinedTextField(
+                                    value = wifiSsid,
+                                    onValueChange = { wifiSsid = it },
+                                    label = { Text("Wi-Fi SSID name (blank = any Wi-Fi)") },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    singleLine = true
+                                )
+                            }
+                            "charger" -> {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(if (chargerPlugged) "When Connected to Charger" else "When Disconnected from Charger", modifier = Modifier.weight(1f))
+                                    Switch(checked = chargerPlugged, onCheckedChange = { chargerPlugged = it })
+                                }
+                            }
+                            "phrase" -> {
+                                OutlinedTextField(
+                                    value = phraseText,
+                                    onValueChange = { phraseText = it },
+                                    label = { Text("Spoken Voice Trigger Phrase") },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    singleLine = true
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // --- PILLAR 2: ACTION (What to do) ---
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(Modifier.padding(Spacing.m), verticalArrangement = Arrangement.spacedBy(Spacing.s)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Outlined.AutoAwesome, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(Spacing.xs))
+                            Text("2. ACTION (Kya karna hai)", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                        }
+                        OutlinedTextField(
+                            value = title,
+                            onValueChange = { title = it },
+                            label = { Text("Automation Title") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        OutlinedTextField(
+                            value = instruction,
+                            onValueChange = { instruction = it },
+                            label = { Text("AI Instruction / Task Prompt") },
+                            minLines = 3,
+                            maxLines = 6,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                }
+
+                // --- PILLAR 3: CONSTRAINTS (Conditions) ---
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(Modifier.padding(Spacing.m), verticalArrangement = Arrangement.spacedBy(Spacing.s)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Outlined.Lock, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(Spacing.xs))
+                            Text("3. CONSTRAINTS (Conditions to run)", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                        }
+
+                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                            Text("Only when Wi-Fi is connected", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+                            Switch(checked = wifiConstraint, onCheckedChange = { wifiConstraint = it })
+                        }
+
+                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                            Text("Only when screen is off", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+                            Switch(checked = screenOffConstraint, onCheckedChange = { screenOffConstraint = it })
+                        }
+
+                        OutlinedTextField(
+                            value = batteryMinStr,
+                            onValueChange = { batteryMinStr = it.filter { c -> c.isDigit() }.take(3) },
+                            label = { Text("Minimum Battery % (optional, e.g. 20)") },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true
+                        )
+                    }
+                }
             }
         },
         confirmButton = {
-            Button(onClick = { onSave(title, instruction) }, enabled = title.isNotBlank() && instruction.isNotBlank()) {
-                Text("Save")
+            Button(
+                onClick = {
+                    val updatedTrigger = when (triggerCategory) {
+                        "scheduled" -> Trigger.Scheduled(schedHour, schedMin, (1..7).toSet())
+                        "notification" -> Trigger.NotificationReceived(
+                            packageName = if (notifApp.contains("whatsapp", ignoreCase = true)) "com.whatsapp" else null,
+                            appLabel = notifApp.ifBlank { null },
+                            titleContains = null,
+                            textContains = notifText.ifBlank { null }
+                        )
+                        "wifi" -> Trigger.WifiConnected(wifiSsid.ifBlank { null })
+                        "charger" -> if (chargerPlugged) Trigger.ChargerConnected else Trigger.ChargerDisconnected
+                        "phrase" -> Trigger.Phrase(phraseText.ifBlank { title })
+                        else -> initialTrig ?: Trigger.Manual
+                    }
+
+                    val updatedConstraints = mutableListOf<Constraint>().apply {
+                        if (wifiConstraint) add(Constraint.WifiConnected)
+                        if (screenOffConstraint) add(Constraint.ScreenOff)
+                        batteryMinStr.toIntOrNull()?.let { add(Constraint.BatteryAtLeast(it.coerceIn(1, 100))) }
+                    }
+
+                    val updatedMacro = macro.copy(
+                        title = title.trim(),
+                        instruction = instruction.trim(),
+                        triggers = listOf(updatedTrigger),
+                        constraints = updatedConstraints
+                    )
+                    onSave(updatedMacro)
+                },
+                enabled = title.isNotBlank() && instruction.isNotBlank()
+            ) {
+                Text("Save Changes")
             }
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel")
+            }
+        }
     )
 }
 
@@ -576,7 +851,7 @@ fun ViewAutomationDetailsDialog(
         onDismissRequest = onDismiss,
         title = {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Outlined.Visibility, contentDescription = null, tint = scheme.primary)
+                Icon(Icons.Outlined.Info, contentDescription = null, tint = scheme.primary)
                 Spacer(Modifier.width(Spacing.s))
                 Column {
                     Text(macro.title, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)

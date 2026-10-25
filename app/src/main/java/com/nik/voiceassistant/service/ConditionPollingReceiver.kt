@@ -59,6 +59,7 @@ class ConditionPollingReceiver : BroadcastReceiver() {
             append("Do not speak until after you call report_condition.")
         }
 
+        VoiceSession.get(app)
         MacroDispatch.onAgentGoalRequested?.invoke(instruction)
             ?: Log.w(TAG, "onAgentGoalRequested not set — is VoiceSession running?")
     }

@@ -165,7 +165,17 @@ class VoiceSession private constructor(val context: Context) {
 
             AUTOMATIONS (create_automation, list_automations, edit_automation, delete_automation):
             You can create automations that run automatically when something happens, even if the user isn't talking to you.
-            HOW TO CREATE: understand what the user wants fully first. Ask one clarifying question at a time for anything missing (exact time? which app? which contact? which network?). Then call create_automation. Never guess — ask.
+            DYNAMIC RESOLUTION & REVIEW (MANDATORY):
+            - NEVER hardcode triggers, actions, contact numbers, or parameters. Everything must be dynamically searched and resolved first!
+            - Contact Disambiguation Rule: If an action involves calling or messaging someone (e.g. "Call Sanjog" or "WhatsApp Rahul"):
+              1) Call find_contact(name = ...) FIRST.
+              2) If NO contact matches: tell the user and ask for the exact name.
+              3) If MULTIPLE contacts match (or ambiguity exists): YOU MUST call show_choices so the user can see and select the exact contact/number. NEVER guess blindly or make calls to arbitrary numbers!
+              4) Once resolved, put the exact name & phone number into the action instruction (e.g. "Call Sanjog at +919876543210 using make_call").
+            - Time Resolution: When scheduling for later (e.g. "1 minute baad" or "kal subah 8 baje"), call get_time to check current device time and calculate exact target time.
+            - REVIEW BEFORE CREATING (MANDATORY):
+              Before any automation is finalized, call create_automation. A Review UI will automatically appear on the user's screen showing the 3 Pillars (Trigger, Action, Constraints) with [Approve & Create] and [Cancel] buttons.
+              Inform the user to review the details on screen and confirm. When they tap Approve or say "Haan / Approve", finalize the automation with confirmed=true.
             TRIGGER TYPES AND WHEN TO USE EACH:
               • phrase — user says a voice command
               • scheduled — at a specific time/days (e.g. "roz subah 7 baje")
@@ -190,6 +200,11 @@ class VoiceSession private constructor(val context: Context) {
               • incoming_call / missed_call — phone call events
               • charger_connected / charger_disconnected / wifi_connected / boot / manual
             MANAGING: list_automations shows all saved ones. edit_automation to change title/instruction/enabled. delete_automation to remove (confirm first).
+
+            BACKGROUND / SCHEDULED EXECUTION SAFETY:
+            When executing an automation (triggered by scheduled time, alarm, sensor or notification):
+            - If the instruction already contains the exact pre-resolved phone number / action (from review time), execute make_call (or direct action) directly with that number.
+            - If the instruction is general without a number: look up with find_contact. If there is a single clear match, proceed. BUT if there are multiple matches or ambiguity, DO NOT guess blindly — call show_choices or ask the user so they can select the right contact and avoid calling the wrong person!
         """.trimIndent()
     }
 
@@ -408,6 +423,8 @@ class VoiceSession private constructor(val context: Context) {
 
     // Set when a background macro runs silently: watchdog ends session as soon as work+speech done
     @Volatile private var silentMacroRun = false
+    private val _isSilentAutomation = MutableStateFlow(false)
+    val isSilentAutomation: StateFlow<Boolean> = _isSilentAutomation.asStateFlow()
     // Set when an automation runs: auto-ends session immediately upon completion without listening
     @Volatile private var isAutomationRun = false
 
@@ -438,6 +455,11 @@ class VoiceSession private constructor(val context: Context) {
             _choices.value = Choices(question, options)
             choicesShownAt = System.currentTimeMillis()
             // The user has to answer: let them be heard
+            openMic()
+        },
+        onShowAutomationReview = { review ->
+            _automationReview.value = review
+            choicesShownAt = System.currentTimeMillis()
             openMic()
         },
         confirmedSince = ::confirmedSince,
@@ -483,6 +505,11 @@ class VoiceSession private constructor(val context: Context) {
                 "goal" to goal,
                 "next" to "I am placing the call and taking over to handle the conversation. Say a short line to the user and call end_conversation."
             )
+        },
+        onReviewApproved = { msg ->
+            scope.launch {
+                sendText(msg)
+            }
         }
     )
 
@@ -553,9 +580,37 @@ class VoiceSession private constructor(val context: Context) {
     private val _choices = MutableStateFlow<Choices?>(null)
     val choices: StateFlow<Choices?> = _choices.asStateFlow()
 
+    private val _automationReview = MutableStateFlow<com.nik.voiceassistant.data.macro.AutomationReview?>(null)
+    val automationReview: StateFlow<com.nik.voiceassistant.data.macro.AutomationReview?> = _automationReview.asStateFlow()
+
+    fun approvePendingReview() {
+        val review = _automationReview.value
+        _automationReview.value = null
+        _choices.value = null
+        review?.onApprove?.invoke()
+    }
+
+    fun cancelPendingReview() {
+        val review = _automationReview.value
+        _automationReview.value = null
+        _choices.value = null
+        review?.onCancel?.invoke()
+    }
+
     /** A tap on one of the options: sent as if the user had said it. */
     fun pickChoice(option: String) {
+        val review = _automationReview.value
         _choices.value = null
+        if (review != null) {
+            _automationReview.value = null
+            if (option.contains("Approve", ignoreCase = true) || YES.containsMatchIn(option)) {
+                review.onApprove.invoke()
+                return
+            } else if (option.contains("Cancel", ignoreCase = true) || NO.containsMatchIn(option)) {
+                review.onCancel.invoke()
+                return
+            }
+        }
         noteAnswer(option)
         sendText(option)
     }
@@ -1071,9 +1126,12 @@ class VoiceSession private constructor(val context: Context) {
         isAutomationRun = true
         reopenWhenDone = false
         taskInProgressUntil = 0L
+        lastToolEnd = 0L
+        endRequested = false
         if (silent) {
             val silentInstruction = "(BACKGROUND AUTOMATION — do NOT speak, do NOT greet, do NOT confirm. Just perform the action silently.) $t"
             silentMacroRun = true
+            _isSilentAutomation.value = true
             audioTrackManager.mutePlayback = true
             if (_isRecording.value && _connectionStatus.value == ConnectionStatus.CONNECTED) {
                 webSocketClient.sendText(silentInstruction)
@@ -1084,6 +1142,7 @@ class VoiceSession private constructor(val context: Context) {
         } else {
             val automationInstruction = "(AUTOMATION — perform the action and report the result in one short sentence. Do NOT ask follow-up questions.) $t"
             silentMacroRun = false
+            _isSilentAutomation.value = false
             audioTrackManager.mutePlayback = false
             addTranscript("system", "⚡ Automation running: $t")
             if (_isRecording.value && _connectionStatus.value == ConnectionStatus.CONNECTED) {
@@ -1109,7 +1168,7 @@ class VoiceSession private constructor(val context: Context) {
                 onConversationEnded?.invoke()
                 return@launch
             }
-            if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            if (!keepMicMuted && ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
                 _connectionStatus.value = ConnectionStatus.ERROR
                 addTranscript("system", "Microphone permission is off: open the app and allow the microphone.")
                 onConversationEnded?.invoke()
@@ -1134,7 +1193,7 @@ class VoiceSession private constructor(val context: Context) {
             replyTurnOpen = false
             if (!keepMicMuted) openMic()
             // The service keeps the mic and the process alive while the screen is off or the app is closed
-            VoiceAssistantService.startConversation(context)
+            if (!keepMicMuted) VoiceAssistantService.startConversation(context)
             if (!callAudio.enter() && inPhoneCall()) {
                 _connectionStatus.value = ConnectionStatus.DISCONNECTED
                 addTranscript("system", "A phone call is on: try again after it.")
@@ -1148,6 +1207,8 @@ class VoiceSession private constructor(val context: Context) {
             llmSpan = null
             modelResponded = false
             lostToolResult = null
+            lastToolEnd = 0L
+            endRequested = false
             webSocketClient.connect(
                 LiveClient.Config(
                     serverUrl = _serverUrl.value, apiKey = key, model = _selectedModel.value, voice = _selectedVoice.value,
@@ -1155,10 +1216,12 @@ class VoiceSession private constructor(val context: Context) {
                 )
             )
             _isRecording.value = true
-            if (!audioRecordManager.startRecording(scope)) {
-                // onError has already ended it with the reason; make sure it is over
-                endConversation("⚠️ The microphone couldn't start. Tap the mic to try again.")
-                return@launch
+            if (!keepMicMuted) {
+                if (!audioRecordManager.startRecording(scope)) {
+                    // onError has already ended it with the reason; make sure it is over
+                    endConversation("⚠️ The microphone couldn't start. Tap the mic to try again.")
+                    return@launch
+                }
             }
             startWatchdog()
         }
@@ -1183,6 +1246,7 @@ class VoiceSession private constructor(val context: Context) {
         _isRecording.value = false
         isAutomationRun = false
         silentMacroRun = false
+        _isSilentAutomation.value = false
         taskInProgressUntil = 0L
         _micAmplitude.value = 0f
         _activeToolStatus.value = null
@@ -1193,6 +1257,7 @@ class VoiceSession private constructor(val context: Context) {
         callAudio.exit()
         _connectionStatus.value = ConnectionStatus.DISCONNECTED
         _choices.value = null
+        _automationReview.value = null
         // Write the conversation now rather than after the usual pause
         saveJob?.cancel()
         currentSession?.let { sess -> scope.launch { flushHistory(sess) } }
@@ -1204,6 +1269,7 @@ class VoiceSession private constructor(val context: Context) {
         val wasSilent = silentMacroRun
         val wasAuto = isAutomationRun
         silentMacroRun = false
+        _isSilentAutomation.value = false
         isAutomationRun = false
         taskInProgressUntil = 0L
         audioTrackManager.mutePlayback = false
@@ -1355,11 +1421,10 @@ class VoiceSession private constructor(val context: Context) {
                 when {
                     // "bye" or completed task ends, even with auto-sleep off
                     endRequested && quietFor >= END_AFTER_SILENT_MS -> { endConversation("Task completed"); return@launch }
-                    // Silent macro or completed automation: end as soon as work and any speech are done (no waiting for user input)
-                    (silentMacroRun || isAutomationRun) && _connectionStatus.value == ConnectionStatus.CONNECTED &&
-                        (lastToolEnd > 0L || lastActivity > 0L) && !webSocketClient.isToolRunning() && quietFor >= 400L && !taskRunning -> {
-                        Log.i(TAG, "Automation completed — ending session immediately")
-                        endConversation("Automation complete")
+                    // Safety timeout for unattended automations in case the server never closes the turn
+                    (silentMacroRun || isAutomationRun) && !webSocketClient.isToolRunning() && now - maxOf(lastToolEnd, lastActivity) > 35_000L -> {
+                        Log.i(TAG, "Automation timed out after 35s of inactivity")
+                        endConversation("Automation timeout")
                         return@launch
                     }
                     // Idle auto-sleep only when the toggle is on and no goal/task is currently executing

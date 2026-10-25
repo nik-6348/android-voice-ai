@@ -39,6 +39,11 @@ object MacroDispatch {
 
     fun run(context: Context, macro: Macro, executor: DeviceToolExecutor, triggerData: Map<String, String> = emptyMap()) {
         if (!shouldRun(macro.id)) return
+        val unmet = macro.constraints.firstOrNull { !it.isMet(context) }
+        if (unmet != null) {
+            Log.i(TAG, "Macro '${macro.title}' skipped: constraint not met (${unmet.describe()})")
+            return
+        }
         val instruction = if (triggerData.isEmpty()) macro.instruction else buildString {
             appendLine(macro.instruction)
             appendLine()
