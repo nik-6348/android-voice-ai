@@ -98,9 +98,11 @@ import com.nik.voiceassistant.ConnectionStatus
 import com.nik.voiceassistant.R
 import com.nik.voiceassistant.TranscriptItem
 import com.nik.voiceassistant.VoiceAssistantViewModel
+import com.nik.voiceassistant.data.history.ConversationSession
 import com.nik.voiceassistant.ui.components.OrbMode
 import com.nik.voiceassistant.ui.components.PlanCard
 import com.nik.voiceassistant.ui.components.TaskCompletionCard
+import com.nik.voiceassistant.ui.screens.TranscriptViewerDialog
 import com.nik.voiceassistant.ui.components.VoiceBars
 import com.nik.voiceassistant.ui.components.VoiceOrb
 import com.nik.voiceassistant.ui.components.activeWithHold
@@ -140,6 +142,7 @@ fun AssistantLiveTab(
     val isMicMuted by viewModel.isMicMuted.collectAsState()
     val toolStatus by viewModel.activeToolStatus.collectAsState()
     val plan by viewModel.plan.collectAsState()
+    var showCompletionDetails by rememberSaveable { mutableStateOf(false) }
 
     // Voice levels are only read while drawing (orb, bars): the screen doesn't recompose with them
     val levelSource = remember(viewModel) {
@@ -231,7 +234,7 @@ fun AssistantLiveTab(
                         if (p.status == "done") {
                             TaskCompletionCard(
                                 plan = p,
-                                onViewDetails = { /* TODO Task 5: open trace/timeline dialog */ },
+                                onViewDetails = { showCompletionDetails = true },
                                 onNewTask = { viewModel.startNewChat() },
                                 modifier = Modifier.padding(horizontal = Spacing.m, vertical = Spacing.xs)
                             )
@@ -267,6 +270,23 @@ fun AssistantLiveTab(
             choices?.let { open ->
                 ChoicesCard(safeString(open.question), safeList<String>(open.options)) { viewModel.pickChoice(it) }
             }
+        }
+
+        if (showCompletionDetails) {
+            val titleText = sessionTitle.takeIf { it.isNotBlank() && it != "New Chat" }
+                ?: plan?.goal
+                ?: stringResource(R.string.history_untitled)
+            TranscriptViewerDialog(
+                session = ConversationSession(
+                    id = sessionId ?: "current",
+                    title = titleText,
+                    messages = transcripts.toMutableList()
+                ),
+                title = titleText,
+                assistantName = assistantName,
+                onDismiss = { showCompletionDetails = false },
+                onResumeChat = { showCompletionDetails = false }
+            )
         }
 
         Composer(

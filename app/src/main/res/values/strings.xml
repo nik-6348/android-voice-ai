@@ -111,6 +111,11 @@
     <string name="history_open">Open</string>
     <string name="history_resume">Resume</string>
     <string name="history_continue">Continue in chat</string>
+    <string name="history_tab_chat">Chat</string>
+    <string name="history_tab_timeline">Timeline</string>
+    <string name="timeline_empty">No actions recorded for this session</string>
+    <string name="timeline_started">Started task</string>
+    <string name="timeline_action_prefix">T+%1$s</string>
     <string name="history_delete_title">Delete conversation?</string>
     <string name="history_delete_body">“%1$s” will be deleted from this phone. This can\'t be undone.</string>
     <string name="cd_delete_conversation">Delete %1$s</string>

@@ -1,6 +1,8 @@
 package com.nik.voiceassistant.ui.screens
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -11,6 +13,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -38,6 +41,8 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Tab
+import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -55,6 +60,7 @@ import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -280,6 +286,7 @@ fun TranscriptViewerDialog(
 ) {
     val clipboard = LocalClipboardManager.current
     var copied by remember { mutableStateOf(false) }
+    var selectedTab by rememberSaveable { mutableStateOf(0) }
     val messages = session.safeMessages()
     val keys = remember(messages) { transcriptKeys(messages) }
     val scheme = MaterialTheme.colorScheme
@@ -298,11 +305,27 @@ fun TranscriptViewerDialog(
                     }
                     IconButton(onClick = onDismiss) { Icon(Icons.Filled.Clear, contentDescription = stringResource(R.string.action_close)) }
                 }
-                HorizontalDivider(Modifier.padding(vertical = Spacing.s))
-                LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(Spacing.s)) {
-                    itemsIndexed(messages, key = { i, _ -> keys.getOrElse(i) { "pos-$i" } }) { _, item ->
-                        TranscriptBubble(item, assistantName)
+                TabRow(selectedTabIndex = selectedTab) {
+                    Tab(
+                        selected = selectedTab == 0,
+                        onClick = { selectedTab = 0 },
+                        text = { Text(stringResource(R.string.history_tab_chat)) }
+                    )
+                    Tab(
+                        selected = selectedTab == 1,
+                        onClick = { selectedTab = 1 },
+                        text = { Text(stringResource(R.string.history_tab_timeline)) }
+                    )
+                }
+                Spacer(Modifier.size(Spacing.s))
+                if (selectedTab == 0) {
+                    LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(Spacing.s)) {
+                        itemsIndexed(messages, key = { i, _ -> keys.getOrElse(i) { "pos-$i" } }) { _, item ->
+                            TranscriptBubble(item, assistantName)
+                        }
                     }
+                } else {
+                    TimelineTab(messages = messages, modifier = Modifier.weight(1f))
                 }
                 HorizontalDivider(Modifier.padding(vertical = Spacing.s))
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -320,6 +343,118 @@ fun TranscriptViewerDialog(
                         Icon(Icons.Filled.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
                         Spacer(Modifier.width(Spacing.xs))
                         Text(stringResource(R.string.history_continue))
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun TimelineTab(
+    messages: List<TranscriptItem>,
+    modifier: Modifier = Modifier
+) {
+    val toolMessages = remember(messages) { messages.filter { it.safeSender == "tool" } }
+    val scheme = MaterialTheme.colorScheme
+    val cyanAccent = Color(0xFF00E5FF)
+
+    if (toolMessages.isEmpty()) {
+        Box(
+            modifier = modifier
+                .fillMaxSize()
+                .padding(Spacing.m),
+            contentAlignment = Alignment.Center
+        ) {
+            EmptyState(
+                icon = Icons.Outlined.Forum,
+                title = stringResource(R.string.timeline_empty),
+                message = ""
+            )
+        }
+    } else {
+        LazyColumn(
+            modifier = modifier
+                .fillMaxSize()
+                .padding(vertical = Spacing.s),
+            verticalArrangement = Arrangement.Top
+        ) {
+            itemsIndexed(toolMessages) { index, item ->
+                val timeOffset = (index * 30).let { s ->
+                    "${s / 60}:${(s % 60).toString().padStart(2, '0')}"
+                }
+                val rawText = item.safeText
+                val actionName = rawText.removePrefix("Executed ")
+                    .substringBefore(":")
+                    .replace('_', ' ')
+                    .trim()
+                    .replaceFirstChar { if (it.isLowerCase()) it.titlecase(Locale.getDefault()) else it.toString() }
+                val detailText = if (rawText.contains(":")) rawText.substringAfter(":").trim() else ""
+
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 4.dp),
+                    verticalAlignment = Alignment.Top
+                ) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier
+                            .width(24.dp)
+                            .padding(top = 4.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(10.dp)
+                                .clip(CircleShape)
+                                .background(cyanAccent)
+                        )
+                        if (index < toolMessages.size - 1) {
+                            Canvas(
+                                modifier = Modifier
+                                    .width(2.dp)
+                                    .heightIn(min = 28.dp)
+                            ) {
+                                drawLine(
+                                    color = scheme.onSurfaceVariant.copy(alpha = 0.3f),
+                                    start = androidx.compose.ui.geometry.Offset(size.width / 2f, 0f),
+                                    end = androidx.compose.ui.geometry.Offset(size.width / 2f, size.height),
+                                    strokeWidth = 2.dp.toPx()
+                                )
+                            }
+                        }
+                    }
+
+                    Spacer(Modifier.width(Spacing.s))
+
+                    Column(modifier = Modifier.weight(1f)) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(
+                                text = actionName,
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.SemiBold,
+                                color = scheme.onSurface,
+                                modifier = Modifier.weight(1f)
+                            )
+                            Text(
+                                text = stringResource(R.string.timeline_action_prefix, timeOffset),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = scheme.onSurfaceVariant
+                            )
+                        }
+                        if (detailText.isNotBlank()) {
+                            Text(
+                                text = detailText,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = scheme.onSurfaceVariant,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.padding(top = 2.dp)
+                            )
+                        }
                     }
                 }
             }
