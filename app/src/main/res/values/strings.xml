@@ -133,6 +133,9 @@
     <string name="automations_empty_body">Create one to repeat a task with a tap or a voice phrase.</string>
     <string name="automations_create">Create automation</string>
     <string name="automation_running">Running automation</string>
+    <string name="automation_running_title">Automation Running</string>
+    <string name="automation_run_in_bg">Run in Background</string>
+    <string name="automation_live_badge">LIVE</string>
     <string name="automation_starting">Starting…</string>
     <string name="automation_step">Step %1$d of %2$d: %3$s</string>
     <string name="automation_saved">Automation saved</string>

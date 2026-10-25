@@ -159,6 +159,7 @@ class VoiceAssistantViewModel(application: Application) : AndroidViewModel(appli
     // ---- Automations (macros) ----
     private val _automations = MutableStateFlow<List<com.nik.voiceassistant.data.macro.Macro>>(emptyList())
     val automations: StateFlow<List<com.nik.voiceassistant.data.macro.Macro>> = _automations.asStateFlow()
+    val runningMacroId: StateFlow<String?> = com.nik.voiceassistant.data.macro.MacroEngine.runningMacroId
 
     init {
         refreshAutomations()

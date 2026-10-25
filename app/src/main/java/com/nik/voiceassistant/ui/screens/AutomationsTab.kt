@@ -15,12 +15,18 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.animation.animateContentSize
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.RadioButtonUnchecked
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.StarBorder
-import androidx.compose.foundation.clickable
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
 import androidx.compose.material.icons.outlined.Alarm
 import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.Bolt
@@ -105,6 +111,10 @@ fun AutomationsTab(viewModel: VoiceAssistantViewModel) {
     val automations by viewModel.automations.collectAsState()
     val assistantName by viewModel.assistantName.collectAsState()
     val running by AutomationRun.state.collectAsState()
+    val runningMacroId by viewModel.runningMacroId.collectAsState()
+    var dismissedRunningId by rememberSaveable { mutableStateOf<String?>(null) }
+    val activeRunningId = runningMacroId ?: running?.macroId
+    val runningMacro = activeRunningId?.takeIf { it != dismissedRunningId }?.let { id -> automations.find { it.id == id } }
     var favoritesOnly by rememberSaveable { mutableStateOf(false) }
     var showCreateDialog by rememberSaveable { mutableStateOf(false) }
     var deleteId by rememberSaveable { mutableStateOf<String?>(null) }
@@ -132,7 +142,7 @@ fun AutomationsTab(viewModel: VoiceAssistantViewModel) {
             )
         }
 
-        if (shown.isEmpty()) {
+        if (shown.isEmpty() && runningMacro == null) {
             EmptyState(
                 icon = Icons.Outlined.Bolt,
                 title = stringResource(if (favoritesOnly) R.string.automations_no_favorites else R.string.automations_empty_title),
@@ -147,6 +157,15 @@ fun AutomationsTab(viewModel: VoiceAssistantViewModel) {
                 verticalArrangement = Arrangement.spacedBy(Spacing.s),
                 contentPadding = PaddingValues(bottom = Spacing.l)
             ) {
+                runningMacro?.let { macro ->
+                    item(key = "running_${macro.id}") {
+                        AutomationRunCard(
+                            macro = macro,
+                            onDismiss = { dismissedRunningId = macro.id },
+                            modifier = Modifier.padding(bottom = Spacing.xs)
+                        )
+                    }
+                }
                 items(shown, key = { it.id }) { macro ->
                     AutomationCard(
                         macro = macro,
@@ -276,6 +295,138 @@ fun AutomationsTab(viewModel: VoiceAssistantViewModel) {
                 Toast.makeText(context.applicationContext, learningMsg, Toast.LENGTH_LONG).show()
             }
         )
+    }
+}
+
+@Composable
+private fun AutomationRunCard(
+    macro: Macro,
+    onDismiss: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val scheme = MaterialTheme.colorScheme
+    val cyanAccent = Color(0xFF00E5FF)
+    val goldAccent = Color(0xFFFFD700)
+    val cardBorder = Brush.horizontalGradient(
+        listOf(cyanAccent.copy(alpha = 0.35f), goldAccent.copy(alpha = 0.2f))
+    )
+
+    Card(
+        modifier = modifier
+            .fillMaxWidth()
+            .border(1.dp, cardBorder, MaterialTheme.shapes.large)
+            .animateContentSize(),
+        shape = MaterialTheme.shapes.large,
+        colors = CardDefaults.cardColors(containerColor = scheme.surfaceContainerHigh)
+    ) {
+        Column(Modifier.padding(Spacing.m)) {
+            // Header: Refresh icon + Title + LIVE badge
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.Refresh,
+                    contentDescription = null,
+                    tint = cyanAccent,
+                    modifier = Modifier.size(20.dp)
+                )
+                Spacer(Modifier.width(Spacing.s))
+                Text(
+                    text = stringResource(R.string.automation_running_title),
+                    style = MaterialTheme.typography.labelLarge,
+                    color = cyanAccent,
+                    modifier = Modifier.weight(1f)
+                )
+                Badge(
+                    text = stringResource(R.string.automation_live_badge),
+                    container = scheme.errorContainer,
+                    content = scheme.onErrorContainer
+                )
+            }
+
+            Spacer(Modifier.size(Spacing.xs))
+            Text(
+                text = macro.title,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = scheme.onSurface,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
+
+            val steps = (macro.action as? Action.Replay)?.steps.orEmpty()
+            if (steps.isNotEmpty()) {
+                Spacer(Modifier.size(Spacing.s))
+                steps.take(4).forEachIndexed { index, step ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 3.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        if (index == 0) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(16.dp),
+                                strokeWidth = 2.dp,
+                                color = cyanAccent
+                            )
+                        } else {
+                            Icon(
+                                imageVector = Icons.Filled.RadioButtonUnchecked,
+                                contentDescription = null,
+                                tint = scheme.outline,
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
+                        Spacer(Modifier.width(Spacing.s))
+                        Text(
+                            text = step.description.ifBlank { step.toolName },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (index == 0) scheme.onSurface else scheme.onSurfaceVariant,
+                            fontWeight = if (index == 0) FontWeight.Medium else FontWeight.Normal,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+            } else if (macro.instruction.isNotBlank()) {
+                Spacer(Modifier.size(Spacing.s))
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 3.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(16.dp),
+                        strokeWidth = 2.dp,
+                        color = cyanAccent
+                    )
+                    Spacer(Modifier.width(Spacing.s))
+                    Text(
+                        text = macro.instruction,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = scheme.onSurface,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+
+            Spacer(Modifier.size(Spacing.xs))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End
+            ) {
+                TextButton(onClick = onDismiss) {
+                    Text(
+                        text = stringResource(R.string.automation_run_in_bg),
+                        style = MaterialTheme.typography.labelMedium
+                    )
+                }
+            }
+        }
     }
 }
 

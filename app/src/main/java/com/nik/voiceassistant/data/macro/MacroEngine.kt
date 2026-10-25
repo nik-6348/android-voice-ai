@@ -5,6 +5,9 @@ import android.util.Log
 import com.nik.voiceassistant.tools.DeviceToolExecutor
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.withContext
 
 /**
@@ -16,6 +19,9 @@ import kotlinx.coroutines.withContext
  */
 object MacroEngine {
     private const val TAG = "MacroEngine"
+
+    private val _runningMacroId = MutableStateFlow<String?>(null)
+    val runningMacroId: StateFlow<String?> = _runningMacroId.asStateFlow()
 
     data class ReplayResult(val ok: Boolean, val failedAtStep: Int = -1, val total: Int = 0, val message: String)
 
@@ -82,30 +88,35 @@ object MacroEngine {
         executor: DeviceToolExecutor,
         onProgress: (step: Int, total: Int, description: String) -> Unit = { _, _, _ -> }
     ): ReplayResult = withContext(Dispatchers.IO) {
-        val steps = (macro.action as? Action.Replay)?.steps.orEmpty()
-        if (steps.isEmpty()) return@withContext ReplayResult(false, message = "Nothing recorded yet for \"${macro.title}\".")
-        val total = steps.size
-        for ((index, step) in steps.withIndex()) {
-            withContext(Dispatchers.Main) { onProgress(index + 1, total, step.description.ifBlank { "Running ${step.toolName}…" }) }
-            val result = try {
-                executor.execute(step.toolName, step.args, trusted = true)
-            } catch (e: Exception) {
-                mapOf("error" to (e.message ?: "failed"))
+        _runningMacroId.value = macro.id
+        try {
+            val steps = (macro.action as? Action.Replay)?.steps.orEmpty()
+            if (steps.isEmpty()) return@withContext ReplayResult(false, message = "Nothing recorded yet for \"${macro.title}\".")
+            val total = steps.size
+            for ((index, step) in steps.withIndex()) {
+                withContext(Dispatchers.Main) { onProgress(index + 1, total, step.description.ifBlank { "Running ${step.toolName}…" }) }
+                val result = try {
+                    executor.execute(step.toolName, step.args, trusted = true)
+                } catch (e: Exception) {
+                    mapOf("error" to (e.message ?: "failed"))
+                }
+                if (result["needs_confirmation"] != null) {
+                    recordRun(context, macro.id, ok = false)
+                    return@withContext ReplayResult(false, index, total, "Step ${index + 1} (${step.description}) needs your OK; asking the AI to do it instead.")
+                }
+                val error = result["error"]?.toString()
+                if (error != null || result["success"] == false) {
+                    Log.w(TAG, "Replay step ${index + 1}/${total} (${step.toolName}) failed for macro ${macro.id}")
+                    recordRun(context, macro.id, ok = false)
+                    return@withContext ReplayResult(false, index, total, "Step ${index + 1} (${step.description}) didn't work (the screen may have changed); asking the AI to do it instead.")
+                }
+                if (step.delayMs > 0) delay(step.delayMs)
             }
-            if (result["needs_confirmation"] != null) {
-                recordRun(context, macro.id, ok = false)
-                return@withContext ReplayResult(false, index, total, "Step ${index + 1} (${step.description}) needs your OK; asking the AI to do it instead.")
-            }
-            val error = result["error"]?.toString()
-            if (error != null || result["success"] == false) {
-                Log.w(TAG, "Replay step ${index + 1}/${total} (${step.toolName}) failed for macro ${macro.id}")
-                recordRun(context, macro.id, ok = false)
-                return@withContext ReplayResult(false, index, total, "Step ${index + 1} (${step.description}) didn't work (the screen may have changed); asking the AI to do it instead.")
-            }
-            if (step.delayMs > 0) delay(step.delayMs)
+            recordRun(context, macro.id, ok = true)
+            ReplayResult(true, total = total, message = "Done: \"${macro.title}\".")
+        } finally {
+            _runningMacroId.value = null
         }
-        recordRun(context, macro.id, ok = true)
-        ReplayResult(true, total = total, message = "Done: \"${macro.title}\".")
     }
 
     private fun recordRun(context: Context, macroId: String, ok: Boolean) {
