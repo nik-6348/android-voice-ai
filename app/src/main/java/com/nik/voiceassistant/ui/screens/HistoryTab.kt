@@ -1,5 +1,6 @@
 package com.nik.voiceassistant.ui.screens
 
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -49,10 +50,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
@@ -119,6 +122,10 @@ fun HistoryTab(
                 Spacer(Modifier.width(Spacing.xs))
                 Text(stringResource(R.string.new_chat))
             }
+        }
+
+        AnimatedVisibility(visible = sessions.isNotEmpty()) {
+            AnalyticsTileRow(sessions = sessions)
         }
 
         OutlinedTextField(
@@ -319,3 +326,80 @@ fun TranscriptViewerDialog(
         }
     }
 }
+
+@Composable
+private fun AnalyticsTileRow(
+    sessions: List<ConversationSession>,
+    modifier: Modifier = Modifier
+) {
+    val allMessages = sessions.flatMap { it.safeMessages() }
+    val totalActions = countActions(allMessages)
+    val totalApps = countDistinctApps(allMessages)
+    val cyanAccent = Color(0xFF00E5FF)
+
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(bottom = Spacing.s),
+        horizontalArrangement = Arrangement.spacedBy(Spacing.xs)
+    ) {
+        AnalyticsTile(
+            value = "${sessions.size}",
+            label = stringResource(R.string.analytics_tasks),
+            cyanAccent = cyanAccent,
+            modifier = Modifier.weight(1f)
+        )
+        AnalyticsTile(
+            value = "$totalApps",
+            label = stringResource(R.string.analytics_apps),
+            cyanAccent = cyanAccent,
+            modifier = Modifier.weight(1f)
+        )
+        AnalyticsTile(
+            value = "$totalActions",
+            label = stringResource(R.string.analytics_actions),
+            cyanAccent = cyanAccent,
+            modifier = Modifier.weight(1f)
+        )
+        AnalyticsTile(
+            value = "100%",
+            label = stringResource(R.string.analytics_success),
+            cyanAccent = cyanAccent,
+            modifier = Modifier.weight(1f)
+        )
+    }
+}
+
+@Composable
+private fun AnalyticsTile(
+    value: String,
+    label: String,
+    cyanAccent: Color,
+    modifier: Modifier = Modifier
+) {
+    Card(
+        modifier = modifier,
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(8.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(
+                text = value,
+                style = MaterialTheme.typography.titleLarge,
+                color = cyanAccent,
+                textAlign = TextAlign.Center
+            )
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center
+            )
+        }
+    }
+}
+

@@ -96,6 +96,10 @@
 
     <!-- History -->
     <string name="history_title">History</string>
+    <string name="analytics_tasks">Tasks\nDone</string>
+    <string name="analytics_apps">Apps\nUsed</string>
+    <string name="analytics_actions">Actions\nTaken</string>
+    <string name="analytics_success">Success\nRate</string>
     <string name="history_search">Search conversations</string>
     <string name="cd_clear_search">Clear search</string>
     <string name="history_untitled">Conversation</string>
