@@ -101,7 +101,9 @@ import com.nik.voiceassistant.VoiceAssistantViewModel
 import com.nik.voiceassistant.data.history.ConversationSession
 import com.nik.voiceassistant.ui.components.OrbMode
 import com.nik.voiceassistant.ui.components.PlanCard
+import com.nik.voiceassistant.ui.components.ResearchCard
 import com.nik.voiceassistant.ui.components.TaskCompletionCard
+import com.nik.voiceassistant.ui.components.defaultResearchSources
 import com.nik.voiceassistant.ui.screens.TranscriptViewerDialog
 import com.nik.voiceassistant.ui.components.VoiceBars
 import com.nik.voiceassistant.ui.components.VoiceOrb
@@ -230,6 +232,20 @@ fun AssistantLiveTab(
             } else {
                 Column(Modifier.fillMaxSize()) {
                     CompactStatus(phase, statusText, mainLabel, level, clock, onMainButton)
+                    val isSearching = toolStatus?.let { t ->
+                        t.contains("research", ignoreCase = true) || t.contains("search", ignoreCase = true)
+                            || t.contains("browse", ignoreCase = true) || t.contains("web", ignoreCase = true)
+                    } ?: false
+
+                    AnimatedVisibility(visible = isSearching, enter = fadeIn() + expandVertically(), exit = fadeOut() + shrinkVertically()) {
+                        plan?.let { p ->
+                            ResearchCard(
+                                query = p.goal,
+                                sources = defaultResearchSources(p.goal),
+                                modifier = Modifier.padding(horizontal = Spacing.m, vertical = Spacing.xs)
+                            )
+                        }
+                    }
                     plan?.let { p ->
                         if (p.status == "done") {
                             TaskCompletionCard(

@@ -93,6 +93,10 @@
     <string name="task_done_title">Task Completed!</string>
     <string name="task_done_view_details">View Full Details</string>
     <string name="task_done_new_task">Start New Task</string>
+    <string name="research_title">Live Research</string>
+    <string name="research_status_running">RUNNING</string>
+    <string name="research_searching_sources">✦ Searching across %1$d sources…</string>
+    <string name="research_searching_generic">✦ Searching web sources…</string>
 
     <!-- History -->
     <string name="history_title">History</string>
