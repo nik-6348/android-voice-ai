@@ -1,6 +1,18 @@
 package com.nik.voiceassistant.ui.components
 
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -19,6 +31,7 @@ import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.RadioButtonUnchecked
+import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.Lightbulb
 import androidx.compose.material.icons.outlined.Route
 import androidx.compose.material3.Card
@@ -69,6 +82,17 @@ fun PlanCard(
     val current = if (total == 0) 0 else plan.currentStep.coerceIn(1, total)
     val doneCount = if (finished) total else (current - 1).coerceAtLeast(0)
     var expanded by rememberSaveable { mutableStateOf(startExpanded) }
+
+    val infiniteTransition = rememberInfiniteTransition(label = "plan_progress_pulse")
+    val inProgressAlpha by infiniteTransition.animateFloat(
+        initialValue = 0.4f,
+        targetValue = 1.0f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 600, easing = LinearEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "in_progress_alpha"
+    )
 
     val (statusLabel, statusContainer, statusContent) = when (status) {
         "done" -> Triple(stringResource(R.string.plan_status_done), ext.successContainer, ext.onSuccessContainer)
@@ -130,7 +154,7 @@ fun PlanCard(
                     Row(
                         Modifier
                             .fillMaxWidth()
-                            .padding(vertical = 2.dp)
+                            .padding(vertical = 4.dp)
                             .semantics(mergeDescendants = true) { stateDescription = stepState },
                         verticalAlignment = Alignment.Top
                     ) {
@@ -149,12 +173,46 @@ fun PlanCard(
                             modifier = Modifier.padding(top = 2.dp).size(16.dp)
                         )
                         Spacer(Modifier.width(Spacing.s))
-                        Text(
-                            stringResource(R.string.plan_step_line, n, steps[i]),
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = if (now) scheme.onSurface else scheme.onSurfaceVariant,
-                            fontWeight = if (now) FontWeight.SemiBold else FontWeight.Normal
-                        )
+                        Column(modifier = Modifier.weight(1f)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    stringResource(R.string.plan_step_line, n, steps[i]),
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = if (now) scheme.onSurface else scheme.onSurfaceVariant,
+                                    fontWeight = if (now) FontWeight.SemiBold else FontWeight.Normal,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                val timing = plan.stepTimings?.get(n)
+                                if (done && timing != null) {
+                                    val seconds = (timing / 1000L).coerceAtLeast(1L)
+                                    Text(
+                                        stringResource(R.string.plan_step_timing, seconds),
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = scheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+                            val detail = plan.stepDetails?.get(n)?.takeIf { it.isNotBlank() }
+                            if (detail != null) {
+                                Text(
+                                    text = detail,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = scheme.onSurfaceVariant,
+                                    modifier = Modifier.padding(top = 2.dp)
+                                )
+                            }
+                            if (now) {
+                                Text(
+                                    text = stringResource(R.string.plan_step_in_progress),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = cyanAccent.copy(alpha = inProgressAlpha),
+                                    modifier = Modifier.padding(top = 2.dp)
+                                )
+                            }
+                        }
                     }
                 }
                 if (total > 3) {
@@ -172,6 +230,50 @@ fun PlanCard(
                             stringResource(if (expanded) R.string.plan_show_less else R.string.plan_show_all, total),
                             style = MaterialTheme.typography.labelLarge, color = scheme.primary
                         )
+                    }
+                }
+            }
+            val reasoning = plan.reasoningLines?.filter { it.isNotBlank() }
+            AnimatedVisibility(
+                visible = !reasoning.isNullOrEmpty(),
+                enter = fadeIn() + expandVertically(),
+                exit = fadeOut() + shrinkVertically()
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = Spacing.s)
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            Icons.Outlined.AutoAwesome,
+                            contentDescription = null,
+                            tint = cyanAccent,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(Modifier.width(Spacing.xs))
+                        Text(
+                            stringResource(R.string.plan_reasoning_header, stringResource(R.string.app_name)),
+                            style = MaterialTheme.typography.labelLarge,
+                            color = cyanAccent
+                        )
+                    }
+                    val recent = (reasoning ?: emptyList()).takeLast(5)
+                    recent.forEachIndexed { idx, line ->
+                        AnimatedVisibility(
+                            visible = true,
+                            enter = fadeIn(tween(delayMillis = idx * 60)) + slideInVertically(
+                                animationSpec = tween(delayMillis = idx * 60),
+                                initialOffsetY = { it / 2 }
+                            )
+                        ) {
+                            Text(
+                                text = "•  $line",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = scheme.onSurfaceVariant,
+                                modifier = Modifier.padding(start = 4.dp, top = 2.dp, bottom = 2.dp)
+                            )
+                        }
                     }
                 }
             }

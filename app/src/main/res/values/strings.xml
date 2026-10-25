@@ -87,6 +87,9 @@
     <string name="plan_show_all">Show all %1$d steps</string>
     <string name="plan_show_less">Show less (%1$d steps)</string>
     <string name="plan_tried">Tried: %1$s</string>
+    <string name="plan_step_timing">Completed • %1$ss</string>
+    <string name="plan_reasoning_header">%1$s is reasoning…</string>
+    <string name="plan_step_in_progress">In progress…</string>
 
     <!-- History -->
     <string name="history_title">History</string>
