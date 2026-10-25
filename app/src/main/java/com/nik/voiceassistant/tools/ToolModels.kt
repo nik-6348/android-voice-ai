@@ -21,7 +21,10 @@ data class TaskPlan(
     val note: String?,
     // Tools used since the goal started; the approaches not tried yet are suggested when blocked
     val tried: MutableSet<String> = java.util.Collections.synchronizedSet(mutableSetOf()),
-    val blockedCount: Int = 0
+    val blockedCount: Int = 0,
+    val stepTimings: Map<Int, Long>? = null,
+    val stepDetails: Map<Int, String>? = null,
+    val reasoningLines: List<String>? = null
 )
 
 data class ToolCallResponse(

@@ -1100,7 +1100,10 @@ class DeviceToolExecutor(
             status = status ?: "working",
             note = note,
             tried = if (sameGoal) old!!.tried else java.util.Collections.synchronizedSet(mutableSetOf()),
-            blockedCount = (if (sameGoal) old!!.blockedCount else 0) + if (status == "blocked") 1 else 0
+            blockedCount = (if (sameGoal) old!!.blockedCount else 0) + if (status == "blocked") 1 else 0,
+            stepTimings = if (sameGoal) old?.stepTimings else null,
+            stepDetails = if (sameGoal) old?.stepDetails else null,
+            reasoningLines = if (sameGoal) old?.reasoningLines else null
         )
         plan = next
         if (!sameGoal) { sameScreenStreak = 0; recentCalls.clear() }
