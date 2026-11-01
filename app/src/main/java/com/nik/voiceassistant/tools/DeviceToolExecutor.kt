@@ -36,6 +36,8 @@ class DeviceToolExecutor(
     private val onEndConversation: () -> Unit = {},
     // look_at_screen: (screenshot JPEG, prompt) -> what a vision model sees, or null on failure
     private val describeImage: ((ByteArray, String) -> String?)? = null,
+    // screenVerifier: two-tier verify (tier-1 elements + tier-2 vision gateway)
+    val screenVerifier: ScreenVerifier? = null,
     // show_choices: (question, options) shown as a tappable list in the app and the overlay
     private val onShowChoices: (String, List<String>) -> Unit = { _, _ -> },
     // onShowAutomationReview: shows the 3 Pillars review card before saving an automation
@@ -105,7 +107,8 @@ class DeviceToolExecutor(
                 "element_id" to param("integer", "Element number from the latest screen, e.g. 3 for [3]"),
                 "text" to param("string", "Visible text of the element, when no element_id"),
                 "long_press" to param("boolean", "Long-press instead of tap"),
-                "times" to param("integer", "Tap this many times in quick succession (1-15), for things that need repeated taps, e.g. Build number 7 times")
+                "times" to param("integer", "Tap this many times in quick succession (1-15), for things that need repeated taps, e.g. Build number 7 times"),
+                "expect" to param("string", "What you expect to be true on screen after this action, e.g. \"Settings screen is open\"")
             )
         ),
         function(
@@ -115,7 +118,8 @@ class DeviceToolExecutor(
             required = listOf("text" to param("string", "Text to type")),
             optional = listOf(
                 "element_id" to param("integer", "The text field's element number"),
-                "submit" to param("boolean", "Press the keyboard's enter/search/send key after typing. Leave it out to press it automatically in search fields; false never presses it")
+                "submit" to param("boolean", "Press the keyboard's enter/search/send key after typing. Leave it out to press it automatically in search fields; false never presses it"),
+                "expect" to param("string", "What you expect to be true on screen after this action")
             )
         ),
         function(
@@ -127,7 +131,8 @@ class DeviceToolExecutor(
             optional = listOf(
                 "element_id" to param("integer", "The scrollable element's number (or any element inside it), if not the main list"),
                 "until_text" to param("string", "Keep scrolling until an element showing this text is visible"),
-                "max_scrolls" to param("integer", "Most scrolls with until_text, default 10")
+                "max_scrolls" to param("integer", "Most scrolls with until_text, default 10"),
+                "expect" to param("string", "What you expect to be true on screen after this action")
             )
         ),
         function(
@@ -155,7 +160,10 @@ class DeviceToolExecutor(
             "Swipes a finger across an element or the screen (direction = where the finger moves). " +
                 "E.g. to close an app: navigate recents, then swipe up on that app's card. Returns the new screen.",
             required = listOf("direction" to param("string", "Finger direction", enum = listOf("up", "down", "left", "right"))),
-            optional = listOf("element_id" to param("integer", "Element to swipe on; default the screen center"))
+            optional = listOf(
+                "element_id" to param("integer", "Element to swipe on; default the screen center"),
+                "expect" to param("string", "What you expect to be true on screen after this action")
+            )
         ),
         function(
             "search_settings",
@@ -177,7 +185,8 @@ class DeviceToolExecutor(
                     "string", "The navigation action",
                     enum = listOf("back", "home", "recents", "notifications", "quick_settings", "lock_screen", "screenshot", "power_dialog")
                 )
-            )
+            ),
+            optional = listOf("expect" to param("string", "What you expect to be true on screen after this action"))
         ),
         function(
             "show_choices",
@@ -246,7 +255,8 @@ class DeviceToolExecutor(
             "open_app",
             "Opens an installed app by its name (use the full name, e.g. \"Google Keep\"). If several apps match it lists them; " +
                 "if none does, use list_apps.",
-            required = listOf("app_name" to param("string", "App name, e.g. \"YouTube\""))
+            required = listOf("app_name" to param("string", "App name, e.g. \"YouTube\"")),
+            optional = listOf("expect" to param("string", "What you expect to be true on screen after this action, e.g. \"YouTube home screen visible\""))
         ),
         function(
             "list_apps",
@@ -263,7 +273,8 @@ class DeviceToolExecutor(
                 "action" to param("string", "Intent action; default android.intent.action.VIEW"),
                 "uri" to param("string", "Data URI"),
                 "package" to param("string", "Limit to this app package"),
-                "extras" to param("string", "JSON object of string/number/boolean extras, e.g. {\"query\":\"pizza\"}")
+                "extras" to param("string", "JSON object of string/number/boolean extras, e.g. {\"query\":\"pizza\"}"),
+                "expect" to param("string", "What you expect to be true on screen after this action")
             )
         ),
         function(
@@ -276,7 +287,8 @@ class DeviceToolExecutor(
             "open_website",
             "Opens a website or a web search in the browser (not in an app). Give a URL (\"amazon.in\", " +
                 "\"https://…\") or words to search for. Returns the new screen.",
-            required = listOf("url_or_search" to param("string", "A web address, or what to search for"))
+            required = listOf("url_or_search" to param("string", "A web address, or what to search for")),
+            optional = listOf("expect" to param("string", "What you expect to be true on screen after this action"))
         ),
         function(
             "toggle_flashlight",
@@ -490,7 +502,40 @@ class DeviceToolExecutor(
         Log.i(TAG, "Executing tool: $toolName")
         ensurePlanForAction(toolName, arguments.orEmpty())
         val result = run(toolName, arguments.orEmpty(), trusted)
-        withProgressCheck(toolName, arguments.orEmpty(), result)
+        val checked = withProgressCheck(toolName, arguments.orEmpty(), result)
+
+        // Screen verify: run when the tool has an "expect" param and a verifier is available
+        val expect = arguments?.get("expect") as? String
+        if (!expect.isNullOrBlank() && toolName in acting && screenVerifier != null) {
+            @Suppress("UNCHECKED_CAST")
+            val elements = (checked["screen"] as? Map<String, Any?>)?.let { s ->
+                s["elements"] as? List<String>
+            }.orEmpty()
+            val appPkg = (checked["screen"] as? Map<String, Any?>)?.get("app") as? String ?: ""
+            val vr = kotlinx.coroutines.runBlocking {
+                screenVerifier.verify(
+                    expect = expect,
+                    elements = elements,
+                    app = appPkg,
+                    goal = plan?.goal ?: "",
+                    stepIndex = (plan?.currentStep ?: 1) - 1,
+                    stepTitle = toolName,
+                    lastTool = toolName,
+                    lastArgs = arguments.orEmpty()
+                )
+            }
+            return@withLock checked + mapOf(
+                "verify" to mapOf(
+                    "verified" to vr.verified,
+                    "via" to vr.via,
+                    "evidence" to vr.evidence,
+                    "blocker" to vr.blocker,
+                    "step_done" to vr.stepDone
+                )
+            )
+        }
+
+        checked
     }
 
     // ---- Asking before actions with consequences (see ActionGuard) ----
@@ -1281,12 +1326,18 @@ class DeviceToolExecutor(
      * Returns the original map unchanged when elements are already present or vision isn't available.
      */
     private fun augmentWithScreenshot(agent: PhoneAgentService?, screen: Map<String, Any?>): Map<String, Any?> {
-        if (agent == null || describeImage == null) return screen
+        if (agent == null) return screen
         @Suppress("UNCHECKED_CAST")
         val elements = screen["elements"] as? List<*>
         if (!elements.isNullOrEmpty()) return screen
-        val jpeg = try { agent.screenshotJpeg(hideOverlay = true) } catch (_: Exception) { null } ?: return screen
-        val seen = describeImage.invoke(jpeg,
+        // Use screenVerifier.captureJpeg() when available, else fall back to direct capture
+        val jpeg = if (screenVerifier != null) {
+            kotlinx.coroutines.runBlocking { screenVerifier.captureJpeg() }
+        } else {
+            try { agent.screenshotJpeg(hideOverlay = true) } catch (_: Exception) { null }
+        } ?: return screen
+        val describe = describeImage ?: return screen
+        val seen = describe.invoke(jpeg,
             "Describe what is on this Android phone screen: the app name, visible text, buttons, and any dialogs. " +
             "Be brief and factual, no markdown, under 6 lines.") ?: return screen
         return screen + mapOf(
@@ -1631,11 +1682,38 @@ class DeviceToolExecutor(
 
     private fun lookAtScreen(agent: PhoneAgentService, question: String?): Map<String, Any?> {
         val screen = agent.readScreen()
+        @Suppress("UNCHECKED_CAST")
+        val elements = (screen["elements"] as? List<String>).orEmpty()
+        val appPkg = screen["app"] as? String ?: ""
+
+        // Prefer ScreenVerifier (tier-2 vision) when available
+        if (screenVerifier != null) {
+            val vr = kotlinx.coroutines.runBlocking {
+                screenVerifier.verify(
+                    expect = question ?: "Describe what is on the screen",
+                    elements = elements,
+                    app = appPkg,
+                    goal = plan?.goal ?: "",
+                    stepIndex = (plan?.currentStep ?: 1) - 1,
+                    stepTitle = "look_at_screen",
+                    lastTool = "look_at_screen",
+                    lastArgs = emptyMap(),
+                    forceVision = true
+                )
+            }
+            return mapOf(
+                "description" to vr.evidence,
+                "screen" to screen,
+                "verified" to vr.verified,
+                "via" to vr.via
+            )
+        }
+
+        // Fallback: use describeImage lambda
         val jpeg = agent.appWindowJpeg()
             ?: return mapOf("error" to "Couldn't take a screenshot (the app may block them); use the elements list", "screen" to screen)
         val describe = describeImage ?: return mapOf("error" to "Screen description isn't available", "screen" to screen)
-        @Suppress("UNCHECKED_CAST")
-        val list = (screen["elements"] as? List<String>).orEmpty().joinToString("\n").take(6000)
+        val list = elements.joinToString("\n").take(6000)
         val prompt = "This is a screenshot of an Android phone. " +
             (question?.let { "Question about it: $it\n" } ?: "") +
             "Describe what is on the screen for someone who can't see it: the app, what is shown or playing " +

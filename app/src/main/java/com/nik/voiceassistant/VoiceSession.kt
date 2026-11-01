@@ -19,6 +19,7 @@ import com.nik.voiceassistant.tools.ToolCallRunner
 import com.nik.voiceassistant.service.PhoneAgentService
 import com.nik.voiceassistant.service.VoiceAssistantService
 import com.nik.voiceassistant.tools.DeviceToolExecutor
+import com.nik.voiceassistant.tools.ScreenVerifier
 import com.nik.voiceassistant.ui.AssistantOverlay
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
@@ -447,10 +448,17 @@ class VoiceSession private constructor(val context: Context) {
         touch()
     }
 
+    private val screenVerifier = ScreenVerifier(
+        gatewayBase = ::gatewayBase,
+        apiKey = { _apiKey.value },
+        agent = { PhoneAgentService.instance }
+    )
+
     private val toolExecutor = DeviceToolExecutor(
         context,
         onEndConversation = { endRequested = true },
         describeImage = ::describeImage,
+        screenVerifier = screenVerifier,
         onShowChoices = { question, options ->
             _choices.value = Choices(question, options)
             choicesShownAt = System.currentTimeMillis()
