@@ -83,6 +83,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringArrayResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
@@ -448,10 +449,7 @@ private fun Hero(
             modifier = Modifier.padding(horizontal = Spacing.xl)
         )
         Spacer(Modifier.size(Spacing.m))
-        val suggestions = listOf(
-            "5:30 ka alarm lagao", "YouTube par Lofi chalao", "Rahul ko call lagao",
-            "WiFi band karo", "Screen pe kya hai?", "WhatsApp kholo"
-        )
+        val suggestions = stringArrayResource(R.array.hero_suggestions)
         LazyRow(
             contentPadding = PaddingValues(horizontal = Spacing.m),
             horizontalArrangement = Arrangement.spacedBy(Spacing.s)

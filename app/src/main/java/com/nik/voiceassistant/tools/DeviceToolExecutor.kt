@@ -56,8 +56,8 @@ class DeviceToolExecutor(
         private const val MAX_APPS = 60
 
         // The yes / no shown to the user when an action needs their OK (VoiceSession reads the answer)
-        const val CONFIRM_YES = "Haan, karo"
-        const val CONFIRM_NO = "Nahi"
+        const val CONFIRM_YES = "Yes, do it"
+        const val CONFIRM_NO = "No"
         // A yes counts for this long after the question was shown
         private const val CONFIRM_WINDOW_MS = 120_000L
 
@@ -135,12 +135,12 @@ class DeviceToolExecutor(
             "Your working plan for a multi-step goal, shown to the user as live progress. Call it when a goal starts " +
                 "(goal + steps), as steps complete (current_step), and whenever you change approach (status blocked + note " +
                 "on what failed). The result lists the approaches still untried when you are blocked.",
-            required = listOf("goal" to param("string", "The user's goal in one line")),
+            required = listOf("goal" to param("string", "The user's goal in one line, in English")),
             optional = listOf(
-                "steps" to mapOf("type" to "array", "items" to mapOf("type" to "string"), "description" to "Ordered short steps to reach the goal"),
+                "steps" to mapOf("type" to "array", "items" to mapOf("type" to "string"), "description" to "Ordered short steps to reach the goal, in English"),
                 "current_step" to param("integer", "1-based number of the step being done now"),
                 "status" to param("string", "Where the goal stands", enum = listOf("working", "blocked", "done", "failed")),
-                "note" to param("string", "Your current thinking: what you see, what you decided and why (shown to the user)")
+                "note" to param("string", "Your current thinking in English: what you see, what you decided and why (shown to the user)")
             )
         ),
         function(
@@ -185,7 +185,7 @@ class DeviceToolExecutor(
                 "match a name. Also read the options out briefly; the user answers by tapping or by saying one. " +
                 "Their pick comes back as what they said.",
             required = listOf(
-                "question" to param("string", "Short heading, e.g. \"Kaun sa Nikhil?\""),
+                "question" to param("string", "Short heading in English, e.g. \"Which Nikhil?\""),
                 "options" to mapOf("type" to "array", "items" to mapOf("type" to "string"), "description" to "2-8 options, e.g. \"Nikhil Rajput · +91 98765 43210\"")
             )
         ),

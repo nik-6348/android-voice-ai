@@ -54,8 +54,16 @@
     <string name="error_connect_title">Couldn\'t connect</string>
     <string name="error_connect_body">Check your internet connection and try again.</string>
     <string name="error_needs_key">Add your API key in Settings to start.</string>
-    <string name="hero_greeting">Namaste 🙏</string>
-    <string name="hero_hint">Bolo ya likho — main phone operate kar sakta hoon, apps khol sakta hoon, aur sabhi tasks autonomously karta hoon.</string>
+    <string name="hero_greeting">Hello 👋</string>
+    <string name="hero_hint">Speak or type: I can operate your phone, open apps and complete tasks for you.</string>
+    <string-array name="hero_suggestions">
+        <item>Set an alarm for 5:30</item>
+        <item>Play lofi on YouTube</item>
+        <item>Call Rahul</item>
+        <item>Turn off Wi-Fi</item>
+        <item>What\'s on my screen?</item>
+        <item>Open WhatsApp</item>
+    </string-array>
     <string name="choices_hint">Tap or say</string>
     <string name="composer_hint">Message %1$s…</string>
     <string name="control_mute">Mute</string>

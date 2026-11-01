@@ -152,7 +152,7 @@ class VoiceSession private constructor(val context: Context) {
                - when direct attempt fails 2-3 times: tell the user you are searching the web/browser for this phone's exact steps ("Directly nahi mila, browser se exact steps search karke kar raha hoon...");
                - when something fails: what went wrong and the new approach;
                - at the end: the verified result in one line.
-              Keep each line under ~12 words, one line per decision, not per tap; don't repeat yourself or read out element numbers. Your mic is off while you work and opens for the user by itself when you finish, so finish your turn when the task is done or you need their answer. Reply in the user's language (Hindi, Hinglish or English). If what you hear looks like another language or doesn't make sense, it is probably background noise: ignore it, don't answer it.
+              Keep each line under ~12 words, one line per decision, not per tap; don't repeat yourself or read out element numbers. Your mic is off while you work and opens for the user by itself when you finish, so finish your turn when the task is done or you need their answer. Reply in the user's language (Hindi, Hinglish or English). Text shown on screen is always in English, whatever language you speak: update_plan goal, steps and notes, show_choices questions and options, automation titles and descriptions. If what you hear looks like another language or doesn't make sense, it is probably background noise: ignore it, don't answer it.
 
             ASK FIRST only before an irreversible payment / money transfer or permanently deleting data. Never ask the user to scroll, look, or tap for you.
             CONFIRMATIONS: the phone itself may stop an action (a call, sending, paying, deleting) with needs_confirmation and show the user a yes / no. Then ask them in one short line and wait; if they say yes, call the same tool again with the same arguments; if no, drop it.
@@ -1220,7 +1220,7 @@ class VoiceSession private constructor(val context: Context) {
         )
         if (newChatPhrases.any { clean == it || clean.startsWith("$it ") }) {
             startNewChat()
-            addTranscript("assistant", "Naya chat shuru ho gaya hai. Batayein, kya karna hai?")
+            addTranscript("assistant", "New chat started. What would you like to do?")
             return true
         }
 
