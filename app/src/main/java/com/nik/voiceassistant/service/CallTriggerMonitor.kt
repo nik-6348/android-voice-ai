@@ -24,15 +24,9 @@ import com.nik.voiceassistant.data.macro.Trigger
  * Matches a ringing or missed call against saved call triggers. Incoming-call detection uses the
  * phone's own call-state callback; missed calls are read from the call log instead of inferred from
  * state timing, since that is what Android itself considers "missed" and gives the number reliably.
- *
- * Call *answering* (Action.HandleCall: the agent picks up and talks) isn't implemented here — this
- * class only detects and matches; onIncomingCallMacroMatched is where that would hook in.
  */
 object CallTriggerMonitor {
     private const val TAG = "CallTriggerMonitor"
-
-    /** A macro with an IncomingCall trigger and an Action.HandleCall action matched a ringing call. */
-    @Volatile var onIncomingCallMacroMatched: ((macro: Macro, number: String?, contactName: String?) -> Unit)? = null
 
     @Volatile private var appContext: Context? = null
     @Volatile private var telephonyManager: TelephonyManager? = null
@@ -124,10 +118,7 @@ object CallTriggerMonitor {
         val matches = MacroEngine.matching(context) { t -> t is Trigger.IncomingCall && callTriggerMatches(t.contactFilter, number, contactName) }
         if (matches.isEmpty()) return
         val executor = VoiceSession.get(context).getToolExecutor()
-        for (macro in matches) {
-            if (macro.action is com.nik.voiceassistant.data.macro.Action.HandleCall) onIncomingCallMacroMatched?.invoke(macro, number, contactName)
-            else MacroDispatch.run(context, macro, executor)
-        }
+        for (macro in matches) MacroDispatch.run(context, macro, executor)
     }
 
     // ---- Missed calls: from the call log, which is what decides "missed" reliably ----

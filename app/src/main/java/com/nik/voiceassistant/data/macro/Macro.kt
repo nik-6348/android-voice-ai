@@ -200,13 +200,6 @@ sealed class Action {
 
     /** No saved steps (or the user chose it explicitly): the AI is asked to do `instruction` every run. */
     object AlwaysAsk : Action()
-
-    /**
-     * Answers (or places) a phone call and lets the AI talk, acoustically (speakerphone + mic): see
-     * CallAgentSession. `greeting` is said first, always disclosing it's an AI unless the user turned
-     * that off for this macro. `goal` is what the AI is there to do or find out.
-     */
-    data class HandleCall(val goal: String, val discloseAi: Boolean = true, val maxDurationMs: Long = 5 * 60_000L) : Action()
 }
 
 /** One step as the AI actually performed it: a tool name, its arguments, and what it was for. */

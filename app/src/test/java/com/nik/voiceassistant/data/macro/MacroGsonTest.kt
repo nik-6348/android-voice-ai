@@ -61,17 +61,6 @@ class MacroGsonTest {
         assertEquals("YouTube", back.steps[0].args["app_name"])
         assertEquals("Search", back.steps[1].args["text"])
     }
-
-    @Test
-    fun handleCallActionRoundTrips() {
-        val action = Action.HandleCall(goal = "Order 2 pizzas", discloseAi = true, maxDurationMs = 120_000L)
-        val macro = Macro(title = "t", triggers = listOf(Trigger.Manual), instruction = "i", action = action)
-        val back = roundTrip(macro).action as Action.HandleCall
-        assertEquals("Order 2 pizzas", back.goal)
-        assertTrue(back.discloseAi)
-        assertEquals(120_000L, back.maxDurationMs)
-    }
-
     @Test
     fun arrayRoundTripsLikeMacroStoreUsesIt() {
         val macros = arrayOf(

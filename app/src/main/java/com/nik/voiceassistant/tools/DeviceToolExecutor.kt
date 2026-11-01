@@ -48,8 +48,6 @@ class DeviceToolExecutor(
     private val research: ((String) -> String?)? = null,
     // update_plan: the model's current plan, shown as live progress
     private val onPlan: (TaskPlan?) -> Unit = {},
-    // call_and_talk: places a call and has the AI conduct the conversation
-    private val onCallAndTalk: ((number: String?, goal: String, maxMinutes: Int?) -> Map<String, Any?>)? = null,
     private val onReviewApproved: (String) -> Unit = {}
 ) : ToolExecutor {
 
@@ -197,19 +195,6 @@ class DeviceToolExecutor(
                 "If it returns needs_confirmation, ask the user and call it again only after they say yes.",
             required = listOf("number" to param("string", "Phone number, e.g. +919876543210")),
             optional = listOf("speaker" to param("boolean", "Put the call on speaker (default true)"))
-        ),
-        function(
-            "call_and_talk",
-            "Places a phone call and conducts an AI-driven conversation on it to achieve a specific goal (e.g. 'Order pizza', 'Ask if they are open today'). " +
-                "Use this ONLY when the user wants YOU (the AI) to talk on the call, not when they want to speak themselves (use make_call for that). " +
-                "If it returns needs_confirmation, ask the user and call it again only after they say yes.",
-            required = listOf(
-                "number" to param("string", "Phone number to call, e.g. +919876543210 (use find_contact first to look up a name)"),
-                "goal" to param("string", "The task to achieve on the call, e.g. 'Order 2 pizzas' or 'Confirm booking'")
-            ),
-            optional = listOf(
-                "max_minutes" to param("integer", "Maximum duration of the call in minutes (default 5)")
-            )
         ),
         function(
             "send_sms",
@@ -585,15 +570,6 @@ class DeviceToolExecutor(
                     val number = str("number")
                     val risk = if (ActionGuard.isDialCode(number)) ActionGuard.Risk.DIAL_CODE else ActionGuard.Risk.CALL
                     number?.let { gate(risk, "call:${digits(it)}", "Call $it", trusted) } ?: makeCall(number, bool("speaker") != false)
-                }
-
-                "call_and_talk" -> {
-                    val number = str("number")
-                    val goal = str("goal") ?: "Handle phone call"
-                    val maxMinutes = int("max_minutes")
-                    val risk = if (ActionGuard.isDialCode(number)) ActionGuard.Risk.DIAL_CODE else ActionGuard.Risk.CALL
-                    number?.let { gate(risk, "call_and_talk:${digits(it)}", "Call $it to: $goal", trusted) }
-                        ?: callAndTalk(number, goal, maxMinutes)
                 }
 
                 "send_sms" -> {
@@ -1688,12 +1664,6 @@ class DeviceToolExecutor(
             "speaker" to res.speaker,
             "next" to "The call is on (a SIM choice may be showing: pick one if so). Say one short line, then call end_conversation."
         ))
-    }
-
-    private fun callAndTalk(number: String?, goal: String, maxMinutes: Int?): Map<String, Any?> {
-        if (number.isNullOrBlank()) return mapOf("error" to "Give a phone number (use find_contact for a name)")
-        val handler = onCallAndTalk ?: return mapOf("error" to "Call agent capability is not available")
-        return handler(number, goal, maxMinutes)
     }
 
     // ---- Media ----

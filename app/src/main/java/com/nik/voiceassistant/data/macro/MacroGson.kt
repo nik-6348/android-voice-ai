@@ -100,9 +100,8 @@ object MacroGson {
             val type = when (src) {
                 is Action.Replay -> "replay"
                 Action.AlwaysAsk -> "always_ask"
-                is Action.HandleCall -> "handle_call"
             }
-            val obj = if (src is Action.Replay || src is Action.HandleCall) ctx.serialize(src, src.javaClass).asJsonObject else JsonObject()
+            val obj = if (src is Action.Replay) ctx.serialize(src, src.javaClass).asJsonObject else JsonObject()
             obj.addProperty("type", type)
             return obj
         }
@@ -111,7 +110,6 @@ object MacroGson {
             val obj = json.asJsonObject
             return when (obj.get("type")?.asString) {
                 "replay" -> ctx.deserialize(obj, Action.Replay::class.java)
-                "handle_call" -> ctx.deserialize(obj, Action.HandleCall::class.java)
                 else -> Action.AlwaysAsk
             }
         }

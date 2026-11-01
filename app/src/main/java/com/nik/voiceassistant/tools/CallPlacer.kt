@@ -10,7 +10,7 @@ import androidx.core.content.ContextCompat
 import com.nik.voiceassistant.service.PhoneAgentService
 
 /**
- * Shared helper for placing phone calls (used by both the existing `make_call` tool and `CallAgentSession`).
+ * Places phone calls for the `make_call` tool.
  * Handles ACTION_CALL with ACTION_DIAL fallback when permission is missing, and turns on speakerphone.
  */
 object CallPlacer {

@@ -22,9 +22,6 @@ object MacroDispatch {
     /** Set once by VoiceSession. Runs `instruction` live (the same as the user having said it). */
     @Volatile var onAgentGoalRequested: ((instruction: String) -> Unit)? = null
 
-    /** Set once by VoiceSession. Starts an outgoing call for a HandleCall macro triggered by a sensor/timer. */
-    @Volatile var onCallGoalRequested: ((macro: Macro) -> Unit)? = null
-
     // A burst of events for the same macro (several notifications from one app, a flaky call-state
     // callback firing twice) only runs it once
     private val lastRunAt = java.util.concurrent.ConcurrentHashMap<String, Long>()
@@ -64,15 +61,6 @@ object MacroDispatch {
                 }
             } else askAi(instruction)
             Action.AlwaysAsk -> askAi(instruction)
-            // A call macro isn't run through a tool executor at all: the call subsystem handles it directly
-            is Action.HandleCall -> {
-                val handler = onCallGoalRequested
-                if (handler != null) {
-                    handler(macro)
-                } else {
-                    Log.i(TAG, "HandleCall macro matched outside a call context and no handler registered; ignoring")
-                }
-            }
         }
     }
 

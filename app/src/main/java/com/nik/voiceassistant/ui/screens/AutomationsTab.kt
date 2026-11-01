@@ -30,7 +30,6 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.material.icons.outlined.Alarm
 import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.Bolt
-import androidx.compose.material.icons.outlined.Call
 import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.Info
@@ -444,7 +443,6 @@ fun AutomationCard(
 ) {
     val scheme = MaterialTheme.colorScheme
     val (icon: ImageVector, container, content) = when {
-        macro.action is Action.HandleCall -> Triple(Icons.Outlined.Call, scheme.secondaryContainer, scheme.onSecondaryContainer)
         macro.triggers.any { it is Trigger.Scheduled } -> Triple(Icons.Outlined.Alarm, scheme.errorContainer, scheme.onErrorContainer)
         macro.title.contains("music", true) || macro.title.contains("song", true) -> Triple(Icons.Outlined.PlayCircle, scheme.tertiaryContainer, scheme.onTertiaryContainer)
         else -> Triple(Icons.Outlined.Bolt, scheme.primaryContainer, scheme.onPrimaryContainer)
@@ -486,7 +484,6 @@ fun AutomationCard(
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Row(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(Spacing.xs), verticalAlignment = Alignment.CenterVertically) {
                     if (macro.action is Action.Replay) Badge(pluralSteps(macro.stepCount))
-                    if (macro.action is Action.HandleCall) Badge("📞 AI Call", container = scheme.secondaryContainer, content = scheme.onSecondaryContainer)
                     Badge(macro.triggerSummary(), container = scheme.tertiaryContainer, content = scheme.onTertiaryContainer, modifier = Modifier.weight(1f, fill = false))
                 }
                 IconButton(onClick = onDelete) {
@@ -499,9 +496,7 @@ fun AutomationCard(
                         Spacer(Modifier.width(Spacing.xs))
                         Text(stringResource(R.string.action_run))
                     }
-                } else if (macro.action is Action.HandleCall) {
-                    Badge("Auto-answers", container = scheme.surfaceContainerHigh, content = scheme.onSurfaceVariant)
-                }
+}
             }
         }
     }
@@ -525,8 +520,6 @@ fun CreateAutomationDialog(
     var actionType by rememberSaveable { mutableStateOf("alarm") } // alarm, youtube, app, call
     var customAppName by rememberSaveable { mutableStateOf("") }
     var callerFilter by rememberSaveable { mutableStateOf("") }
-    var callGoal by rememberSaveable { mutableStateOf("") }
-    var callDiscloseAi by rememberSaveable { mutableStateOf(true) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -557,8 +550,7 @@ fun CreateAutomationDialog(
                     val types = listOf(
                         "alarm" to stringResource(R.string.automation_action_alarm),
                         "youtube" to stringResource(R.string.automation_action_youtube),
-                        "app" to stringResource(R.string.automation_action_app),
-                        "call" to stringResource(R.string.automation_action_call)
+                        "app" to stringResource(R.string.automation_action_app)
                     )
                     SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
                         types.forEachIndexed { i, (type, label) ->
@@ -567,30 +559,7 @@ fun CreateAutomationDialog(
                             }
                         }
                     }
-                    if (actionType == "call") {
-                        OutlinedTextField(
-                            value = title, onValueChange = { title = it },
-                            label = { Text(stringResource(R.string.automation_task_title)) },
-                            placeholder = { Text("e.g. Screen unknown calls") },
-                            singleLine = true, modifier = Modifier.fillMaxWidth()
-                        )
-                        OutlinedTextField(
-                            value = callerFilter, onValueChange = { callerFilter = it },
-                            label = { Text(stringResource(R.string.automation_call_caller)) },
-                            placeholder = { Text(stringResource(R.string.automation_call_caller_hint)) },
-                            singleLine = true, modifier = Modifier.fillMaxWidth()
-                        )
-                        OutlinedTextField(
-                            value = callGoal, onValueChange = { callGoal = it },
-                            label = { Text(stringResource(R.string.automation_call_goal)) },
-                            placeholder = { Text(stringResource(R.string.automation_call_goal_hint)) },
-                            minLines = 2, maxLines = 4, modifier = Modifier.fillMaxWidth()
-                        )
-                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-                            Text(stringResource(R.string.automation_call_disclose), style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
-                            Switch(checked = callDiscloseAi, onCheckedChange = { callDiscloseAi = it })
-                        }
-                    } else {
+                    if (true) {
                         OutlinedTextField(
                             value = title, onValueChange = { title = it },
                             label = { Text(stringResource(R.string.automation_task_title)) },
@@ -621,26 +590,10 @@ fun CreateAutomationDialog(
                     Text(stringResource(R.string.automation_do_and_record))
                 }
             } else {
-                val canSave = if (actionType == "call") callGoal.isNotBlank() else title.isNotBlank()
+                val canSave = title.isNotBlank()
                 Button(
                     enabled = canSave,
                     onClick = {
-                        if (actionType == "call") {
-                            val filter = callerFilter.trim().takeIf { it.isNotBlank() }
-                            val goal = callGoal.trim()
-                            val finalTitle = title.trim().ifBlank {
-                                if (filter == null) "Screen all incoming calls" else "Call agent for $filter"
-                            }
-                            onSave(
-                                Macro(
-                                    title = finalTitle,
-                                    description = "Answers matching calls and conducts AI conversation",
-                                    triggers = listOf(Trigger.IncomingCall(contactFilter = filter, contactLabel = filter)),
-                                    instruction = goal,
-                                    action = Action.HandleCall(goal = goal, discloseAi = callDiscloseAi)
-                                )
-                            )
-                        } else {
                             val app = customAppName.trim().ifBlank { "Chrome" }
                             val steps = when (actionType) {
                                 "alarm" -> listOf(
@@ -667,7 +620,6 @@ fun CreateAutomationDialog(
                                     action = Action.Replay(steps)
                                 )
                             )
-                        }
                     }
                 ) { Text(stringResource(R.string.action_save)) }
             }
@@ -1030,7 +982,6 @@ fun ViewAutomationDetailsDialog(
                     when (macro.action) {
                         is Action.Replay -> Badge("⚡ Fast Replay (${macro.action.steps.size} steps)", container = scheme.primaryContainer, content = scheme.onPrimaryContainer)
                         Action.AlwaysAsk -> Badge("🧠 Live AI Agent", container = scheme.secondaryContainer, content = scheme.onSecondaryContainer)
-                        is Action.HandleCall -> Badge("📞 Auto Call Agent", container = scheme.tertiaryContainer, content = scheme.onTertiaryContainer)
                     }
                     if (macro.triggers.any { it is Trigger.NotificationReceived }) {
                         Badge("⚡ Headless Zero-UI", container = scheme.tertiaryContainer, content = scheme.onTertiaryContainer)
@@ -1220,18 +1171,6 @@ fun ViewAutomationDetailsDialog(
                             }
                         }
 
-                        is Action.HandleCall -> {
-                            Card(
-                                shape = MaterialTheme.shapes.small,
-                                colors = CardDefaults.cardColors(containerColor = scheme.surfaceContainerHigh),
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Column(Modifier.padding(Spacing.s + 4.dp), verticalArrangement = Arrangement.spacedBy(Spacing.xs)) {
-                                    Text("📞 Acoustic In-Call Handling:", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold)
-                                    Text("Goal: ${act.goal}", style = MaterialTheme.typography.bodySmall)
-                                    Text("Disclose AI: ${if (act.discloseAi) "Yes" else "No"}", style = MaterialTheme.typography.labelSmall, color = scheme.onSurfaceVariant)
-                                    Text("Max Duration: ${act.maxDurationMs / 60000} mins", style = MaterialTheme.typography.labelSmall, color = scheme.onSurfaceVariant)
-                                }
                             }
                         }
                     }

@@ -485,27 +485,6 @@ class VoiceSession private constructor(val context: Context) {
                 }
             }
         },
-        onCallAndTalk = { number, goal, maxMinutes ->
-            val maxDurationMs = (maxMinutes ?: 5) * 60_000L
-            endRequested = true
-            scope.launch {
-                delay(600)
-                endConversation("Placing call to $number")
-                callAgentSession.start(
-                    number = number,
-                    goal = goal,
-                    discloseAi = true,
-                    maxDurationMs = maxDurationMs,
-                    isIncoming = false
-                )
-            }
-            mapOf(
-                "success" to true,
-                "calling" to number,
-                "goal" to goal,
-                "next" to "I am placing the call and taking over to handle the conversation. Say a short line to the user and call end_conversation."
-            )
-        },
         onReviewApproved = { msg ->
             scope.launch {
                 sendText(msg)
@@ -919,14 +898,8 @@ class VoiceSession private constructor(val context: Context) {
     @Volatile var webSocketClient: LiveClient = if (_connectionMode.value == MODE_DIRECT) directClient else relayClient
         private set
 
-    val callAgentSession: com.nik.voiceassistant.call.CallAgentSession = com.nik.voiceassistant.call.CallAgentSession(
-        context = context,
-        assistantName = { _assistantName.value },
-        onNote = { note -> addTranscript("system", note) }
-    )
-
     // Tools after which the model gets a fresh look at the screen
-    private val visualTools = setOf("tap", "type_text", "scroll", "swipe", "navigate", "launch_intent", "open_app", "open_website", "wait", "read_screen", "unlock_phone", "make_call", "call_and_talk")
+    private val visualTools = setOf("tap", "type_text", "scroll", "swipe", "navigate", "launch_intent", "open_app", "open_website", "wait", "read_screen", "unlock_phone", "make_call")
 
     /**
      * Right before a tool's result goes back: an image of the app on screen, so the model sees what
@@ -1044,48 +1017,6 @@ class VoiceSession private constructor(val context: Context) {
                 sendAutomation(instruction, silent = _silentAutomations.value)
             }
         }
-        com.nik.voiceassistant.data.macro.MacroDispatch.onCallGoalRequested = { macro ->
-            val action = macro.action as? com.nik.voiceassistant.data.macro.Action.HandleCall
-            if (action != null) {
-                scope.launch {
-                    addTranscript("system", "📞 Automation triggered outgoing call: \"${macro.title}\"")
-                    callAgentSession.start(
-                        number = null,
-                        goal = action.goal,
-                        discloseAi = action.discloseAi,
-                        maxDurationMs = action.maxDurationMs,
-                        isIncoming = false,
-                        macroId = macro.id
-                    )
-                }
-            }
-        }
-        com.nik.voiceassistant.service.CallTriggerMonitor.onIncomingCallMacroMatched = { macro, number, name ->
-            val action = macro.action as? com.nik.voiceassistant.data.macro.Action.HandleCall
-            if (action != null) {
-                if (ContextCompat.checkSelfPermission(context, Manifest.permission.ANSWER_PHONE_CALLS) != PackageManager.PERMISSION_GRANTED) {
-                    Log.w(TAG, "Incoming call matched macro '${macro.title}' but ANSWER_PHONE_CALLS is not granted")
-                } else {
-                    val callerInfo = name ?: number ?: "Unknown caller"
-                    addTranscript("system", "📞 Incoming call from $callerInfo matched automation: \"${macro.title}\"")
-                    callAgentSession.start(
-                        number = number,
-                        goal = action.goal,
-                        discloseAi = action.discloseAi,
-                        maxDurationMs = action.maxDurationMs,
-                        isIncoming = true,
-                        macroId = macro.id
-                    )
-                }
-            }
-        }
-        com.nik.voiceassistant.service.VoiceInCallService.onCallAddedListener = { call ->
-            if (call.state == android.telecom.Call.STATE_RINGING) {
-                val number = call.details.handle?.schemeSpecificPart
-                com.nik.voiceassistant.service.CallTriggerMonitor.matchIncoming(context, number)
-            }
-        }
-        com.nik.voiceassistant.service.CallTriggerMonitor.start(context)
         com.nik.voiceassistant.service.ChargerAndWifiTriggerMonitor.start(context)
         com.nik.voiceassistant.service.ScheduledTriggerMonitor.rescheduleAll(context)
         com.nik.voiceassistant.service.ConditionPollingEngine.rescheduleAll(context)
@@ -1162,12 +1093,6 @@ class VoiceSession private constructor(val context: Context) {
     fun start(preroll: ByteArray? = null, keepMicMuted: Boolean = false) {
         scope.launch {
             if (_isRecording.value) return@launch
-            if (callAgentSession.isActive) {
-                _connectionStatus.value = ConnectionStatus.DISCONNECTED
-                addTranscript("system", "📞 A phone call conversation is currently active.")
-                onConversationEnded?.invoke()
-                return@launch
-            }
             if (!keepMicMuted && ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
                 _connectionStatus.value = ConnectionStatus.ERROR
                 addTranscript("system", "Microphone permission is off: open the app and allow the microphone.")

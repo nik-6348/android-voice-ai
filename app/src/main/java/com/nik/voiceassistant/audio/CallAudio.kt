@@ -40,46 +40,42 @@ class CallAudio(
 
     /**
      * Idempotent. Returns false if audio focus was refused, e.g. a phone call is on; the phone's
-     * call audio is left alone then. allowInCall allows entering for call agent sessions where a phone call is expected.
+     * call audio is left alone then.
      */
     @Synchronized
-    fun enter(allowInCall: Boolean = false): Boolean {
+    fun enter(): Boolean {
         val am = audio ?: return false
         if (active) return true
         try {
-            // A phone call owns the audio mode and routing: don't take them over unless explicitly intended for CallAgentSession
-            if (!allowInCall && (am.mode == AudioManager.MODE_IN_CALL || am.mode == AudioManager.MODE_RINGTONE)) {
+            // A phone call owns the audio mode and routing: don't take them over
+            if (am.mode == AudioManager.MODE_IN_CALL || am.mode == AudioManager.MODE_RINGTONE) {
                 Log.w(TAG, "Phone call in progress: not switching to call audio")
                 return false
             }
             active = true
             savedMode = am.mode
-            if (!allowInCall) {
-                am.mode = AudioManager.MODE_IN_COMMUNICATION
-            }
+            am.mode = AudioManager.MODE_IN_COMMUNICATION
             routeToSpeakerUnlessHeadset(am)
             // Do NOT force max volume: respect the user's chosen volume level on their device!
-            if (!allowInCall) {
-                // Pause / duck other audio while we listen and talk (released when the conversation ends)
-                val request = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
-                    .setAudioAttributes(
-                        AudioAttributes.Builder()
-                            .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
-                            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                            .build()
-                    )
-                    .setOnAudioFocusChangeListener({ change ->
-                        Log.w(TAG, "Audio focus changed: $change")
-                        if (change == AudioManager.AUDIOFOCUS_LOSS || change == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT) {
-                            if (active) onFocusLost()
-                        }
-                    }, main)
-                    .build()
-                focus = request
-                if (am.requestAudioFocus(request) != AudioManager.AUDIOFOCUS_REQUEST_GRANTED) {
-                    Log.w(TAG, "Audio focus refused")
-                    return false
-                }
+            // Pause / duck other audio while we listen and talk (released when the conversation ends)
+            val request = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
+                .setAudioAttributes(
+                    AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                        .build()
+                )
+                .setOnAudioFocusChangeListener({ change ->
+                    Log.w(TAG, "Audio focus changed: $change")
+                    if (change == AudioManager.AUDIOFOCUS_LOSS || change == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT) {
+                        if (active) onFocusLost()
+                    }
+                }, main)
+                .build()
+            focus = request
+            if (am.requestAudioFocus(request) != AudioManager.AUDIOFOCUS_REQUEST_GRANTED) {
+                Log.w(TAG, "Audio focus refused")
+                return false
             }
         } catch (e: Exception) {
             Log.w(TAG, "Couldn't set up call audio: ${e.message}")
