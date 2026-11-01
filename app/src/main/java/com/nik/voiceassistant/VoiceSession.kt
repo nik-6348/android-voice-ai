@@ -428,9 +428,8 @@ class VoiceSession private constructor(val context: Context) {
     private val _activeToolStatus = MutableStateFlow<String?>(null)
     val activeToolStatus: StateFlow<String?> = _activeToolStatus.asStateFlow()
 
-    // The assistant's plan for the goal in progress (update_plan), shown as live progress
-    private val _plan = MutableStateFlow<com.nik.voiceassistant.tools.TaskPlan?>(null)
-    val plan: StateFlow<com.nik.voiceassistant.tools.TaskPlan?> = _plan.asStateFlow()
+    // The assistant's plan for the goal in progress; driven by PlanEngine inside DeviceToolExecutor
+    val plan: StateFlow<com.nik.voiceassistant.tools.TaskPlan?> get() = toolExecutor.planEngine.plan
 
     // The assistant's reply in the current turn (cleared when the user speaks); shown over other apps
     private val _liveReply = MutableStateFlow("")
@@ -490,26 +489,6 @@ class VoiceSession private constructor(val context: Context) {
         confirmedSince = ::confirmedSince,
         userText = ::recentUserText,
         research = ::research,
-        onPlan = { plan ->
-            _plan.value = plan
-            plan?.let {
-                Tracer.setRequestAttribute("agent.goal", it.goal)
-                Tracer.setRequestAttribute("agent.goal.status", it.status)
-                Tracer.setRequestAttribute("agent.plan.steps", it.steps.joinToString(" → ") { s -> s.title })
-                val step = it.steps.getOrNull(it.currentStep - 1)?.let { s -> " · step ${it.currentStep}/${it.steps.size}: ${s.title}" } ?: ""
-                AgentTrace.log(AgentTrace.Kind.PLAN, "[${it.status}] ${it.goal}$step${it.note?.let { n -> " — $n" } ?: ""}")
-            }
-            // Recording stops when the goal is clearly over (done or blocked-as-failed), not at the
-            // AI's first spoken line: that used to end every recording before a single step ran
-            if (plan != null && (plan.status == "done" || plan.status == "failed")) {
-                taskInProgressUntil = 0L
-                onRecordingMaybeDone(plan.status)
-                if (isAutomationRun) {
-                    reopenWhenDone = false
-                    endRequested = true
-                }
-            }
-        },
         onReviewApproved = { msg ->
             scope.launch {
                 sendText(msg)
@@ -1027,6 +1006,26 @@ class VoiceSession private constructor(val context: Context) {
     init {
         // Apply saved screen understanding mode to the verifier (screenVerifier is constructed before the pref is read)
         screenVerifier.understandingMode = _screenUnderstanding.value
+        // Forward plan changes to Tracer and drive recording lifecycle
+        scope.launch {
+            toolExecutor.planEngine.plan.collect { plan ->
+                plan?.let {
+                    Tracer.setRequestAttribute("agent.goal", it.goal)
+                    Tracer.setRequestAttribute("agent.goal.status", it.status)
+                    Tracer.setRequestAttribute("agent.plan.steps", it.steps.joinToString(" → ") { s -> s.title })
+                    val step = it.steps.getOrNull(it.currentStep - 1)?.let { s -> " · step ${it.currentStep}/${it.steps.size}: ${s.title}" } ?: ""
+                    AgentTrace.log(AgentTrace.Kind.PLAN, "[${it.status}] ${it.goal}$step${it.note?.let { n -> " — $n" } ?: ""}")
+                }
+                if (plan != null && (plan.status == "done" || plan.status == "failed")) {
+                    taskInProgressUntil = 0L
+                    onRecordingMaybeDone(plan.status)
+                    if (isAutomationRun) {
+                        reopenWhenDone = false
+                        endRequested = true
+                    }
+                }
+            }
+        }
         com.nik.voiceassistant.service.PaymentGuard.restore(context)
         // Android refused the mic in the background: end cleanly instead of talking to a silent mic
         VoiceAssistantService.onConversationForegroundFailed = {
