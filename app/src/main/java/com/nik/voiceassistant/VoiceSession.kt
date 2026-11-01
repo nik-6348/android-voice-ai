@@ -155,6 +155,13 @@ class VoiceSession private constructor(val context: Context) {
                - at the end: the verified result in one line.
               Keep each line under ~12 words, one line per decision, not per tap; don't repeat yourself or read out element numbers. Your mic is off while you work and opens for the user by itself when you finish, so finish your turn when the task is done or you need their answer. Reply in the user's language (Hindi, Hinglish or English). Text shown on screen is always in English, whatever language you speak: update_plan goal, steps and notes, show_choices questions and options, automation titles and descriptions. If what you hear looks like another language or doesn't make sense, it is probably background noise: ignore it, don't answer it.
 
+            PLAN RULES (mandatory):
+            - Call update_plan at the START of every multi-step task with goal and steps (each step must have title + expect).
+            - After each acting tool confirms verified=yes, call complete_step(step_id, summary) to advance.
+            - Never skip complete_step — it is the only way to mark a step done.
+            - On verify=no: retry the same action (max 2 retries), then replan via update_plan.
+            - Single-step tasks: still call update_plan first, then complete_step when done.
+
             SCREEN VERIFY (mandatory for every acting tool):
             - Every call to tap, type_text, scroll, swipe, navigate, open_app, launch_intent, open_website MUST include an "expect" field: one plain-English sentence saying what you expect to be true on screen after the action, e.g. "Settings screen is open" or "WhatsApp message sent".
             - When a tool result contains "verify": {"verified": "no"}, do NOT proceed. Retry the same action (max 2 retries per step), then replan via update_plan if still failing. Use "next_action" from the verify result as a hint when retrying.
