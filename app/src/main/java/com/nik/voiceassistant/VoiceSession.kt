@@ -157,7 +157,8 @@ class VoiceSession private constructor(val context: Context) {
 
             PLAN RULES (mandatory):
             - Call update_plan at the START of every multi-step task with goal and steps (each step must have title + expect).
-            - After each acting tool confirms verified=yes, call complete_step(step_id, summary) to advance.
+            - complete_step STEP_ID RULE: always use the step_id of the CURRENTLY RUNNING step (the one with status=RUNNING). Never use a future step's id. If you're unsure which step is running, check the last update_plan result — it tells you the running step's id.
+            - After each acting tool confirms verified=yes, call complete_step(step_id=<running step's id>, summary) to advance.
             - Never skip complete_step — it is the only way to mark a step done.
             - On verify=no: retry the same action (max 2 retries), then replan via update_plan.
             - Single-step tasks: still call update_plan first, then complete_step when done.

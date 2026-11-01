@@ -697,9 +697,11 @@ class DeviceToolExecutor(
                     }
                     if (statusArg == "blocked") planEngine.fail(planEngine.plan.value?.steps?.firstOrNull { it.status == StepStatus.RUNNING }?.id ?: "s1", str("note").orEmpty().ifBlank { "blocked" })
                     if (statusArg != null && statusArg in setOf("done", "failed")) planEngine.finish(statusArg)
+                    val runningStep = planEngine.plan.value?.steps?.firstOrNull { it.status == StepStatus.RUNNING }
                     mapOf(
                         "saved" to true,
-                        "next" to "Use complete_step after each step succeeds. Carry on with step ${planEngine.plan.value?.currentStep ?: 1}."
+                        "running_step_id" to (runningStep?.id ?: "none"),
+                        "next" to "Now execute step ${planEngine.plan.value?.currentStep ?: 1}: ${runningStep?.title ?: ""}. Call complete_step(step_id=\"${runningStep?.id ?: "s1"}\") after it succeeds."
                     )
                 }
 

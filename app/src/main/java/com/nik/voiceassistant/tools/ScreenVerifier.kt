@@ -64,9 +64,9 @@ class ScreenVerifier(
     @Volatile private var lastCaptureAt = 0L
 
     private val http = OkHttpClient.Builder()
-        .callTimeout(7, TimeUnit.SECONDS)
-        .connectTimeout(5, TimeUnit.SECONDS)
-        .readTimeout(7, TimeUnit.SECONDS)
+        .callTimeout(20, TimeUnit.SECONDS)
+        .connectTimeout(8, TimeUnit.SECONDS)
+        .readTimeout(20, TimeUnit.SECONDS)
         .build()
 
     /**
