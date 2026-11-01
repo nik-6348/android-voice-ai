@@ -78,7 +78,7 @@ fun TaskCompletionCard(
         label = "sparkle_progress"
     )
 
-    val steps = safeList<String>(plan.steps)
+    val steps = plan.steps.map { it.title }
 
     Card(
         modifier = modifier
@@ -148,7 +148,7 @@ fun TaskCompletionCard(
             // Completed steps checklist
             steps.forEachIndexed { index, stepText ->
                 val n = index + 1
-                val detail = plan.stepDetails?.get(n)?.takeIf { it.isNotBlank() }
+                val detail = plan.steps.getOrNull(index)?.detail?.takeIf { it.isNotBlank() }
                 AnimatedVisibility(
                     visible = true,
                     enter = fadeIn(tween(delayMillis = index * 50)) + slideInVertically(

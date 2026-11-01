@@ -674,7 +674,7 @@ class DeviceToolExecutor(
 
                 "update_plan" -> updatePlan(
                     goal = str("goal") ?: plan?.goal ?: userText().lines().lastOrNull { it.isNotBlank() }?.trim() ?: "Current task",
-                    steps = parseSteps(args["steps"] ?: args["step_list"]),
+                    steps = parseRawStepTitles(args["steps"] ?: args["step_list"]),
                     currentStep = int("current_step"),
                     status = str("status"),
                     note = str("note")
@@ -1068,11 +1068,16 @@ class DeviceToolExecutor(
         }
     }
 
-    private fun parseSteps(raw: Any?): List<String>? {
+    private fun parseRawStepTitles(raw: Any?): List<String>? {
         if (raw == null) return null
         when (raw) {
             is Collection<*> -> {
-                val list = raw.mapNotNull { it?.toString()?.trim() }.filter { it.isNotBlank() }
+                val list = raw.mapNotNull { item ->
+                    when (item) {
+                        is Map<*, *> -> item["title"]?.toString()?.trim()
+                        else -> item?.toString()?.trim()
+                    }
+                }.filter { it.isNotBlank() }
                 if (list.isNotEmpty()) return list
             }
             is Array<*> -> {
@@ -1086,7 +1091,10 @@ class DeviceToolExecutor(
         val fromJson = runCatching {
             val elem = JsonParser.parseString(text)
             if (elem.isJsonArray) {
-                elem.asJsonArray.mapNotNull { runCatching { it.asString.trim() }.getOrNull() }.filter { it.isNotBlank() }
+                elem.asJsonArray.mapNotNull { el ->
+                    if (el.isJsonObject) el.asJsonObject.get("title")?.asString?.trim()
+                    else runCatching { el.asString.trim() }.getOrNull()
+                }.filter { it.isNotBlank() }
             } else null
         }.getOrNull()
         if (!fromJson.isNullOrEmpty()) return fromJson
@@ -1111,20 +1119,26 @@ class DeviceToolExecutor(
         val effectiveGoal = goal.ifBlank { plan?.goal ?: userText().lines().lastOrNull { it.isNotBlank() }?.trim() ?: "Current task" }
         val old = plan
         val sameGoal = old != null && old.goal.equals(effectiveGoal, ignoreCase = true) && old.status !in setOf("done", "failed")
-        val resolvedSteps = steps?.filter { it.isNotBlank() }?.takeIf { it.isNotEmpty() }
-            ?: old?.steps.takeIf { sameGoal }?.takeIf { it.isNotEmpty() }
+        val resolvedTitles = steps?.filter { it.isNotBlank() }?.takeIf { it.isNotEmpty() }
+            ?: old?.steps?.map { it.title }.takeIf { sameGoal }?.takeIf { it?.isNotEmpty() == true }
             ?: listOf(effectiveGoal, "Verify on screen and complete")
+        val resolvedStep = (currentStep ?: old?.currentStep.takeIf { sameGoal } ?: 1).coerceIn(1, resolvedTitles.size)
+        val planSteps = resolvedTitles.mapIndexed { idx, title ->
+            val stepNum = idx + 1
+            val st = when {
+                stepNum < resolvedStep -> StepStatus.DONE
+                stepNum == resolvedStep -> StepStatus.RUNNING
+                else -> StepStatus.PENDING
+            }
+            PlanStep(id = "s$stepNum", title = title, status = st)
+        }
         val next = TaskPlan(
             goal = effectiveGoal,
-            steps = resolvedSteps,
-            currentStep = (currentStep ?: old?.currentStep.takeIf { sameGoal } ?: 1).coerceIn(1, resolvedSteps.size),
+            steps = planSteps,
             status = status ?: "working",
             note = note,
             tried = if (sameGoal) old!!.tried else java.util.Collections.synchronizedSet(mutableSetOf()),
-            blockedCount = (if (sameGoal) old!!.blockedCount else 0) + if (status == "blocked") 1 else 0,
-            stepTimings = if (sameGoal) old?.stepTimings else null,
-            stepDetails = if (sameGoal) old?.stepDetails else null,
-            reasoningLines = if (sameGoal) old?.reasoningLines else null
+            blockedCount = (if (sameGoal) old!!.blockedCount else 0) + if (status == "blocked") 1 else 0
         )
         plan = next
         if (!sameGoal) { sameScreenStreak = 0; recentCalls.clear() }

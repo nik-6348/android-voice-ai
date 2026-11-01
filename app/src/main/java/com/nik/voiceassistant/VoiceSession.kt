@@ -495,8 +495,8 @@ class VoiceSession private constructor(val context: Context) {
             plan?.let {
                 Tracer.setRequestAttribute("agent.goal", it.goal)
                 Tracer.setRequestAttribute("agent.goal.status", it.status)
-                Tracer.setRequestAttribute("agent.plan.steps", it.steps.joinToString(" → "))
-                val step = it.steps.getOrNull(it.currentStep - 1)?.let { s -> " · step ${it.currentStep}/${it.steps.size}: $s" } ?: ""
+                Tracer.setRequestAttribute("agent.plan.steps", it.steps.joinToString(" → ") { s -> s.title })
+                val step = it.steps.getOrNull(it.currentStep - 1)?.let { s -> " · step ${it.currentStep}/${it.steps.size}: ${s.title}" } ?: ""
                 AgentTrace.log(AgentTrace.Kind.PLAN, "[${it.status}] ${it.goal}$step${it.note?.let { n -> " — $n" } ?: ""}")
             }
             // Recording stops when the goal is clearly over (done or blocked-as-failed), not at the

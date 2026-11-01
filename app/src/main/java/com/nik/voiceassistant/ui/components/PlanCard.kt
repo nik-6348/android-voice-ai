@@ -75,7 +75,7 @@ fun PlanCard(
 ) {
     val scheme = MaterialTheme.colorScheme
     val ext = NikTheme.extended
-    val steps = safeList<String>(plan.steps)
+    val steps = plan.steps.map { it.title }
     val total = steps.size
     val status = safeString(plan.status)
     val finished = status == "done"
@@ -185,7 +185,8 @@ fun PlanCard(
                                     fontWeight = if (now) FontWeight.SemiBold else FontWeight.Normal,
                                     modifier = Modifier.weight(1f)
                                 )
-                                val timing = plan.stepTimings?.get(n)
+                                val planStep = plan.steps.getOrNull(i)
+                                val timing = planStep?.let { s -> s.endedAt?.let { e -> s.startedAt?.let { a -> e - a } } }
                                 if (done && timing != null) {
                                     val seconds = (timing / 1000L).coerceAtLeast(1L)
                                     Text(
@@ -195,7 +196,7 @@ fun PlanCard(
                                     )
                                 }
                             }
-                            val detail = plan.stepDetails?.get(n)?.takeIf { it.isNotBlank() }
+                            val detail = plan.steps.getOrNull(i)?.detail?.takeIf { it.isNotBlank() }
                             if (detail != null) {
                                 Text(
                                     text = detail,
@@ -233,7 +234,7 @@ fun PlanCard(
                     }
                 }
             }
-            val reasoning = plan.reasoningLines?.filter { it.isNotBlank() }
+            val reasoning = emptyList<String>()
             AnimatedVisibility(
                 visible = !reasoning.isNullOrEmpty(),
                 enter = fadeIn() + expandVertically(),
@@ -258,7 +259,7 @@ fun PlanCard(
                             color = cyanAccent
                         )
                     }
-                    val recent = (reasoning ?: emptyList()).takeLast(5)
+                    val recent = reasoning.takeLast(5)
                     recent.forEachIndexed { idx, line ->
                         AnimatedVisibility(
                             visible = true,

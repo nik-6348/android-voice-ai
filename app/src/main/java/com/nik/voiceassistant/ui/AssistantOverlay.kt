@@ -791,7 +791,7 @@ class AssistantOverlay(private val session: VoiceSession) {
                 Spacer(Modifier.height(Spacing.s + 4.dp))
                 PlanStrip(
                     goal = safeString(p.goal),
-                    steps = safeList(p.steps),
+                    steps = p.steps.map { it.title },
                     currentStep = p.currentStep,
                     status = safeString(p.status),
                     note = safeString(p.note),
