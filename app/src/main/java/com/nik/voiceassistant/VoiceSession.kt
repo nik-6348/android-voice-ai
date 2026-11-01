@@ -155,6 +155,12 @@ class VoiceSession private constructor(val context: Context) {
                - at the end: the verified result in one line.
               Keep each line under ~12 words, one line per decision, not per tap; don't repeat yourself or read out element numbers. Your mic is off while you work and opens for the user by itself when you finish, so finish your turn when the task is done or you need their answer. Reply in the user's language (Hindi, Hinglish or English). Text shown on screen is always in English, whatever language you speak: update_plan goal, steps and notes, show_choices questions and options, automation titles and descriptions. If what you hear looks like another language or doesn't make sense, it is probably background noise: ignore it, don't answer it.
 
+            SCREEN VERIFY (mandatory for every acting tool):
+            - Every call to tap, type_text, scroll, swipe, navigate, open_app, launch_intent, open_website MUST include an "expect" field: one plain-English sentence saying what you expect to be true on screen after the action, e.g. "Settings screen is open" or "WhatsApp message sent".
+            - When a tool result contains "verify": {"verified": "no"}, do NOT proceed. Retry the same action (max 2 retries per step), then replan via update_plan if still failing. Use "next_action" from the verify result as a hint when retrying.
+            - "verified": "yes" → proceed to the next step. "verified": "unsure" → use look_at_screen or proceed with caution.
+            - "verified": "yes" is required before calling complete_step.
+
             ASK FIRST only before an irreversible payment / money transfer or permanently deleting data. Never ask the user to scroll, look, or tap for you.
             CONFIRMATIONS: the phone itself may stop an action (a call, sending, paying, deleting) with needs_confirmation and show the user a yes / no. Then ask them in one short line and wait; if they say yes, call the same tool again with the same arguments; if no, drop it.
 
@@ -296,6 +302,17 @@ class VoiceSession private constructor(val context: Context) {
     // Screen images go to the model after each action (direct connection), so it sees what the element list misses
     private val _visionFrames = MutableStateFlow(prefs.getBoolean("vision_frames", true))
     val visionFrames: StateFlow<Boolean> = _visionFrames.asStateFlow()
+
+    // Screen understanding: how Shiv verifies actions. "text_only" | "smart" (default) | "every_action"
+    private val _screenUnderstanding = MutableStateFlow(
+        prefs.getString("screen_understanding", ScreenVerifier.MODE_SMART) ?: ScreenVerifier.MODE_SMART
+    )
+    val screenUnderstanding: StateFlow<String> = _screenUnderstanding.asStateFlow()
+    fun setScreenUnderstanding(mode: String) {
+        _screenUnderstanding.value = mode
+        screenVerifier.understandingMode = mode
+        prefs.edit().putString("screen_understanding", mode).apply()
+    }
 
     // Fast action mode: model acts silently (no step-by-step narration); also skips waiting for
     // audio before acting so actions happen immediately without any speech delay.
@@ -1008,6 +1025,8 @@ class VoiceSession private constructor(val context: Context) {
     }
 
     init {
+        // Apply saved screen understanding mode to the verifier (screenVerifier is constructed before the pref is read)
+        screenVerifier.understandingMode = _screenUnderstanding.value
         com.nik.voiceassistant.service.PaymentGuard.restore(context)
         // Android refused the mic in the background: end cleanly instead of talking to a silent mic
         VoiceAssistantService.onConversationForegroundFailed = {

@@ -136,6 +136,7 @@ fun SettingsTab(viewModel: VoiceAssistantViewModel) {
     val autoSleep by viewModel.autoSleep.collectAsState()
     val autoMute by viewModel.autoMute.collectAsState()
     val fastActionMode by viewModel.fastActionMode.collectAsState()
+    val screenUnderstanding by viewModel.screenUnderstanding.collectAsState()
     val silentAutomations by viewModel.silentAutomations.collectAsState()
     val policy by viewModel.policy.collectAsState()
     val isAgentEnabled by viewModel.isAgentEnabled.collectAsState()
@@ -302,6 +303,25 @@ fun SettingsTab(viewModel: VoiceAssistantViewModel) {
                         SwitchRow(
                             stringResource(R.string.vision_title), vision, { vision = it },
                             description = stringResource(R.string.vision_desc)
+                        )
+                        HorizontalDivider(Modifier.padding(vertical = Spacing.s))
+                        Text(stringResource(R.string.screen_understanding_title), style = MaterialTheme.typography.labelLarge)
+                        Text(stringResource(R.string.screen_understanding_desc), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Spacer(Modifier.size(Spacing.xs))
+                        RadioRow(
+                            stringResource(R.string.screen_understanding_text_only),
+                            selected = screenUnderstanding == com.nik.voiceassistant.tools.ScreenVerifier.MODE_TEXT_ONLY,
+                            onSelect = { viewModel.setScreenUnderstanding(com.nik.voiceassistant.tools.ScreenVerifier.MODE_TEXT_ONLY) }
+                        )
+                        RadioRow(
+                            stringResource(R.string.screen_understanding_smart),
+                            selected = screenUnderstanding == com.nik.voiceassistant.tools.ScreenVerifier.MODE_SMART,
+                            onSelect = { viewModel.setScreenUnderstanding(com.nik.voiceassistant.tools.ScreenVerifier.MODE_SMART) }
+                        )
+                        RadioRow(
+                            stringResource(R.string.screen_understanding_every_action),
+                            selected = screenUnderstanding == com.nik.voiceassistant.tools.ScreenVerifier.MODE_EVERY_ACTION,
+                            onSelect = { viewModel.setScreenUnderstanding(com.nik.voiceassistant.tools.ScreenVerifier.MODE_EVERY_ACTION) }
                         )
                     }
                 }
