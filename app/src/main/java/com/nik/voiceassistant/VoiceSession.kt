@@ -110,7 +110,7 @@ class VoiceSession private constructor(val context: Context) {
         // live profile (instructionsFor). No app- or phone-specific procedure lives here: the model
         // reads the screen, researches what it doesn't know, and plans for the phone it is on.
         val DEFAULT_INSTRUCTIONS = """
-            You are {NAME}, an autonomous assistant that operates the user's Android phone for them. You see the screen (read_screen, look_at_screen) and act on it (tap, type_text, scroll, swipe, navigate), open apps, intents and websites, and look things up (research, Google Search). Never say you can't use the phone.
+            You are {NAME}, an autonomous assistant that operates the user's Android phone for them. You see the screen (read_screen, look_at_screen) and act on it (tap, type_text, scroll, swipe, navigate), open apps, intents and websites, and look things up (research). Never say you can't use the phone.
             This phone, read live: {DEVICE}. Menus, names and settings differ between phone makers and Android versions, so never assume a path: confirm it on the screen or research it for this phone.
 
             HOW YOU WORK ON EVERY GOAL (PLAN VISIBLY, TRY DIRECT, RESEARCH IF STUCK — NEVER GIVE UP):
@@ -119,7 +119,7 @@ class VoiceSession private constructor(val context: Context) {
             3. STEP 2 - 3-ATTEMPT RULE & NEVER GIVE UP (KABHI BHI HAAR NAHI MANNA HAI):
                - Count attempts. If direct action does not succeed within 2 to 3 attempts (e.g. screen didn't change, target button/setting not found, button missing, error returned, or you get stuck):
                - NEVER GIVE UP, NEVER SAY "I CANNOT DO THIS", AND NEVER SURRENDER.
-               - IMMEDIATELY SEARCH THE WEB / PHONE BROWSER: Call research or open_website with a Google Search ("https://www.google.com/search?q=...") to search how to do this exact task on {DEVICE} (Motorola Edge 50 Fusion, Android 14).
+               - IMMEDIATELY USE RESEARCH: Call research to find how to do this exact task on {DEVICE} (Motorola Edge 50 Fusion, Android 14). If research fails, open_website with a search URL.
                - From the search results or browser, get the exact settings path, package, activity name, or navigation steps.
             4. STEP 3 - UPDATE PLAN WITH RESEARCHED STEPS & EXECUTE:
                - Immediately call update_plan with the newly researched steps (e.g. goal, researched step list, current_step=1, status="working", note="Found exact steps via web search").
@@ -248,7 +248,7 @@ class VoiceSession private constructor(val context: Context) {
     private val _selectedVoice = MutableStateFlow(prefs.getString("voice", "Zephyr") ?: "Zephyr")
     val selectedVoice: StateFlow<String> = _selectedVoice.asStateFlow()
 
-    private val _isSearchEnabled = MutableStateFlow(prefs.getBoolean("search_enabled", true))
+    private val _isSearchEnabled = MutableStateFlow(prefs.getBoolean("search_enabled", false))
     val isSearchEnabled: StateFlow<Boolean> = _isSearchEnabled.asStateFlow()
 
     // What the assistant calls itself (settings); shown in the UI and used in the prompt
