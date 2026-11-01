@@ -487,7 +487,7 @@ class DeviceToolExecutor(
      * counts as asking for calls / sends / deletes; payments and wipes still need their yes.
      */
     private val passiveTools = setOf(
-        "update_plan", "read_screen", "look_at_screen", "list_apps",
+        "update_plan", "complete_step", "read_screen", "look_at_screen", "list_apps",
         "find_contact", "list_recent_messages", "list_automations",
         "end_conversation", "wait"
     )
