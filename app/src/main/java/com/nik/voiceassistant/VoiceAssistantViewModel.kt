@@ -62,6 +62,8 @@ class VoiceAssistantViewModel(application: Application) : AndroidViewModel(appli
     val connectionMode: StateFlow<String> = session.connectionMode
     val llmBaseUrl: StateFlow<String> = session.llmBaseUrl
     val visionFrames: StateFlow<Boolean> = session.visionFrames
+    val screenUnderstanding: StateFlow<String> = session.screenUnderstanding
+    fun setScreenUnderstanding(mode: String) = session.setScreenUnderstanding(mode)
     val fastActionMode: StateFlow<Boolean> = session.fastActionMode
     fun setFastActionMode(enabled: Boolean) = session.setFastActionMode(enabled)
     val silentAutomations: StateFlow<Boolean> = session.silentAutomations

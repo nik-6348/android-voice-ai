@@ -36,6 +36,8 @@ class DeviceToolExecutor(
     private val onEndConversation: () -> Unit = {},
     // look_at_screen: (screenshot JPEG, prompt) -> what a vision model sees, or null on failure
     private val describeImage: ((ByteArray, String) -> String?)? = null,
+    // screenVerifier: two-tier verify (tier-1 elements + tier-2 vision gateway)
+    val screenVerifier: ScreenVerifier? = null,
     // show_choices: (question, options) shown as a tappable list in the app and the overlay
     private val onShowChoices: (String, List<String>) -> Unit = { _, _ -> },
     // onShowAutomationReview: shows the 3 Pillars review card before saving an automation
@@ -46,8 +48,8 @@ class DeviceToolExecutor(
     private val userText: () -> String = { "" },
     // research: a question -> an answer found on the web, or null on failure (blocking)
     private val research: ((String) -> String?)? = null,
-    // update_plan: the model's current plan, shown as live progress
-    private val onPlan: (TaskPlan?) -> Unit = {},
+    // planEngine: drives PlanStep state transitions for the current goal
+    val planEngine: PlanEngine = PlanEngine(),
     private val onReviewApproved: (String) -> Unit = {}
 ) : ToolExecutor {
 
@@ -105,7 +107,8 @@ class DeviceToolExecutor(
                 "element_id" to param("integer", "Element number from the latest screen, e.g. 3 for [3]"),
                 "text" to param("string", "Visible text of the element, when no element_id"),
                 "long_press" to param("boolean", "Long-press instead of tap"),
-                "times" to param("integer", "Tap this many times in quick succession (1-15), for things that need repeated taps, e.g. Build number 7 times")
+                "times" to param("integer", "Tap this many times in quick succession (1-15), for things that need repeated taps, e.g. Build number 7 times"),
+                "expect" to param("string", "What you expect to be true on screen after this action, e.g. \"Settings screen is open\"")
             )
         ),
         function(
@@ -115,7 +118,8 @@ class DeviceToolExecutor(
             required = listOf("text" to param("string", "Text to type")),
             optional = listOf(
                 "element_id" to param("integer", "The text field's element number"),
-                "submit" to param("boolean", "Press the keyboard's enter/search/send key after typing. Leave it out to press it automatically in search fields; false never presses it")
+                "submit" to param("boolean", "Press the keyboard's enter/search/send key after typing. Leave it out to press it automatically in search fields; false never presses it"),
+                "expect" to param("string", "What you expect to be true on screen after this action")
             )
         ),
         function(
@@ -127,20 +131,42 @@ class DeviceToolExecutor(
             optional = listOf(
                 "element_id" to param("integer", "The scrollable element's number (or any element inside it), if not the main list"),
                 "until_text" to param("string", "Keep scrolling until an element showing this text is visible"),
-                "max_scrolls" to param("integer", "Most scrolls with until_text, default 10")
+                "max_scrolls" to param("integer", "Most scrolls with until_text, default 10"),
+                "expect" to param("string", "What you expect to be true on screen after this action")
             )
         ),
         function(
             "update_plan",
-            "Your working plan for a multi-step goal, shown to the user as live progress. Call it when a goal starts " +
-                "(goal + steps), as steps complete (current_step), and whenever you change approach (status blocked + note " +
-                "on what failed). The result lists the approaches still untried when you are blocked.",
+            "Your working plan for a multi-step goal, shown to the user as live progress. Call it at goal start " +
+                "(goal + steps) and whenever you change approach (status blocked + note on what failed). " +
+                "Call complete_step when each step is done.",
             required = listOf("goal" to param("string", "The user's goal in one line, in English")),
             optional = listOf(
-                "steps" to mapOf("type" to "array", "items" to mapOf("type" to "string"), "description" to "Ordered short steps to reach the goal, in English"),
-                "current_step" to param("integer", "1-based number of the step being done now"),
+                "steps" to mapOf(
+                    "type" to "array",
+                    "items" to mapOf(
+                        "type" to "object",
+                        "properties" to mapOf(
+                            "title" to mapOf("type" to "string", "description" to "Short step label, in English"),
+                            "detail" to mapOf("type" to "string", "description" to "What to do in this step"),
+                            "expect" to mapOf("type" to "string", "description" to "What you expect to be true after completing it")
+                        ),
+                        "required" to listOf("title")
+                    ),
+                    "description" to "Ordered steps to reach the goal, in English"
+                ),
                 "status" to param("string", "Where the goal stands", enum = listOf("working", "blocked", "done", "failed")),
                 "note" to param("string", "Your current thinking in English: what you see, what you decided and why (shown to the user)")
+            )
+        ),
+        function(
+            "complete_step",
+            "Marks the current step as done. Only call this after confirming the step succeeded " +
+                "(verify block showed verified=yes, or for background steps, the API confirmed it). " +
+                "The next step starts automatically.",
+            required = listOf(
+                "step_id" to param("string", "The id of the step to mark done, e.g. \"s1\""),
+                "summary" to param("string", "One line: what you did and the outcome")
             )
         ),
         function(
@@ -155,7 +181,10 @@ class DeviceToolExecutor(
             "Swipes a finger across an element or the screen (direction = where the finger moves). " +
                 "E.g. to close an app: navigate recents, then swipe up on that app's card. Returns the new screen.",
             required = listOf("direction" to param("string", "Finger direction", enum = listOf("up", "down", "left", "right"))),
-            optional = listOf("element_id" to param("integer", "Element to swipe on; default the screen center"))
+            optional = listOf(
+                "element_id" to param("integer", "Element to swipe on; default the screen center"),
+                "expect" to param("string", "What you expect to be true on screen after this action")
+            )
         ),
         function(
             "search_settings",
@@ -177,7 +206,8 @@ class DeviceToolExecutor(
                     "string", "The navigation action",
                     enum = listOf("back", "home", "recents", "notifications", "quick_settings", "lock_screen", "screenshot", "power_dialog")
                 )
-            )
+            ),
+            optional = listOf("expect" to param("string", "What you expect to be true on screen after this action"))
         ),
         function(
             "show_choices",
@@ -246,7 +276,8 @@ class DeviceToolExecutor(
             "open_app",
             "Opens an installed app by its name (use the full name, e.g. \"Google Keep\"). If several apps match it lists them; " +
                 "if none does, use list_apps.",
-            required = listOf("app_name" to param("string", "App name, e.g. \"YouTube\""))
+            required = listOf("app_name" to param("string", "App name, e.g. \"YouTube\"")),
+            optional = listOf("expect" to param("string", "What you expect to be true on screen after this action, e.g. \"YouTube home screen visible\""))
         ),
         function(
             "list_apps",
@@ -263,7 +294,8 @@ class DeviceToolExecutor(
                 "action" to param("string", "Intent action; default android.intent.action.VIEW"),
                 "uri" to param("string", "Data URI"),
                 "package" to param("string", "Limit to this app package"),
-                "extras" to param("string", "JSON object of string/number/boolean extras, e.g. {\"query\":\"pizza\"}")
+                "extras" to param("string", "JSON object of string/number/boolean extras, e.g. {\"query\":\"pizza\"}"),
+                "expect" to param("string", "What you expect to be true on screen after this action")
             )
         ),
         function(
@@ -276,7 +308,8 @@ class DeviceToolExecutor(
             "open_website",
             "Opens a website or a web search in the browser (not in an app). Give a URL (\"amazon.in\", " +
                 "\"https://…\") or words to search for. Returns the new screen.",
-            required = listOf("url_or_search" to param("string", "A web address, or what to search for"))
+            required = listOf("url_or_search" to param("string", "A web address, or what to search for")),
+            optional = listOf("expect" to param("string", "What you expect to be true on screen after this action"))
         ),
         function(
             "toggle_flashlight",
@@ -454,43 +487,58 @@ class DeviceToolExecutor(
      * counts as asking for calls / sends / deletes; payments and wipes still need their yes.
      */
     private val passiveTools = setOf(
-        "update_plan", "read_screen", "look_at_screen", "list_apps",
+        "update_plan", "complete_step", "read_screen", "look_at_screen", "list_apps",
         "find_contact", "list_recent_messages", "list_automations",
         "end_conversation", "wait"
     )
 
-    private fun ensurePlanForAction(toolName: String, args: Map<String, Any?>) {
-        if (toolName in passiveTools) return
-        val current = plan
-        if (current == null || current.status in setOf("done", "failed")) {
-            val userGoal = userText().lines().lastOrNull { it.isNotBlank() }?.trim()
-                ?: when (toolName) {
-                    "open_app" -> "Open ${args["app_name"] ?: args["name"] ?: "app"}"
-                    "open_website" -> "Search/Open ${args["url_or_search"] ?: "website"}"
-                    "make_call" -> "Call ${args["number"] ?: "contact"}"
-                    "send_sms" -> "Send SMS to ${args["number"] ?: "recipient"}"
-                    "reply_notification" -> "Reply to message"
-                    "search_settings" -> "Find setting ${args["query"] ?: ""}"
-                    "launch_intent" -> "Launch ${args["action"] ?: "screen"}"
-                    "research" -> "Research ${args["question"] ?: "steps"}"
-                    else -> "Execute $toolName"
-                }
-            updatePlan(
-                goal = userGoal,
-                steps = listOf(userGoal, "Verify on screen and complete"),
-                currentStep = 1,
-                status = "working",
-                note = "Starting direct execution"
-            )
-        }
-    }
-
     override fun execute(toolName: String, arguments: Map<String, Any?>?, trusted: Boolean): Map<String, Any?> = actionLock.withLock {
         // Arguments can hold message text and numbers: only the tool name is logged
         Log.i(TAG, "Executing tool: $toolName")
-        ensurePlanForAction(toolName, arguments.orEmpty())
+        // Auto-start a 1-step plan when acting without an existing plan
+        if (toolName !in passiveTools) {
+            val current = planEngine.plan.value
+            if (current == null || current.status in setOf("done", "failed")) {
+                val userGoal = userText().lines().lastOrNull { it.isNotBlank() }?.trim() ?: toolName
+                planEngine.start(userGoal, listOf(PlanStep("s1", userGoal)))
+            }
+        }
         val result = run(toolName, arguments.orEmpty(), trusted)
-        withProgressCheck(toolName, arguments.orEmpty(), result)
+        val checked = withProgressCheck(toolName, arguments.orEmpty(), result)
+
+        // Screen verify: run when the tool has an "expect" param and a verifier is available
+        val expect = arguments?.get("expect") as? String
+        if (!expect.isNullOrBlank() && toolName in acting && screenVerifier != null) {
+            @Suppress("UNCHECKED_CAST")
+            val elements = (checked["screen"] as? Map<String, Any?>)?.let { s ->
+                s["elements"] as? List<String>
+            }.orEmpty()
+            val appPkg = (checked["screen"] as? Map<String, Any?>)?.get("app") as? String ?: ""
+            val vr = kotlinx.coroutines.runBlocking {
+                screenVerifier.verify(
+                    expect = expect,
+                    elements = elements,
+                    app = appPkg,
+                    goal = plan?.goal ?: "",
+                    stepIndex = (plan?.currentStep ?: 1) - 1,
+                    stepTitle = toolName,
+                    lastTool = toolName,
+                    lastArgs = arguments.orEmpty()
+                )
+            }
+            pendingVerifyResult = vr
+            return@withLock checked + mapOf(
+                "verify" to mapOf(
+                    "verified" to vr.verified,
+                    "via" to vr.via,
+                    "evidence" to vr.evidence,
+                    "blocker" to vr.blocker,
+                    "step_done" to vr.stepDone
+                )
+            )
+        }
+
+        checked
     }
 
     // ---- Asking before actions with consequences (see ActionGuard) ----
@@ -627,13 +675,42 @@ class DeviceToolExecutor(
                 "scroll" -> agent?.scroll(str("direction") ?: "down", int("element_id"), str("until_text"), int("max_scrolls") ?: 10)
                     ?: mapOf("error" to AGENT_OFF)
 
-                "update_plan" -> updatePlan(
-                    goal = str("goal") ?: plan?.goal ?: userText().lines().lastOrNull { it.isNotBlank() }?.trim() ?: "Current task",
-                    steps = parseSteps(args["steps"] ?: args["step_list"]),
-                    currentStep = int("current_step"),
-                    status = str("status"),
-                    note = str("note")
-                )
+                "update_plan" -> {
+                    val goal = str("goal") ?: plan?.goal ?: userText().lines().lastOrNull { it.isNotBlank() }?.trim() ?: "Current task"
+                    val rawSteps = args["steps"] ?: args["step_list"]
+                    val steps: List<PlanStep> = when {
+                        rawSteps is List<*> && rawSteps.firstOrNull() is Map<*, *> ->
+                            @Suppress("UNCHECKED_CAST")
+                            (rawSteps as List<Map<*, *>>).mapIndexed { i, m ->
+                                PlanStep("s${i+1}", m["title"] as? String ?: "", m["detail"] as? String ?: "", m["expect"] as? String ?: "")
+                            }
+                        rawSteps is List<*> ->
+                            rawSteps.mapIndexed { i, s -> PlanStep("s${i+1}", s.toString()) }
+                        else -> parseRawStepTitles(rawSteps)?.mapIndexed { i, t -> PlanStep("s${i+1}", t) } ?: emptyList()
+                    }
+                    val existing = planEngine.plan.value
+                    val statusArg = str("status")
+                    if (existing == null || existing.status in setOf("done", "failed") || !existing.goal.equals(goal, ignoreCase = true)) {
+                        planEngine.start(goal, steps.ifEmpty { listOf(PlanStep("s1", goal)) })
+                    } else {
+                        planEngine.replan(steps.ifEmpty { existing.steps.filter { it.status != StepStatus.DONE } }, str("note"))
+                    }
+                    if (statusArg == "blocked") planEngine.fail(planEngine.plan.value?.steps?.firstOrNull { it.status == StepStatus.RUNNING }?.id ?: "s1", str("note").orEmpty().ifBlank { "blocked" })
+                    if (statusArg != null && statusArg in setOf("done", "failed")) planEngine.finish(statusArg)
+                    mapOf(
+                        "saved" to true,
+                        "next" to "Use complete_step after each step succeeds. Carry on with step ${planEngine.plan.value?.currentStep ?: 1}."
+                    )
+                }
+
+                "complete_step" -> {
+                    val stepId = str("step_id") ?: "s1"
+                    val summary = str("summary") ?: "done"
+                    val vr = pendingVerifyResult.also { pendingVerifyResult = null }
+                    val err = planEngine.requestComplete(stepId, summary, vr)
+                    if (err != null) mapOf("error" to err)
+                    else mapOf("ok" to true, "next_step" to planEngine.plan.value?.steps?.firstOrNull { it.status == StepStatus.RUNNING }?.title)
+                }
 
                 "research" -> research(str("question") ?: "")
 
@@ -957,9 +1034,11 @@ class DeviceToolExecutor(
 
     // ---- Planning, research and progress ----
 
-    // The model's plan for the goal in progress (update_plan); null when there is none
-    @Volatile var plan: TaskPlan? = null
-        private set
+    // The model's plan for the goal in progress; read planEngine.plan for reactive UI.
+    val plan: TaskPlan? get() = planEngine.plan.value
+
+    // Pending verify result from the last acting tool; consumed by complete_step
+    @Volatile private var pendingVerifyResult: VerifyResult? = null
 
     // Tools that change the screen: the same screen after several of these in a row means no progress
     private val acting = setOf("tap", "type_text", "scroll", "swipe", "navigate", "launch_intent", "open_app", "open_website", "wait")
@@ -1023,11 +1102,16 @@ class DeviceToolExecutor(
         }
     }
 
-    private fun parseSteps(raw: Any?): List<String>? {
+    private fun parseRawStepTitles(raw: Any?): List<String>? {
         if (raw == null) return null
         when (raw) {
             is Collection<*> -> {
-                val list = raw.mapNotNull { it?.toString()?.trim() }.filter { it.isNotBlank() }
+                val list = raw.mapNotNull { item ->
+                    when (item) {
+                        is Map<*, *> -> item["title"]?.toString()?.trim()
+                        else -> item?.toString()?.trim()
+                    }
+                }.filter { it.isNotBlank() }
                 if (list.isNotEmpty()) return list
             }
             is Array<*> -> {
@@ -1041,7 +1125,10 @@ class DeviceToolExecutor(
         val fromJson = runCatching {
             val elem = JsonParser.parseString(text)
             if (elem.isJsonArray) {
-                elem.asJsonArray.mapNotNull { runCatching { it.asString.trim() }.getOrNull() }.filter { it.isNotBlank() }
+                elem.asJsonArray.mapNotNull { el ->
+                    if (el.isJsonObject) el.asJsonObject.get("title")?.asString?.trim()
+                    else runCatching { el.asString.trim() }.getOrNull()
+                }.filter { it.isNotBlank() }
             } else null
         }.getOrNull()
         if (!fromJson.isNullOrEmpty()) return fromJson
@@ -1059,40 +1146,6 @@ class DeviceToolExecutor(
             listOf(stripped.trim().removeSurrounding("\"").removeSurrounding("'").trim())
         }
         return items.filter { it.isNotBlank() }.takeIf { it.isNotEmpty() }
-    }
-
-    /** Starts the plan for a new goal, or updates the current one. */
-    private fun updatePlan(goal: String, steps: List<String>?, currentStep: Int?, status: String?, note: String?): Map<String, Any?> {
-        val effectiveGoal = goal.ifBlank { plan?.goal ?: userText().lines().lastOrNull { it.isNotBlank() }?.trim() ?: "Current task" }
-        val old = plan
-        val sameGoal = old != null && old.goal.equals(effectiveGoal, ignoreCase = true) && old.status !in setOf("done", "failed")
-        val resolvedSteps = steps?.filter { it.isNotBlank() }?.takeIf { it.isNotEmpty() }
-            ?: old?.steps.takeIf { sameGoal }?.takeIf { it.isNotEmpty() }
-            ?: listOf(effectiveGoal, "Verify on screen and complete")
-        val next = TaskPlan(
-            goal = effectiveGoal,
-            steps = resolvedSteps,
-            currentStep = (currentStep ?: old?.currentStep.takeIf { sameGoal } ?: 1).coerceIn(1, resolvedSteps.size),
-            status = status ?: "working",
-            note = note,
-            tried = if (sameGoal) old!!.tried else java.util.Collections.synchronizedSet(mutableSetOf()),
-            blockedCount = (if (sameGoal) old!!.blockedCount else 0) + if (status == "blocked") 1 else 0,
-            stepTimings = if (sameGoal) old?.stepTimings else null,
-            stepDetails = if (sameGoal) old?.stepDetails else null,
-            reasoningLines = if (sameGoal) old?.reasoningLines else null
-        )
-        plan = next
-        if (!sameGoal) { sameScreenStreak = 0; recentCalls.clear() }
-        onPlan(next)
-        return when (next.status) {
-            "blocked" -> mapOf(
-                "saved" to true,
-                "untried_approaches" to approaches.filterKeys { it !in next.tried }.values.toList().ifEmpty { approaches.values.toList() },
-                "next" to "Pick the most promising untried approach or search the web/browser for exact steps on this phone ({DEVICE}). Never give up (kabhi bhi haar nahi manna hai)."
-            )
-            "done", "failed" -> mapOf("saved" to true, "next" to "Check the screen shows the result, then tell the user the outcome in one short sentence.")
-            else -> mapOf("saved" to true, "next" to "Carry on with step ${next.currentStep}; say in one short line what you're doing.")
-        }
     }
 
     /** Saves a one-off Scheduled-trigger macro and arms its alarm; ScheduledMacroReceiver runs it and disables it. */
@@ -1271,7 +1324,7 @@ class DeviceToolExecutor(
             3) one alternative route if the first doesn't match.
         """.trimIndent()
         val answer = ask(prompt) ?: return researchViaBrowser(question)
-        plan?.tried?.add("research")
+        planEngine.plan.value?.tried?.add("research")
         return mapOf("answer" to answer, "next" to "Follow it on the screen; names may differ slightly, so match what read_screen shows.")
     }
 
@@ -1281,12 +1334,18 @@ class DeviceToolExecutor(
      * Returns the original map unchanged when elements are already present or vision isn't available.
      */
     private fun augmentWithScreenshot(agent: PhoneAgentService?, screen: Map<String, Any?>): Map<String, Any?> {
-        if (agent == null || describeImage == null) return screen
+        if (agent == null) return screen
         @Suppress("UNCHECKED_CAST")
         val elements = screen["elements"] as? List<*>
         if (!elements.isNullOrEmpty()) return screen
-        val jpeg = try { agent.screenshotJpeg(hideOverlay = true) } catch (_: Exception) { null } ?: return screen
-        val seen = describeImage.invoke(jpeg,
+        // Use screenVerifier.captureJpeg() when available, else fall back to direct capture
+        val jpeg = if (screenVerifier != null) {
+            kotlinx.coroutines.runBlocking { screenVerifier.captureJpeg() }
+        } else {
+            try { agent.screenshotJpeg(hideOverlay = true) } catch (_: Exception) { null }
+        } ?: return screen
+        val describe = describeImage ?: return screen
+        val seen = describe.invoke(jpeg,
             "Describe what is on this Android phone screen: the app name, visible text, buttons, and any dialogs. " +
             "Be brief and factual, no markdown, under 6 lines.") ?: return screen
         return screen + mapOf(
@@ -1317,7 +1376,7 @@ class DeviceToolExecutor(
                 "This is a Google search results page on an Android phone. Search query: \"$question\". " +
                 "Extract and summarize the key factual information shown. Plain text only, at most 10 short lines.")
                 ?: return mapOf("error" to "Research failed; browser opened for '$question' but couldn't read results — use look_at_screen.")
-            plan?.tried?.add("research")
+            planEngine.plan.value?.tried?.add("research")
             mapOf(
                 "answer" to seen,
                 "source" to "browser_search",
@@ -1333,7 +1392,7 @@ class DeviceToolExecutor(
      * row, or the same call over and over. It tells the model to change approach instead of looping.
      */
     private fun withProgressCheck(toolName: String, args: Map<String, Any?>, result: Map<String, Any?>): Map<String, Any?> {
-        plan?.tried?.add(toolName)
+        planEngine.plan.value?.tried?.add(toolName)
         @Suppress("UNCHECKED_CAST")
         val screen = (result["screen"] as? Map<String, Any?>) ?: result.takeIf { toolName == "read_screen" }
         val hash = (screen?.get("elements") as? List<*>)?.hashCode()
@@ -1347,7 +1406,7 @@ class DeviceToolExecutor(
         val repeats = recentCalls.count { it == key }
 
         if (toolName !in acting || (sameScreenStreak < 2 && repeats < 3)) return result
-        val untried = approaches.filterKeys { it !in (plan?.tried ?: emptySet<String>()) }.values.toList().ifEmpty { approaches.values.toList() }
+        val untried = approaches.filterKeys { it !in (planEngine.plan.value?.tried ?: emptySet<String>()) }.values.toList().ifEmpty { approaches.values.toList() }
         val why = if (repeats >= 3) "You have made this same call $repeats times" else "The screen hasn't changed after the last ${sameScreenStreak + 1} actions"
         return result + mapOf(
             "progress_warning" to "$why: direct action is not progressing. Do NOT give up (kabhi bhi haar nahi manna hai)! Immediately call research or open_website with Google search for exact steps on this phone ({DEVICE}), update_plan with the researched steps, and follow them.",
@@ -1357,11 +1416,10 @@ class DeviceToolExecutor(
 
     /** Clears the plan and progress tracking (a new conversation). */
     fun resetPlan() {
-        plan = null
+        planEngine.reset()
         sameScreenStreak = 0
         lastScreenHash = 0
         recentCalls.clear()
-        onPlan(null)
     }
 
     /** Adds the screen an app or intent launch led to, when screen control is on. */
@@ -1631,11 +1689,38 @@ class DeviceToolExecutor(
 
     private fun lookAtScreen(agent: PhoneAgentService, question: String?): Map<String, Any?> {
         val screen = agent.readScreen()
+        @Suppress("UNCHECKED_CAST")
+        val elements = (screen["elements"] as? List<String>).orEmpty()
+        val appPkg = screen["app"] as? String ?: ""
+
+        // Prefer ScreenVerifier (tier-2 vision) when available
+        if (screenVerifier != null) {
+            val vr = kotlinx.coroutines.runBlocking {
+                screenVerifier.verify(
+                    expect = question ?: "Describe what is on the screen",
+                    elements = elements,
+                    app = appPkg,
+                    goal = plan?.goal ?: "",
+                    stepIndex = (plan?.currentStep ?: 1) - 1,
+                    stepTitle = "look_at_screen",
+                    lastTool = "look_at_screen",
+                    lastArgs = emptyMap(),
+                    forceVision = true
+                )
+            }
+            return mapOf(
+                "description" to vr.evidence,
+                "screen" to screen,
+                "verified" to vr.verified,
+                "via" to vr.via
+            )
+        }
+
+        // Fallback: use describeImage lambda
         val jpeg = agent.appWindowJpeg()
             ?: return mapOf("error" to "Couldn't take a screenshot (the app may block them); use the elements list", "screen" to screen)
         val describe = describeImage ?: return mapOf("error" to "Screen description isn't available", "screen" to screen)
-        @Suppress("UNCHECKED_CAST")
-        val list = (screen["elements"] as? List<String>).orEmpty().joinToString("\n").take(6000)
+        val list = elements.joinToString("\n").take(6000)
         val prompt = "This is a screenshot of an Android phone. " +
             (question?.let { "Question about it: $it\n" } ?: "") +
             "Describe what is on the screen for someone who can't see it: the app, what is shown or playing " +

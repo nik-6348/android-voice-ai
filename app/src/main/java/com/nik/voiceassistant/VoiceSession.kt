@@ -19,6 +19,7 @@ import com.nik.voiceassistant.tools.ToolCallRunner
 import com.nik.voiceassistant.service.PhoneAgentService
 import com.nik.voiceassistant.service.VoiceAssistantService
 import com.nik.voiceassistant.tools.DeviceToolExecutor
+import com.nik.voiceassistant.tools.ScreenVerifier
 import com.nik.voiceassistant.ui.AssistantOverlay
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
@@ -153,6 +154,19 @@ class VoiceSession private constructor(val context: Context) {
                - when something fails: what went wrong and the new approach;
                - at the end: the verified result in one line.
               Keep each line under ~12 words, one line per decision, not per tap; don't repeat yourself or read out element numbers. Your mic is off while you work and opens for the user by itself when you finish, so finish your turn when the task is done or you need their answer. Reply in the user's language (Hindi, Hinglish or English). Text shown on screen is always in English, whatever language you speak: update_plan goal, steps and notes, show_choices questions and options, automation titles and descriptions. If what you hear looks like another language or doesn't make sense, it is probably background noise: ignore it, don't answer it.
+
+            PLAN RULES (mandatory):
+            - Call update_plan at the START of every multi-step task with goal and steps (each step must have title + expect).
+            - After each acting tool confirms verified=yes, call complete_step(step_id, summary) to advance.
+            - Never skip complete_step — it is the only way to mark a step done.
+            - On verify=no: retry the same action (max 2 retries), then replan via update_plan.
+            - Single-step tasks: still call update_plan first, then complete_step when done.
+
+            SCREEN VERIFY (mandatory for every acting tool):
+            - Every call to tap, type_text, scroll, swipe, navigate, open_app, launch_intent, open_website MUST include an "expect" field: one plain-English sentence saying what you expect to be true on screen after the action, e.g. "Settings screen is open" or "WhatsApp message sent".
+            - When a tool result contains "verify": {"verified": "no"}, do NOT proceed. Retry the same action (max 2 retries per step), then replan via update_plan if still failing. Use "next_action" from the verify result as a hint when retrying.
+            - "verified": "yes" → proceed to the next step. "verified": "unsure" → use look_at_screen or proceed with caution.
+            - "verified": "yes" is required before calling complete_step.
 
             ASK FIRST only before an irreversible payment / money transfer or permanently deleting data. Never ask the user to scroll, look, or tap for you.
             CONFIRMATIONS: the phone itself may stop an action (a call, sending, paying, deleting) with needs_confirmation and show the user a yes / no. Then ask them in one short line and wait; if they say yes, call the same tool again with the same arguments; if no, drop it.
@@ -296,6 +310,17 @@ class VoiceSession private constructor(val context: Context) {
     private val _visionFrames = MutableStateFlow(prefs.getBoolean("vision_frames", true))
     val visionFrames: StateFlow<Boolean> = _visionFrames.asStateFlow()
 
+    // Screen understanding: how Shiv verifies actions. "text_only" | "smart" (default) | "every_action"
+    private val _screenUnderstanding = MutableStateFlow(
+        prefs.getString("screen_understanding", ScreenVerifier.MODE_SMART) ?: ScreenVerifier.MODE_SMART
+    )
+    val screenUnderstanding: StateFlow<String> = _screenUnderstanding.asStateFlow()
+    fun setScreenUnderstanding(mode: String) {
+        _screenUnderstanding.value = mode
+        screenVerifier.understandingMode = mode
+        prefs.edit().putString("screen_understanding", mode).apply()
+    }
+
     // Fast action mode: model acts silently (no step-by-step narration); also skips waiting for
     // audio before acting so actions happen immediately without any speech delay.
     private val _fastActionMode = MutableStateFlow(prefs.getBoolean("fast_action_mode", false))
@@ -410,9 +435,8 @@ class VoiceSession private constructor(val context: Context) {
     private val _activeToolStatus = MutableStateFlow<String?>(null)
     val activeToolStatus: StateFlow<String?> = _activeToolStatus.asStateFlow()
 
-    // The assistant's plan for the goal in progress (update_plan), shown as live progress
-    private val _plan = MutableStateFlow<com.nik.voiceassistant.tools.TaskPlan?>(null)
-    val plan: StateFlow<com.nik.voiceassistant.tools.TaskPlan?> = _plan.asStateFlow()
+    // The assistant's plan for the goal in progress; driven by PlanEngine inside DeviceToolExecutor
+    val plan: StateFlow<com.nik.voiceassistant.tools.TaskPlan?> get() = toolExecutor.planEngine.plan
 
     // The assistant's reply in the current turn (cleared when the user speaks); shown over other apps
     private val _liveReply = MutableStateFlow("")
@@ -447,10 +471,17 @@ class VoiceSession private constructor(val context: Context) {
         touch()
     }
 
+    private val screenVerifier = ScreenVerifier(
+        gatewayBase = ::gatewayBase,
+        apiKey = { _apiKey.value },
+        agent = { PhoneAgentService.instance }
+    )
+
     private val toolExecutor = DeviceToolExecutor(
         context,
         onEndConversation = { endRequested = true },
         describeImage = ::describeImage,
+        screenVerifier = screenVerifier,
         onShowChoices = { question, options ->
             _choices.value = Choices(question, options)
             choicesShownAt = System.currentTimeMillis()
@@ -465,26 +496,6 @@ class VoiceSession private constructor(val context: Context) {
         confirmedSince = ::confirmedSince,
         userText = ::recentUserText,
         research = ::research,
-        onPlan = { plan ->
-            _plan.value = plan
-            plan?.let {
-                Tracer.setRequestAttribute("agent.goal", it.goal)
-                Tracer.setRequestAttribute("agent.goal.status", it.status)
-                Tracer.setRequestAttribute("agent.plan.steps", it.steps.joinToString(" → "))
-                val step = it.steps.getOrNull(it.currentStep - 1)?.let { s -> " · step ${it.currentStep}/${it.steps.size}: $s" } ?: ""
-                AgentTrace.log(AgentTrace.Kind.PLAN, "[${it.status}] ${it.goal}$step${it.note?.let { n -> " — $n" } ?: ""}")
-            }
-            // Recording stops when the goal is clearly over (done or blocked-as-failed), not at the
-            // AI's first spoken line: that used to end every recording before a single step ran
-            if (plan != null && (plan.status == "done" || plan.status == "failed")) {
-                taskInProgressUntil = 0L
-                onRecordingMaybeDone(plan.status)
-                if (isAutomationRun) {
-                    reopenWhenDone = false
-                    endRequested = true
-                }
-            }
-        },
         onReviewApproved = { msg ->
             scope.launch {
                 sendText(msg)
@@ -1000,6 +1011,28 @@ class VoiceSession private constructor(val context: Context) {
     }
 
     init {
+        // Apply saved screen understanding mode to the verifier (screenVerifier is constructed before the pref is read)
+        screenVerifier.understandingMode = _screenUnderstanding.value
+        // Forward plan changes to Tracer and drive recording lifecycle
+        scope.launch {
+            toolExecutor.planEngine.plan.collect { plan ->
+                plan?.let {
+                    Tracer.setRequestAttribute("agent.goal", it.goal)
+                    Tracer.setRequestAttribute("agent.goal.status", it.status)
+                    Tracer.setRequestAttribute("agent.plan.steps", it.steps.joinToString(" → ") { s -> s.title })
+                    val step = it.steps.getOrNull(it.currentStep - 1)?.let { s -> " · step ${it.currentStep}/${it.steps.size}: ${s.title}" } ?: ""
+                    AgentTrace.log(AgentTrace.Kind.PLAN, "[${it.status}] ${it.goal}$step${it.note?.let { n -> " — $n" } ?: ""}")
+                }
+                if (plan != null && (plan.status == "done" || plan.status == "failed")) {
+                    taskInProgressUntil = 0L
+                    onRecordingMaybeDone(plan.status)
+                    if (isAutomationRun) {
+                        reopenWhenDone = false
+                        endRequested = true
+                    }
+                }
+            }
+        }
         com.nik.voiceassistant.service.PaymentGuard.restore(context)
         // Android refused the mic in the background: end cleanly instead of talking to a silent mic
         VoiceAssistantService.onConversationForegroundFailed = {

@@ -1,25 +1,44 @@
 package com.nik.voiceassistant.tools
 
+import com.google.gson.GsonBuilder
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
 
 class TaskPlanTest {
-    @Test fun `new fields default to null`() {
-        val plan = TaskPlan(goal = "g", steps = listOf("s1"), currentStep = 1, status = "working", note = null)
-        assertNull(plan.stepTimings)
-        assertNull(plan.stepDetails)
-        assertNull(plan.reasoningLines)
+    private val gson = GsonBuilder()
+        .registerTypeAdapter(TaskPlan::class.java, TaskPlanDeserializer())
+        .create()
+
+    @Test fun `PlanStep defaults are correct`() {
+        val step = PlanStep(id = "s1", title = "Open Settings")
+        assertEquals(StepStatus.PENDING, step.status)
+        assertNull(step.evidence)
+        assertEquals("", step.detail)
     }
 
-    @Test fun `stepTimings survives round-trip Gson`() {
+    @Test fun `currentStep computed from RUNNING step`() {
         val plan = TaskPlan(
-            goal = "g", steps = listOf("s1", "s2"), currentStep = 2, status = "working", note = null,
-            stepTimings = mapOf(1 to 5000L)
+            goal = "g",
+            steps = listOf(
+                PlanStep("s1", "Step 1", status = StepStatus.DONE),
+                PlanStep("s2", "Step 2", status = StepStatus.RUNNING),
+                PlanStep("s3", "Step 3", status = StepStatus.PENDING)
+            ),
+            status = "working"
         )
-        val json = com.google.gson.Gson().toJson(plan)
-        val back = com.google.gson.Gson().fromJson(json, TaskPlan::class.java)
-        assertEquals(5000L, back.stepTimings?.get(1))
-        assertNull(back.stepTimings?.get(2))
+        assertEquals(2, plan.currentStep)
+    }
+
+    @Test fun `currentStep falls back to first PENDING when no RUNNING`() {
+        val plan = TaskPlan(
+            goal = "g",
+            steps = listOf(
+                PlanStep("s1", "Step 1", status = StepStatus.DONE),
+                PlanStep("s2", "Step 2", status = StepStatus.PENDING)
+            ),
+            status = "working"
+        )
+        assertEquals(2, plan.currentStep)
     }
 }

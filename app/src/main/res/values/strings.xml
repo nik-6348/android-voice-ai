@@ -254,6 +254,13 @@
     <string name="vision_title">Let the AI see the screen</string>
     <string name="vision_desc">Sends an image of the app after each action, so it spots popups and buttons the text misses</string>
 
+    <!-- Screen understanding setting -->
+    <string name="screen_understanding_title">Screen understanding</string>
+    <string name="screen_understanding_desc">How Shiv verifies that each action worked</string>
+    <string name="screen_understanding_text_only">Text only</string>
+    <string name="screen_understanding_smart">Smart (recommended)</string>
+    <string name="screen_understanding_every_action">Every action</string>
+
     <string name="section_connection">Connection &amp; keys</string>
     <string name="connection_how">How to reach the AI</string>
     <string name="mode_direct">Direct to Gemini Live</string>
