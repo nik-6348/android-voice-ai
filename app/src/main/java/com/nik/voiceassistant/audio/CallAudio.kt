@@ -22,7 +22,7 @@ import android.util.Log
  *  - audio focus, so music / videos pause or duck and the mic hears the user, not the phone.
  */
 class CallAudio(
-    context: Context,
+    private val context: Context,
     // Another app took audio focus for good or for a while (an incoming phone call, a voice note):
     // the conversation should pause / end instead of talking over it. Called on the main thread
     private val onFocusLost: () -> Unit = {}
@@ -46,6 +46,17 @@ class CallAudio(
     fun enter(): Boolean {
         val am = audio ?: return false
         if (active) return true
+
+        // On Android TV / Set-Top Box, never switch to MODE_IN_COMMUNICATION or speakerphone,
+        // because HDMI audio drivers on STBs reset/force stream volume to 100%!
+        val isTv = context.packageManager.hasSystemFeature(android.content.pm.PackageManager.FEATURE_LEANBACK) ||
+            context.packageManager.hasSystemFeature(android.content.pm.PackageManager.FEATURE_TELEVISION) ||
+            (context.resources.configuration.uiMode and android.content.res.Configuration.UI_MODE_TYPE_MASK) == android.content.res.Configuration.UI_MODE_TYPE_TELEVISION
+        if (isTv) {
+            Log.i(TAG, "Running on Android TV / STB: skipping call audio mode to protect TV volume")
+            return true
+        }
+
         try {
             // A phone call owns the audio mode and routing: don't take them over
             if (am.mode == AudioManager.MODE_IN_CALL || am.mode == AudioManager.MODE_RINGTONE) {

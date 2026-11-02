@@ -16,6 +16,8 @@ import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import android.view.Display
+import android.view.KeyEvent
+import android.view.View
 import android.view.accessibility.AccessibilityWindowInfo
 import com.nik.voiceassistant.security.Redactor
 import java.io.ByteArrayOutputStream
@@ -55,9 +57,12 @@ class PhoneAgentService : AccessibilityService() {
         var overlayHidden: ((Boolean) -> Unit)? = null
 
         fun isEnabled(context: Context): Boolean {
+            if (instance != null) return true
             val enabled = Settings.Secure.getString(context.contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES) ?: return false
-            val me = ComponentName(context, PhoneAgentService::class.java).flattenToString()
-            return enabled.split(':').any { it.equals(me, ignoreCase = true) }
+            val me = ComponentName(context, PhoneAgentService::class.java)
+            val full = me.flattenToString()
+            val short = me.flattenToShortString()
+            return enabled.split(':').any { it.equals(full, ignoreCase = true) || it.equals(short, ignoreCase = true) }
         }
     }
 
@@ -98,10 +103,24 @@ class PhoneAgentService : AccessibilityService() {
     // When the action being run started: its result reports the messages shown since then
     @Volatile private var actionStartedAt = 0L
 
+    // Jio Remote Voice Assistant bridge: captures speech-to-text from the physical remote
+    private val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private var pendingJioQueryRunnable: Runnable? = null
+    private var lastDispatchedJioQuery = ""
+    private var lastDispatchedAt = 0L
+
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         event ?: return
+        val pkg = event.packageName?.toString()
+        if (pkg == "com.android.app.jio.voiceassist") {
+            handleJioVoiceAssistEvent(event)
+            return
+        }
         if (event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
-            event.packageName?.toString()?.let { PaymentGuard.onForeground(this, it) }
+            if (TvHudOverlay.isListening) {
+                TvHudOverlay.scheduleDismiss(1200L)
+            }
+            pkg?.let { PaymentGuard.onForeground(this, it) }
             return
         }
         val isToast = event.eventType == AccessibilityEvent.TYPE_NOTIFICATION_STATE_CHANGED && event.parcelableData !is android.app.Notification
@@ -109,6 +128,142 @@ class PhoneAgentService : AccessibilityService() {
         val text = event.text.joinToString(" ").trim().takeIf { it.isNotEmpty() } ?: return
         messages.addLast(System.currentTimeMillis() to text.take(200))
         while (messages.size > 20) messages.pollFirst()
+    }
+
+    override fun onKeyEvent(event: KeyEvent?): Boolean {
+        event ?: return false
+        if (event.action == KeyEvent.ACTION_DOWN) {
+            val code = event.keyCode
+            if (code == KeyEvent.KEYCODE_BACK || code == KeyEvent.KEYCODE_ESCAPE) {
+                if (TvHudOverlay.isListeningOrActive()) {
+                    Log.i(TAG, "Remote BACK pressed while Shiv HUD active -> dismissing")
+                    TvHudOverlay.hide()
+                    val session = com.nik.voiceassistant.VoiceSession.get(applicationContext)
+                    session.stop()
+                    return true
+                }
+            } else if (code == KeyEvent.KEYCODE_MEDIA_STOP || code == KeyEvent.KEYCODE_MEDIA_PAUSE) {
+                val session = com.nik.voiceassistant.VoiceSession.get(applicationContext)
+                if (session.isRecording.value) {
+                    session.stop()
+                    TvHudOverlay.hide()
+                    return true
+                }
+            }
+        }
+        return super.onKeyEvent(event)
+    }
+
+    private fun handleJioVoiceAssistEvent(event: AccessibilityEvent) {
+        // 1. Immediately pop up Shiv's custom listening overlay to mask Jio Assistant's UI
+        TvHudOverlay.showListening(this)
+
+        val root = rootInActiveWindow ?: return
+        try {
+            val text = extractJioVoiceQuery(root)
+            if (text.isNullOrBlank() || isJioPlaceholder(text)) {
+                return
+            }
+
+            // 2. Real-time live speech update on Shiv's TV UI
+            TvHudOverlay.updateSpeech(text)
+
+            // 3. Fast-path instant stop detection
+            if (isStopCommand(text)) {
+                pendingJioQueryRunnable?.let { mainHandler.removeCallbacks(it) }
+                pendingJioQueryRunnable = null
+                handleInstantStop()
+                return
+            }
+
+            val now = System.currentTimeMillis()
+            if (text == lastDispatchedJioQuery && now - lastDispatchedAt < 6000L) return
+
+            Log.d(TAG, "Jio Voice speech detected: $text")
+
+            pendingJioQueryRunnable?.let { mainHandler.removeCallbacks(it) }
+            pendingJioQueryRunnable = Runnable {
+                lastDispatchedJioQuery = text
+                lastDispatchedAt = System.currentTimeMillis()
+                Log.i(TAG, "Dispatching captured Jio speech to Shiv: $text")
+
+                // Dismiss Jio Voice Assist UI cleanly
+                performGlobalAction(GLOBAL_ACTION_BACK)
+
+                // Smooth transition to Shiv processing HUD
+                TvHudOverlay.showProcessing(this@PhoneAgentService, text)
+
+                // Dispatch to Shiv AI Agent as a fresh new session
+                val session = com.nik.voiceassistant.VoiceSession.get(applicationContext)
+                session.startNewChat()
+                session.sendText(text, keepMicMuted = true)
+            }
+            // 700ms debounce allows the user to finish speaking their phrase
+            mainHandler.postDelayed(pendingJioQueryRunnable!!, 700L)
+        } catch (e: Exception) {
+            Log.w(TAG, "Error in Jio voice bridge: ${e.message}")
+        }
+    }
+
+    private fun isStopCommand(text: String): Boolean {
+        val pattern = Regex(
+            """(?i)\b(stop|ruko|ruk\s*jao|rok\s*do|roko|band\s*karo|band\s*kardo|gana\s*band|gaana\s*band|video\s*band|pause|chup|chup\s*raho|chup\s*ho\s*jao|bas|bas\s*karo|cancel|khatam)\b"""
+        )
+        return pattern.containsMatchIn(text)
+    }
+
+    fun handleInstantStop() {
+        Log.i(TAG, "Instant STOP requested via voice!")
+        // 1. Dismiss Jio Voice Assist UI cleanly
+        performGlobalAction(GLOBAL_ACTION_BACK)
+
+        // 2. Stop Shiv voice & LLM session
+        val session = com.nik.voiceassistant.VoiceSession.get(applicationContext)
+        session.stop()
+
+        // 3. Dispatch media pause & stop key events
+        val audio = getSystemService(Context.AUDIO_SERVICE) as? android.media.AudioManager
+        audio?.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_MEDIA_PAUSE))
+        audio?.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_MEDIA_PAUSE))
+        audio?.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_MEDIA_STOP))
+        audio?.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_MEDIA_STOP))
+
+        // Also if Cobalt YouTube TV is open, toggle play_pause
+        mainHandler.postDelayed({
+            audio?.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE))
+            audio?.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE))
+        }, 120L)
+
+        // 4. Show sleek stopped confirmation on TV
+        TvHudOverlay.showStopped(this)
+    }
+
+    private fun isJioPlaceholder(text: String): Boolean {
+        val lower = text.lowercase().trim()
+        return lower.isEmpty() ||
+            lower.startsWith("listening") ||
+            lower.startsWith("speak now") ||
+            lower.startsWith("try saying") ||
+            lower.startsWith("hi there") ||
+            lower.startsWith("how can i help") ||
+            lower.startsWith("what can i") ||
+            lower.startsWith("oops!") ||
+            lower.startsWith("sorry!") ||
+            lower.startsWith("loading") ||
+            lower.startsWith("press voice button") ||
+            lower.startsWith("बोलिए") ||
+            lower.startsWith("सुन रहा") ||
+            lower.startsWith("कुछ कहिए")
+    }
+
+    private fun extractJioVoiceQuery(root: AccessibilityNodeInfo): String? {
+        // Read strictly from voiceStatesView where recognized user speech is typed
+        val nodes = root.findAccessibilityNodeInfosByViewId("com.android.app.jio.voiceassist:id/voiceStatesView")
+        for (node in nodes) {
+            val t = node.text?.toString()?.trim()
+            if (!t.isNullOrBlank() && !isJioPlaceholder(t)) return t
+        }
+        return null
     }
 
     private fun markAction() { actionStartedAt = System.currentTimeMillis() }
@@ -957,6 +1112,131 @@ class PhoneAgentService : AccessibilityService() {
         return after(action, performGlobalAction(global))
     }
 
+    /**
+     * TV D-Pad navigation: moves focus or clicks the focused element.
+     * Uses real accessibility gestures and focus actions rather than restricted shell commands.
+     * Essential for Android TV / Jio STB apps where touch gestures are not used.
+     */
+    fun dpad(action: String, repeat: Int = 1): Map<String, Any?> {
+        markAction()
+        val act = action.lowercase().trim()
+        val times = repeat.coerceIn(1, 10)
+        var ok = true
+        val m = resources.displayMetrics
+
+        when (act) {
+            "back" -> return navigate("back")
+            "home" -> return navigate("home")
+            "up", "down", "left", "right" -> {
+                val dir = when (act) {
+                    "up" -> View.FOCUS_UP
+                    "down" -> View.FOCUS_DOWN
+                    "left" -> View.FOCUS_LEFT
+                    else -> View.FOCUS_RIGHT
+                }
+                repeat(times) {
+                    val root = rootInActiveWindow
+                    val focused = root?.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
+                        ?: root?.findFocus(AccessibilityNodeInfo.FOCUS_ACCESSIBILITY)
+                    val next = focused?.focusSearch(dir)
+                    if (next != null) {
+                        next.performAction(AccessibilityNodeInfo.ACTION_ACCESSIBILITY_FOCUS)
+                        next.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
+                    } else {
+                        // Gesture swipe for TV scroll
+                        val startX = m.widthPixels * 0.5f
+                        val startY = m.heightPixels * 0.5f
+                        val (endX, endY) = when (act) {
+                            "up" -> startX to (startY + 350f)
+                            "down" -> startX to (startY - 350f)
+                            "left" -> (startX + 350f) to startY
+                            else -> (startX - 350f) to startY
+                        }
+                        gesture(startX, startY, endX, endY, 150)
+                    }
+                    if (times > 1) Thread.sleep(150)
+                }
+            }
+            "select", "ok", "enter", "center" -> {
+                val root = rootInActiveWindow
+                val pkg = root?.packageName?.toString()
+                if (pkg == "com.jio.yt") {
+                    ok = clickYtCard(1)
+                } else {
+                    ok = TvInputBridge.dpadCenter() || run {
+                        val focused = root?.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
+                            ?: root?.findFocus(AccessibilityNodeInfo.FOCUS_ACCESSIBILITY)
+                        if (focused != null) {
+                            val r = Rect().also { focused.getBoundsInScreen(it) }
+                            val clickOk = focused.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                            val gestureOk = gesture(r.exactCenterX(), r.exactCenterY(), r.exactCenterX(), r.exactCenterY(), 60)
+                            clickOk || gestureOk
+                        } else {
+                            val cx = m.widthPixels * 0.5f
+                            val cy = m.heightPixels * 0.5f
+                            gesture(cx, cy, cx, cy, 60)
+                        }
+                    }
+                }
+            }
+            "play_pause", "pause", "stop" -> {
+                val key = if (act == "stop") KeyEvent.KEYCODE_MEDIA_STOP else if (act == "pause") KeyEvent.KEYCODE_MEDIA_PAUSE else KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE
+                TvInputBridge.injectKey(key)
+                val audio = getSystemService(Context.AUDIO_SERVICE) as? android.media.AudioManager
+                audio?.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, key))
+                audio?.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_UP, key))
+                ok = true
+            }
+            else -> return mapOf("error" to "Unknown D-pad action: $action")
+        }
+        Thread.sleep(200)
+        return after("dpad $action", ok)
+    }
+
+    /** Directly selects and plays YouTube TV (com.jio.yt) video cards by index (1-6) using DPAD injection. */
+    fun clickYtCard(cardIndex: Int = 1): Boolean {
+        Log.i(TAG, "Selecting YouTube TV card $cardIndex via DPAD")
+        // Try direct key injection via TvInputBridge (works on TV without touchscreen hardware)
+        val bridgeOk = when (cardIndex) {
+            1 -> TvInputBridge.dpadCenter()
+            2 -> {
+                TvInputBridge.dpadRight()
+                Thread.sleep(150)
+                TvInputBridge.dpadCenter()
+            }
+            3 -> {
+                TvInputBridge.dpadRight()
+                Thread.sleep(120)
+                TvInputBridge.dpadRight()
+                Thread.sleep(150)
+                TvInputBridge.dpadCenter()
+            }
+            4 -> {
+                TvInputBridge.dpadDown()
+                Thread.sleep(150)
+                TvInputBridge.dpadCenter()
+            }
+            else -> TvInputBridge.dpadCenter()
+        }
+        if (bridgeOk) return true
+
+        // Fallback to gesture tap
+        val m = resources.displayMetrics
+        val w = m.widthPixels.toFloat()
+        val h = m.heightPixels.toFloat()
+        val (x, y) = when (cardIndex) {
+            1 -> (w * 0.27f) to (h * 0.41f) // Card 1 (518, 442 on 1080p)
+            2 -> (w * 0.57f) to (h * 0.41f) // Card 2 (1094, 442 on 1080p)
+            3 -> (w * 0.87f) to (h * 0.41f) // Card 3 (1670, 442 on 1080p)
+            4 -> (w * 0.27f) to (h * 0.78f) // Card 4 Row 2 (518, 842 on 1080p)
+            5 -> (w * 0.57f) to (h * 0.78f) // Card 5 Row 2 (1094, 842 on 1080p)
+            6 -> (w * 0.87f) to (h * 0.78f) // Card 6 Row 2 (1670, 842 on 1080p)
+            else -> (w * 0.27f) to (h * 0.41f)
+        }
+        Log.i(TAG, "Fallback: Tapping YouTube TV card $cardIndex at ($x, $y)")
+        return gesture(x, y, x, y, 90L)
+    }
+
     /** The screen after something outside this service changed it (an app or intent launch). */
     fun screenAfterLaunch(): Map<String, Any?> {
         Thread.sleep(SETTLE_MS + 400)
@@ -982,8 +1262,18 @@ class PhoneAgentService : AccessibilityService() {
      * lets touches through meanwhile, so a gesture under the assistant panel reaches the app.
      */
     private fun gesture(x1: Float, y1: Float, x2: Float, y2: Float, durationMs: Long): Boolean {
-        val path = Path().apply { moveTo(x1, y1); lineTo(x2, y2) }
-        val stroke = GestureDescription.StrokeDescription(path, 0, durationMs)
+        val path = Path().apply {
+            moveTo(x1, y1)
+            if (x1 == x2 && y1 == y2) {
+                // Android StrokeDescription throws IllegalArgumentException if path is empty (x1==x2 && y1==y2).
+                // A tap must move at least 1-2 pixels to create non-empty bounds.
+                lineTo(x1 + 1.5f, y1 + 1.5f)
+            } else {
+                lineTo(x2, y2)
+            }
+        }
+        val dur = durationMs.coerceAtLeast(80L)
+        val stroke = GestureDescription.StrokeDescription(path, 0, dur)
         val latch = CountDownLatch(1)
         var ok = false
         val pad = 24f
@@ -991,10 +1281,20 @@ class PhoneAgentService : AccessibilityService() {
         overlayPassThrough?.invoke(true, area)
         try {
             val sent = dispatchGesture(GestureDescription.Builder().addStroke(stroke).build(), object : GestureResultCallback() {
-                override fun onCompleted(gestureDescription: GestureDescription?) { ok = true; latch.countDown() }
-                override fun onCancelled(gestureDescription: GestureDescription?) { latch.countDown() }
+                override fun onCompleted(gestureDescription: GestureDescription?) {
+                    Log.d(TAG, "Gesture completed successfully at ($x1, $y1)")
+                    ok = true
+                    latch.countDown()
+                }
+                override fun onCancelled(gestureDescription: GestureDescription?) {
+                    Log.w(TAG, "Gesture cancelled at ($x1, $y1)")
+                    latch.countDown()
+                }
             }, null)
-            if (sent) latch.await(durationMs + 2000, TimeUnit.MILLISECONDS)
+            if (sent) latch.await(dur + 2000, TimeUnit.MILLISECONDS)
+            else Log.w(TAG, "dispatchGesture returned false")
+        } catch (e: Exception) {
+            Log.e(TAG, "dispatchGesture exception: ${e.message}", e)
         } finally {
             overlayPassThrough?.invoke(false, area)
         }

@@ -25,7 +25,13 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.focus.FocusDirection
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.text.input.ImeAction
+import com.nik.voiceassistant.ui.components.tvDpadNavigable
+import com.nik.voiceassistant.ui.components.tvFocusable
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.CheckCircle
@@ -202,6 +208,11 @@ fun SettingsTab(viewModel: VoiceAssistantViewModel) {
     val resumes = rememberResumeCount()
     LaunchedEffect(resumes) { viewModel.refreshAgentStatus() }
 
+    val focusManager = LocalFocusManager.current
+    LaunchedEffect(Unit) {
+        focusManager.clearFocus()
+    }
+
     Box(Modifier.fillMaxSize()) {
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
@@ -223,7 +234,9 @@ fun SettingsTab(viewModel: VoiceAssistantViewModel) {
                         label = { Text(stringResource(R.string.assistant_name)) },
                         supportingText = { Text(stringResource(R.string.assistant_name_hint)) },
                         singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
+                        keyboardActions = KeyboardActions(onNext = { focusManager.moveFocus(FocusDirection.Down) }),
+                        modifier = Modifier.fillMaxWidth().tvDpadNavigable(focusManager)
                     )
                     Spacer(Modifier.size(Spacing.s))
                     Text(stringResource(R.string.assistant_voice), style = MaterialTheme.typography.labelLarge)
@@ -355,8 +368,9 @@ fun SettingsTab(viewModel: VoiceAssistantViewModel) {
                             supportingText = if (saveError == VoiceSession.SaveResult.INVALID_SERVER_URL) {
                                 { Text(msgBadServer) }
                             } else null,
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
-                            singleLine = true, modifier = Modifier.fillMaxWidth()
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Next),
+                            keyboardActions = KeyboardActions(onNext = { focusManager.moveFocus(FocusDirection.Down) }),
+                            singleLine = true, modifier = Modifier.fillMaxWidth().tvDpadNavigable(focusManager)
                         )
                     }
                     HorizontalDivider(Modifier.padding(vertical = Spacing.m))
@@ -369,8 +383,9 @@ fun SettingsTab(viewModel: VoiceAssistantViewModel) {
                         supportingText = if (saveError == VoiceSession.SaveResult.INVALID_LLM_URL) {
                             { Text(msgBadLlm) }
                         } else null,
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
-                        singleLine = true, modifier = Modifier.fillMaxWidth()
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Next),
+                        keyboardActions = KeyboardActions(onNext = { focusManager.moveFocus(FocusDirection.Down) }),
+                        singleLine = true, modifier = Modifier.fillMaxWidth().tvDpadNavigable(focusManager)
                     )
                     Spacer(Modifier.size(Spacing.s))
                     SecretField(
@@ -806,6 +821,7 @@ private fun SecretField(
     value: String, onValueChange: (String) -> Unit, label: String, saved: Boolean,
     visible: Boolean, onToggleVisible: () -> Unit, onClear: () -> Unit, error: Boolean
 ) {
+    val focusManager = LocalFocusManager.current
     OutlinedTextField(
         value = value,
         onValueChange = onValueChange,
@@ -816,7 +832,8 @@ private fun SecretField(
         } else null,
         isError = error,
         visualTransformation = if (visible) VisualTransformation.None else PasswordVisualTransformation(),
-        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Done),
+        keyboardActions = KeyboardActions(onDone = { focusManager.clearFocus() }),
         trailingIcon = {
             Row {
                 IconButton(onClick = onToggleVisible) {
@@ -830,7 +847,7 @@ private fun SecretField(
                 }
             }
         },
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier.fillMaxWidth().tvDpadNavigable(focusManager),
         singleLine = true
     )
 }

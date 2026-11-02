@@ -32,6 +32,9 @@
 
     <!-- Calls and SIM numbers are optional: the app also runs on tablets without telephony -->
     <uses-feature android:name="android.hardware.telephony" android:required="false" />
+    <!-- Android TV / STB compatibility: touchscreen is optional, support Leanback launcher -->
+    <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
+    <uses-feature android:name="android.software.leanback" android:required="false" />
 
     <!-- "Call X": place the call directly (make_call tool), not just open the dialer -->
     <uses-permission android:name="android.permission.CALL_PHONE" />
@@ -49,6 +52,7 @@
     <!-- Payment apps block payments while screen control is on: switch it off while they're open and
          back on after (service/PaymentGuard.kt). Both granted once over adb / Settings > Usage access. -->
     <uses-permission android:name="android.permission.WRITE_SECURE_SETTINGS" tools:ignore="ProtectedPermissions" />
+    <uses-permission android:name="android.permission.INJECT_EVENTS" tools:ignore="ProtectedPermissions" />
     <uses-permission android:name="android.permission.PACKAGE_USAGE_STATS" tools:ignore="ProtectedPermissions" />
 
     <!-- Set alarms and timers directly via intent -->
@@ -97,6 +101,7 @@
     <application
         android:allowBackup="false"
         android:fullBackupContent="false"
+        android:usesCleartextTraffic="true"
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
@@ -110,10 +115,12 @@
             android:name=".MainActivity"
             android:exported="true"
             android:configChanges="orientation|screenSize|keyboardHidden"
+            android:windowSoftInputMode="stateAlwaysHidden|adjustResize"
             android:theme="@style/Theme.NikVoiceAssistant">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
+                <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
             </intent-filter>
         </activity>
 

@@ -793,6 +793,7 @@ class VoiceSession private constructor(val context: Context) {
             override fun onError(error: Throwable) {
                 _connectionStatus.value = ConnectionStatus.ERROR
                 AgentTrace.log(AgentTrace.Kind.ERROR, error.message ?: error.toString())
+                com.nik.voiceassistant.service.TvHudOverlay.update("⚠️ Error", error.localizedMessage ?: error.message, 4000L)
                 // Give the mic back to "Hi Nik"; the reason stays as the last line shown
                 scope.launch { endConversation("⚠️ ${error.localizedMessage ?: error.message}") }
             }
@@ -800,6 +801,7 @@ class VoiceSession private constructor(val context: Context) {
             override fun onUserTranscript(text: String) {
                 touch()
                 markTaskActivity()
+                com.nik.voiceassistant.service.TvHudOverlay.show(context, "🎙️ \"$text\"", "Shiv processing kar raha hai...", 10000L)
                 // The user has had their say; the mic closes again once the reply starts
                 awaitingUser = false
                 openedByUser = false
@@ -827,7 +829,7 @@ class VoiceSession private constructor(val context: Context) {
                 addTranscript("assistant", text)
                 _liveReply.value = if (replyTurnOpen) joinSpoken(_liveReply.value, text) else text.trim()
                 replyTurnOpen = true
-
+                com.nik.voiceassistant.service.TvHudOverlay.update("Shiv:", text.take(90), 5000L)
             }
 
             override fun onResumeHandle(handle: String?) {
@@ -848,6 +850,8 @@ class VoiceSession private constructor(val context: Context) {
                 markTaskActivity()
                 autoMuteForWork(tool = true)
                 _activeToolStatus.value = statusText
+                val label = if (statusText.isNotBlank()) statusText else "Action chal raha hai: $toolName"
+                com.nik.voiceassistant.service.TvHudOverlay.update("⚙️ $label", toolName, 12000L)
             }
 
             override fun onModelAudioStart() {
@@ -870,15 +874,17 @@ class VoiceSession private constructor(val context: Context) {
                 if (replyTurnOpen && _liveReply.value.isNotBlank()) AgentTrace.log(AgentTrace.Kind.REPLY, _liveReply.value)
                 traceTurnComplete(if (replyTurnOpen) _liveReply.value else "")
                 replyTurnOpen = false
-                if (isAutomationRun || silentMacroRun) {
+                val isTv = context.packageManager.hasSystemFeature(android.content.pm.PackageManager.FEATURE_LEANBACK) ||
+                    context.packageManager.hasSystemFeature(android.content.pm.PackageManager.FEATURE_TELEVISION) ||
+                    (context.resources.configuration.uiMode and android.content.res.Configuration.UI_MODE_TYPE_MASK) == android.content.res.Configuration.UI_MODE_TYPE_TELEVISION
+                if (isAutomationRun || silentMacroRun || isTv) {
                     reopenWhenDone = false
                     taskInProgressUntil = 0L
                     endRequested = true
-                    if (silentMacroRun || !audioTrackManager.isAudible()) {
-                        scope.launch {
-                            delay(250)
-                            endConversation("Automation complete")
-                        }
+                    scope.launch {
+                        while (audioTrackManager.isAudible()) delay(100)
+                        delay(350)
+                        endConversation(if (isTv) "TV action complete" else "Automation complete")
                     }
                 } else {
                     // The watchdog opens the mic once the reply has played and no tool is running
@@ -891,6 +897,7 @@ class VoiceSession private constructor(val context: Context) {
                 lastToolEnd = System.currentTimeMillis()
                 touch()
                 markTaskActivity()
+                com.nik.voiceassistant.service.TvHudOverlay.update("✓ $toolName", resultSummary.take(60), 3000L)
                 // args arrive already redacted (no PIN, no codes, no password text)
                 addTranscript("tool", "Executed $toolName $args: $resultSummary")
 
@@ -902,7 +909,12 @@ class VoiceSession private constructor(val context: Context) {
         }
 
     private val toolRunner: ToolCallRunner = ToolCallRunner(toolExecutor, liveCallback, ::beforeToolResponse,
-        waitForAudio = { if (!_fastActionMode.value) audioTrackManager.waitUntilSilent() })
+        waitForAudio = {
+            val isTv = context.packageManager.hasSystemFeature(android.content.pm.PackageManager.FEATURE_LEANBACK) ||
+                context.packageManager.hasSystemFeature(android.content.pm.PackageManager.FEATURE_TELEVISION) ||
+                (context.resources.configuration.uiMode and android.content.res.Configuration.UI_MODE_TYPE_MASK) == android.content.res.Configuration.UI_MODE_TYPE_TELEVISION
+            if (!isTv && !_fastActionMode.value && !silentMacroRun && !isAutomationRun) audioTrackManager.waitUntilSilent()
+        })
     private val directClient: GeminiLiveClient = GeminiLiveClient(audioTrackManager, toolRunner, { toolExecutor.declarations }, liveCallback)
     private val relayClient: LiveAudioWebSocketClient = LiveAudioWebSocketClient(audioTrackManager, toolRunner, { toolExecutor.declarations }, liveCallback)
 
@@ -1153,11 +1165,13 @@ class VoiceSession private constructor(val context: Context) {
             if (!keepMicMuted) openMic()
             // The service keeps the mic and the process alive while the screen is off or the app is closed
             if (!keepMicMuted) VoiceAssistantService.startConversation(context)
-            if (!callAudio.enter() && inPhoneCall()) {
-                _connectionStatus.value = ConnectionStatus.DISCONNECTED
-                addTranscript("system", "A phone call is on: try again after it.")
-                onConversationEnded?.invoke()
-                return@launch
+            if (!keepMicMuted) {
+                if (!callAudio.enter() && inPhoneCall()) {
+                    _connectionStatus.value = ConnectionStatus.DISCONNECTED
+                    addTranscript("system", "A phone call is on: try again after it.")
+                    onConversationEnded?.invoke()
+                    return@launch
+                }
             }
             preroll?.let { webSocketClient.queueAudio(it) }
             val resumeHandleToUse = currentSessionResumeHandle()
@@ -1214,6 +1228,7 @@ class VoiceSession private constructor(val context: Context) {
         audioTrackManager.stopAndFlush()
         webSocketClient.disconnect()
         callAudio.exit()
+        com.nik.voiceassistant.service.TvHudOverlay.scheduleDismiss(1800L)
         _connectionStatus.value = ConnectionStatus.DISCONNECTED
         _choices.value = null
         _automationReview.value = null
@@ -1329,13 +1344,14 @@ class VoiceSession private constructor(val context: Context) {
         }
     }
 
-    /** A typed request (or a suggestion chip): sent like speech, starting a conversation if needed. */
-    fun sendText(text: String) {
+    /** A typed request (or a suggestion chip / speech bridge): sent like speech, starting a conversation if needed. */
+    fun sendText(text: String, keepMicMuted: Boolean = true) {
         val t = text.trim()
         if (t.isEmpty()) return
+        com.nik.voiceassistant.service.TvHudOverlay.show(context, "🎙️ \"$t\"", "Shiv processing kar raha hai...", 10000L)
         addTranscript("user", t)
-        AgentTrace.log(AgentTrace.Kind.USER, "(typed) $t")
-        traceUserInput(t, "typed")
+        AgentTrace.log(AgentTrace.Kind.USER, "(query) $t")
+        traceUserInput(t, "text")
         noteAnswer(t)
         markTaskActivity()
 
@@ -1346,7 +1362,7 @@ class VoiceSession private constructor(val context: Context) {
         if (_isRecording.value && _connectionStatus.value == ConnectionStatus.CONNECTED) sendTextNow(t)
         else {
             pendingText = t
-            start()
+            start(keepMicMuted = keepMicMuted)
         }
     }
 
@@ -1457,12 +1473,9 @@ class VoiceSession private constructor(val context: Context) {
 
     fun getToolExecutor(): DeviceToolExecutor = toolExecutor
 
-    /** The current conversation's handle while Gemini still keeps it (~2 h; we use it for 100 min). */
+    /** Fresh session each time: prevents 1008 expired session errors. */
     private fun currentSessionResumeHandle(): String? {
-        val session = currentSession ?: return null
-        val at = session.resumeAt
-        if (System.currentTimeMillis() - at > 100 * 60_000L) return null
-        return session.resumeHandle
+        return null
     }
 
     /**
@@ -1476,12 +1489,28 @@ class VoiceSession private constructor(val context: Context) {
         val fastMode = if (_fastActionMode.value)
             "\n\nFAST ACTION MODE IS ON: Act silently. Do NOT speak or narrate while working — no \"theek hai\", no step-by-step commentary. Just do the actions. Speak ONLY once: after the very last action, say one short line reporting the final result or asking what's next."
         else ""
+        val isTv = context.packageManager.hasSystemFeature(android.content.pm.PackageManager.FEATURE_LEANBACK) ||
+            context.packageManager.hasSystemFeature(android.content.pm.PackageManager.FEATURE_TELEVISION) ||
+            (context.resources.configuration.uiMode and android.content.res.Configuration.UI_MODE_TYPE_MASK) == android.content.res.Configuration.UI_MODE_TYPE_TELEVISION
+        val tvInstructions = if (isTv) """
+
+ANDROID TV / JIO SET-TOP BOX MODE:
+You are operating an Android TV / Jio Set-Top Box.
+1. When user asks to play songs, videos, movies, or TV channels (e.g. 'Mahakal ke song lagade YouTube par achaar', 'Aaj Tak chala do', 'Star Sports', 'Live TV lagao'):
+   - Immediately call search_tv with the clean query and play_first=true!
+   - Remove all conversational fillers, verbs ('lagade', 'chala do'), and platform names from query.
+   - For TV channels or Live TV, pass app='livetv' or app='jiotv'.
+2. FINAL CONFIRMATION RULE: After executing the tool, say ONLY ONE short line in Hindi:
+   'Haan, play kar diya!' or 'Haan, laga diya!'.
+   Do not ask follow-up questions. Do not keep chatting. End the turn immediately so the user can enjoy their video/channel.
+""" else ""
+
         val base = DEFAULT_INSTRUCTIONS
             .replace("{NAME}", _assistantName.value)
             .replace("{SELF}", toolExecutor.selfDescription())
             .replace("{OWNER}", ownerLine())
             .replace("{DEVICE}", toolExecutor.deviceProfile())
-            .replace("{VISION}", vision) + fastMode + "\n\n" + lockPolicy()
+            .replace("{VISION}", vision) + fastMode + tvInstructions + "\n\n" + lockPolicy()
         if (resuming) return base
         val recent = _transcripts.value.filter { it.sender == "user" || it.sender == "assistant" }.takeLast(10)
         if (recent.isEmpty()) return base
@@ -1598,6 +1627,44 @@ class VoiceSession private constructor(val context: Context) {
             _historySessions.value = emptyList()
             startNewChat()
         }
+    }
+
+    /** Saves a Gemini API key directly (e.g. from ADB setup intent) and enables direct connection mode. */
+    fun saveDirectApiKey(key: String): Boolean {
+        val cleaned = cleanKey(key)
+        val stored = SecurePrefs.setSecret(context, SecurePrefs.GEMINI_API_KEY, cleaned)
+        if (stored) {
+            _hasGeminiKey.value = true
+            _connectionMode.value = MODE_DIRECT
+            prefs.edit().putString("connection_mode", MODE_DIRECT).apply()
+        }
+        return stored
+    }
+
+    /** Saves an LLM / Gateway API key directly. */
+    fun saveLlmApiKey(key: String): Boolean {
+        val cleaned = cleanKey(key)
+        val stored = SecurePrefs.setSecret(context, SecurePrefs.LLM_API_KEY, cleaned)
+        if (stored) {
+            _apiKey.value = cleaned
+        }
+        return stored
+    }
+
+    /** Sets server mode with the given API key and optional server WebSocket URL. */
+    fun setServerMode(key: String, url: String? = null): Boolean {
+        val cleaned = cleanKey(key)
+        val stored = SecurePrefs.setSecret(context, SecurePrefs.LLM_API_KEY, cleaned)
+        if (stored) {
+            _apiKey.value = cleaned
+            _connectionMode.value = MODE_SERVER
+            if (!url.isNullOrBlank()) {
+                _serverUrl.value = url.trim()
+                prefs.edit().putString("server_url", url.trim()).apply()
+            }
+            prefs.edit().putString("connection_mode", MODE_SERVER).apply()
+        }
+        return stored
     }
 
     /** Removes a saved key (Settings). */

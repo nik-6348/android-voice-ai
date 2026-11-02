@@ -273,6 +273,23 @@ class DeviceToolExecutor(
             optional = listOf("seconds" to param("integer", "1-8, default 2"))
         ),
         function(
+            "dpad",
+            "Navigates Android TV / Jio STB apps using directional keys, select/OK, back, home, or play_pause. " +
+                "Essential for TV apps where touch gestures are not used.",
+            required = listOf("action" to param("string", "One of: up, down, left, right, select, ok, back, home, play_pause", listOf("up", "down", "left", "right", "select", "ok", "back", "home", "play_pause"))),
+            optional = listOf("repeat" to param("integer", "How many times to repeat the directional key (1-10, default 1)"))
+        ),
+        function(
+            "search_tv",
+            "Directly searches and opens content inside TV apps (YouTube TV, JioCinema, Hotstar, or system TV search). " +
+                "If the user wants to play a song/video (e.g. 'play ...'), set play_first=true to automatically play the top result.",
+            required = listOf("query" to param("string", "Search query, movie title, video title or show name")),
+            optional = listOf(
+                "app" to param("string", "Target app: youtube, jiocinema, hotstar, global (default youtube)", listOf("youtube", "jiocinema", "hotstar", "global")),
+                "play_first" to param("boolean", "If true, automatically plays the first video in the search results (default true if user says 'play')")
+            )
+        ),
+        function(
             "open_app",
             "Opens an installed app by its name (use the full name, e.g. \"Google Keep\"). If several apps match it lists them; " +
                 "if none does, use list_apps.",
@@ -721,6 +738,10 @@ class DeviceToolExecutor(
                 "swipe" -> agent?.swipe(str("direction") ?: "up", int("element_id")) ?: mapOf("error" to AGENT_OFF)
 
                 "navigate" -> agent?.navigate(str("action") ?: "") ?: mapOf("error" to AGENT_OFF)
+
+                "dpad" -> if (agent == null) mapOf("error" to AGENT_OFF) else agent.dpad(str("action") ?: "select", int("repeat") ?: 1)
+
+                "search_tv" -> searchTv(str("query") ?: "", str("app"), bool("play_first") ?: false)
 
                 "find_contact" -> findContact(str("name") ?: "")
 
@@ -1436,11 +1457,14 @@ class DeviceToolExecutor(
 
     private fun launchableApps(): List<App> {
         val launcher = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
+        val leanback = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LEANBACK_LAUNCHER)
         @Suppress("DEPRECATION")
         val activities = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            packageManager.queryIntentActivities(launcher, PackageManager.ResolveInfoFlags.of(0))
+            packageManager.queryIntentActivities(launcher, PackageManager.ResolveInfoFlags.of(0)) +
+                packageManager.queryIntentActivities(leanback, PackageManager.ResolveInfoFlags.of(0))
         } else {
-            packageManager.queryIntentActivities(launcher, 0)
+            packageManager.queryIntentActivities(launcher, 0) +
+                packageManager.queryIntentActivities(leanback, 0)
         }
         return activities.map { App(it.loadLabel(packageManager).toString().trim(), it.activityInfo.packageName) }
             .distinctBy { it.pkg }
@@ -1537,7 +1561,9 @@ class DeviceToolExecutor(
     }
 
     private fun launchPackage(packageName: String): Boolean {
-        val intent = packageManager.getLaunchIntentForPackage(packageName) ?: return false
+        val intent = packageManager.getLeanbackLaunchIntentForPackage(packageName)
+            ?: packageManager.getLaunchIntentForPackage(packageName)
+            ?: return false
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         context.startActivity(intent)
         Log.i(TAG, "Launched package: $packageName")
@@ -1634,6 +1660,170 @@ class DeviceToolExecutor(
             "next" to "Tap the result that matches best (its path is shown under it). If nothing matches, research the setting's name on this phone.",
             "screen" to agent.readScreen()
         )
+    }
+
+    /**
+     * Cleans conversational words, verbs, speech recognition artifacts (like 'achaar' for 'achha sa'),
+     * and platform names to yield a razor-sharp search query for YouTube / TV apps.
+     */
+    private fun cleanTvQuery(rawQuery: String): String {
+        var q = rawQuery.trim()
+        // Strip out target platform phrases
+        q = q.replace(Regex("(?i)\\b(on\\s+)?(youtube|jiocinema|jio\\s+cinema|hotstar|yt|tv)\\s*(par|pe|me|mein)?\\b"), " ")
+        // Strip out action verbs & commands
+        q = q.replace(Regex("(?i)\\b(lagade|laga\\s+do|laga\\s+de|lagao|laga|chala\\s+do|chala\\s+de|chalao|chalana|chala|bajao|baja\\s+do|baja\\s+de|bajade|sunao|suna\\s+do|suna\\s+de|sunade|play\\s+karo|play\\s+kar\\s+do|play|khol\\s+do|khol|kholo|open\\s+karo|open|search\\s+karo|search|dhundo|dikhaye|dikhao)\\b"), " ")
+        // Strip out fillers & speech recognition noise
+        q = q.replace(Regex("(?i)\\b(achaar|achha\\s+sa|achha\\s+wala|achhe|badhiya\\s+sa|badhiya|koi\\s+bhi|koi|ek|zara|thoda|kripya|please|bhai|yaar)\\b"), " ")
+        // Strip out dangling prepositions at ends
+        q = q.replace(Regex("(?i)^\\s*(ke|ka|ki|ko|pe|par|me|mein)\\s+"), " ")
+        q = q.replace(Regex("(?i)\\s+(ke|ka|ki|ko|pe|par|me|mein)\\s*$"), " ")
+        q = q.replace(Regex("\\s+"), " ").trim()
+        return q.ifBlank { rawQuery.trim() }
+    }
+
+    private val TV_CHANNEL_NAMES = setOf(
+        "aaj tak", "abp news", "india tv", "ndtv", "zee news", "news18", "republic bharat", "republic tv", "times now",
+        "star sports", "star sports 1", "star sports 2", "star sports hindi", "sony ten", "sony ten 1", "sony ten 2", "sony ten 3", "sports18", "dd sports", "sony six",
+        "star plus", "sony sab", "colors", "zee tv", "star bharat", "sony entertainment", "sony tv", "&tv", "and tv",
+        "zee cinema", "sony max", "star gold", "colors cineplex", "utv movies", "star movies", "sony wah", "b4u movies",
+        "discovery", "national geographic", "nat geo", "animal planet", "history tv18", "sony bbc earth",
+        "cartoon network", "pogo", "hungama", "nickelodeon", "nick", "disney", "sonic",
+        "live tv", "tv channel"
+    )
+
+    private fun isTvChannelRequest(query: String): Boolean {
+        val lower = query.lowercase().trim()
+        if (lower.startsWith("channel") || lower.contains("live tv") || lower.contains("tv channel")) return true
+        return TV_CHANNEL_NAMES.any { lower.contains(it) }
+    }
+
+    /**
+     * Direct Android TV search intent: opens YouTube TV, Live TV (JioTV+), JioCinema, Hotstar, or Android TV global search.
+     * Automatically clicks and plays the top search result without blocking or leaving on the results page.
+     */
+    private fun searchTv(query: String, targetApp: String?, autoPlay: Boolean = false): Map<String, Any?> {
+        if (query.isBlank()) return mapOf("error" to "Give a search query")
+        val lowerQ = query.lowercase().trim()
+        val cleanQuery = cleanTvQuery(query)
+
+        // 1. Check if the user is asking for Live TV or a specific TV channel (e.g. Aaj Tak, Star Sports, Live TV)
+        if (targetApp == "livetv" || targetApp == "jiotv" || isTvChannelRequest(query)) {
+            com.nik.voiceassistant.service.TvHudOverlay.update("⚡ Live TV: $cleanQuery", null, 3000L)
+            val launchIntent = packageManager.getLeanbackLaunchIntentForPackage("com.jio.media.jiotvplus")
+                ?: packageManager.getLaunchIntentForPackage("com.jio.media.jiotvplus")
+                ?: packageManager.getLeanbackLaunchIntentForPackage("com.jio.media.livetv")
+                ?: packageManager.getLaunchIntentForPackage("com.jio.media.livetv")
+            if (launchIntent != null) {
+                launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+                context.startActivity(launchIntent)
+
+                // If user specified channel digits (e.g. "channel 102"), inject key events for the numbers
+                val channelDigits = Regex("\\b(\\d{1,4})\\b").find(cleanQuery)?.groupValues?.get(1)
+                if (channelDigits != null) {
+                    Thread.sleep(1500)
+                    val audio = context.getSystemService(Context.AUDIO_SERVICE) as? android.media.AudioManager
+                    channelDigits.forEach { digit ->
+                        val code = KeyEvent.KEYCODE_0 + (digit - '0')
+                        audio?.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, code))
+                        audio?.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_UP, code))
+                        Thread.sleep(120)
+                    }
+                }
+                return withScreen(mapOf("success" to true, "opened" to "Live TV tuned to $cleanQuery"))
+            }
+        }
+
+        val app = targetApp?.lowercase()?.trim() ?: "youtube"
+        val shouldPlay = autoPlay ||
+            lowerQ.contains("play") ||
+            lowerQ.contains("chalao") ||
+            lowerQ.contains("chalana") ||
+            lowerQ.contains("chala do") ||
+            lowerQ.contains("chala de") ||
+            lowerQ.contains("bajao") ||
+            lowerQ.contains("lagao") ||
+            lowerQ.contains("laga do") ||
+            lowerQ.contains("lagade") ||
+            lowerQ.contains("sunao") ||
+            lowerQ.contains("song") ||
+            lowerQ.contains("gana")
+
+        val intent = when (app) {
+            "youtube" -> {
+                val hasJioYt = packageManager.getLeanbackLaunchIntentForPackage("com.jio.yt") != null ||
+                    packageManager.getLaunchIntentForPackage("com.jio.yt") != null
+                if (hasJioYt) {
+                    Intent(Intent.ACTION_VIEW, Uri.parse("https://www.youtube.com/results?search_query=$cleanQuery")).apply {
+                        setPackage("com.jio.yt")
+                    }
+                } else {
+                    Intent(Intent.ACTION_SEARCH).apply {
+                        setPackage("com.google.android.youtube.tv")
+                        putExtra("query", cleanQuery)
+                    }
+                }
+            }
+            "jiocinema" -> Intent(Intent.ACTION_VIEW).apply {
+                data = Uri.parse("https://www.jiocinema.com/search/$cleanQuery")
+                setPackage("com.jio.media.stb")
+            }
+            "hotstar" -> Intent(Intent.ACTION_VIEW).apply {
+                data = Uri.parse("https://www.hotstar.com/in/search?q=$cleanQuery")
+                setPackage("in.startv.hotstar")
+            }
+            else -> Intent(Intent.ACTION_SEARCH).apply {
+                putExtra("query", cleanQuery)
+            }
+        }.apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+        }
+
+        val targetCard = when {
+            lowerQ.contains("second") || lowerQ.contains("dusra") || lowerQ.contains("2nd") || lowerQ.contains("do number") -> 2
+            lowerQ.contains("third") || lowerQ.contains("teesra") || lowerQ.contains("3rd") || lowerQ.contains("teen number") -> 3
+            lowerQ.contains("fourth") || lowerQ.contains("chautha") || lowerQ.contains("4th") -> 4
+            else -> 1
+        }
+
+        val currentPkg = PhoneAgentService.instance?.rootInActiveWindow?.packageName?.toString()
+        // If already in YouTube TV and asking for ordinal card, click without re-searching!
+        if (currentPkg == "com.jio.yt" && targetCard > 1) {
+            com.nik.voiceassistant.service.TvHudOverlay.update("⚡ Card $targetCard Play Ho Raha Hai...", null, 2500L)
+            PhoneAgentService.instance?.clickYtCard(targetCard)
+            return withScreen(mapOf("success" to true, "opened" to "Selected card $targetCard in YouTube TV"))
+        }
+
+        com.nik.voiceassistant.service.TvHudOverlay.update("⚡ YouTube Par Play Ho Raha Hai...", cleanQuery, 3000L)
+        return try {
+            if (intent.resolveActivity(packageManager) != null) {
+                context.startActivity(intent)
+                if (shouldPlay) {
+                    Thread.sleep(1600)
+                    PhoneAgentService.instance?.clickYtCard(targetCard)
+                    Thread.sleep(900)
+                    val am = context.getSystemService(Context.AUDIO_SERVICE) as? android.media.AudioManager
+                    if (am?.isMusicActive != true) {
+                        Log.i(TAG, "Audio not yet active in YouTube TV, retrying click on card $targetCard")
+                        PhoneAgentService.instance?.clickYtCard(targetCard)
+                    }
+                    // Dispatch MEDIA_PLAY to ensure playback resumes
+                    am?.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_MEDIA_PLAY))
+                    am?.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_MEDIA_PLAY))
+                }
+                withScreen(mapOf("success" to true, "opened" to "$app search for \"$cleanQuery\"${if (shouldPlay) " and playing video card $targetCard" else ""}"))
+            } else {
+                val fallback = Intent(Intent.ACTION_VIEW, Uri.parse("https://www.youtube.com/results?search_query=$cleanQuery"))
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                context.startActivity(fallback)
+                if (shouldPlay) {
+                    Thread.sleep(1600)
+                    PhoneAgentService.instance?.clickYtCard(targetCard)
+                }
+                withScreen(mapOf("success" to true, "opened" to "YouTube fallback for \"$cleanQuery\""))
+            }
+        } catch (e: Exception) {
+            mapOf("success" to false, "error" to (e.message ?: "Failed to start TV search"))
+        }
     }
 
     /** Whether a content:// or file:// URI points at something that exists (other schemes: true). */
@@ -1768,7 +1958,13 @@ class DeviceToolExecutor(
         // Goes to the app with the active media session, like a headset button
         audio.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, key))
         audio.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_UP, key))
-        Thread.sleep(400)
+        // For TV apps like YouTube (com.jio.yt) that don't hook media session
+        com.nik.voiceassistant.service.PhoneAgentService.instance?.let { s ->
+            if (s.rootInActiveWindow?.packageName == "com.jio.yt" && (action == "pause" || action == "stop" || action == "play_pause")) {
+                s.dpad("play_pause")
+            }
+        }
+        Thread.sleep(300)
         return mapOf("success" to true, "done" to action, "something_playing" to audio.isMusicActive)
     }
 

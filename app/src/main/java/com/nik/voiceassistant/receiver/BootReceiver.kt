@@ -32,6 +32,11 @@ class BootReceiver : BroadcastReceiver() {
 
         // Screen control switched off for a payment app before the reboot comes back on
         PaymentGuard.restore(context)
+        // Ensure accessibility service is active across reboots
+        if (PaymentGuard.canToggle(context)) {
+            PaymentGuard.setServiceEnabled(context, true)
+            Log.i(TAG, "Ensured PhoneAgentService accessibility is enabled after boot")
+        }
         // AlarmManager clears every armed alarm on reboot: re-arm every Scheduled and Condition macro
         com.nik.voiceassistant.service.ScheduledTriggerMonitor.rescheduleAll(context)
         com.nik.voiceassistant.service.ConditionPollingEngine.rescheduleAll(context)

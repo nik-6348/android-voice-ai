@@ -185,7 +185,7 @@ object PaymentGuard {
         return last
     }
 
-    private fun setServiceEnabled(context: Context, enabled: Boolean) {
+    fun setServiceEnabled(context: Context, enabled: Boolean) {
         val me = ComponentName(context, PhoneAgentService::class.java).flattenToString()
         val resolver = context.contentResolver
         val current = Settings.Secure.getString(resolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES).orEmpty()

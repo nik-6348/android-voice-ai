@@ -38,8 +38,8 @@ object AgentPolicy {
         val logScreenContents: Boolean = false,
         // Older log days are deleted; 0 = keep forever
         val logRetentionDays: Int = 7,
-        // Opening the app starts listening right away
-        val autoStartOnOpen: Boolean = true
+        // Opening the app starts listening right away (off by default for TV/remote push-to-talk)
+        val autoStartOnOpen: Boolean = false
     )
 
     private const val PREFS = "agent_policy"
@@ -51,23 +51,56 @@ object AgentPolicy {
     /** The current settings (defaults until init). */
     val current: Settings get() = _state.value
 
+    fun isTv(context: Context): Boolean =
+        context.packageManager.hasSystemFeature(android.content.pm.PackageManager.FEATURE_LEANBACK) ||
+        context.packageManager.hasSystemFeature(android.content.pm.PackageManager.FEATURE_TELEVISION) ||
+        (context.resources.configuration.uiMode and android.content.res.Configuration.UI_MODE_TYPE_MASK) == android.content.res.Configuration.UI_MODE_TYPE_TELEVISION
+
     fun init(context: Context) {
         if (prefs != null) return
         synchronized(this) {
             if (prefs != null) return
-            val p = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            val d = Settings()
-            _state.value = Settings(
+            val appContext = context.applicationContext
+            val p = appContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            val onTv = isTv(appContext)
+            val defaultSaveHistory = !onTv
+            val defaultSaveLogs = !onTv
+            val defaultDays = if (onTv) 1 else 30
+            val defaultLogDays = if (onTv) 1 else 7
+
+            val d = Settings(
+                saveHistory = defaultSaveHistory,
+                historyDays = defaultDays,
+                saveActivityLogs = defaultSaveLogs,
+                logRetentionDays = defaultLogDays
+            )
+            val loaded = Settings(
                 confirmLevel = runCatching { ConfirmLevel.valueOf(p.getString("confirm_level", null) ?: d.confirmLevel.name) }.getOrDefault(d.confirmLevel),
                 maskSensitiveScreen = p.getBoolean("mask_sensitive_screen", d.maskSensitiveScreen),
-                saveHistory = p.getBoolean("save_history", d.saveHistory),
-                historyDays = p.getInt("history_days", d.historyDays),
-                saveActivityLogs = p.getBoolean("save_activity_logs", d.saveActivityLogs),
-                logScreenContents = p.getBoolean("log_screen_contents", d.logScreenContents),
-                logRetentionDays = p.getInt("log_retention_days", d.logRetentionDays),
+                saveHistory = if (onTv) false else p.getBoolean("save_history", d.saveHistory),
+                historyDays = if (onTv) 1 else p.getInt("history_days", d.historyDays),
+                saveActivityLogs = if (onTv) false else p.getBoolean("save_activity_logs", d.saveActivityLogs),
+                logScreenContents = if (onTv) false else p.getBoolean("log_screen_contents", d.logScreenContents),
+                logRetentionDays = if (onTv) 1 else p.getInt("log_retention_days", d.logRetentionDays),
                 autoStartOnOpen = p.getBoolean("auto_start_on_open", d.autoStartOnOpen)
             )
+            _state.value = loaded
             prefs = p
+
+            // If history or logs are disabled (e.g. on TV), wipe old stored files immediately to prevent flash storage bloat
+            if (onTv || !loaded.saveHistory) {
+                com.nik.voiceassistant.data.history.ConversationHistoryManager.clearAll(appContext)
+            }
+            if (onTv || !loaded.saveActivityLogs) {
+                java.io.File(appContext.filesDir, "traces").deleteRecursively()
+            }
+            // Cleanup any stray test screenshots/xml dumps from storage
+            try {
+                java.io.File("/sdcard").listFiles { _, name ->
+                    val n = name.lowercase()
+                    n.endsWith(".png") || n.endsWith(".xml") || n.endsWith(".jpg") || n.endsWith(".jpeg")
+                }?.forEach { it.delete() }
+            } catch (ignored: Exception) {}
         }
     }
 

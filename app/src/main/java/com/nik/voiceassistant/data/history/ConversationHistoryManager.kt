@@ -74,6 +74,7 @@ object ConversationHistoryManager {
     /** Saves a snapshot of a session (not one still being changed on another thread). */
     @Synchronized
     fun saveSession(context: Context, session: ConversationSession) {
+        if (!com.nik.voiceassistant.security.AgentPolicy.current.saveHistory) return
         if (session.messages.isEmpty()) return
         try {
             val trimmed = if (session.messages.size > MAX_MESSAGES) session.copy(messages = session.messages.takeLast(MAX_MESSAGES).toMutableList()) else session

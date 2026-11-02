@@ -69,30 +69,26 @@ class AudioRecordManager(
         val bufferSize = maxOf(minBufferSize, CHUNK_SIZE_BYTES * 4)
 
         try {
-            // VOICE_COMMUNICATION enables hardware Acoustic Echo Cancellation (AEC) & Noise Suppression (NS)
-            var record = AudioRecord(
+            // Try VOICE_COMMUNICATION (AEC on phones), VOICE_RECOGNITION (Bluetooth remote mic on Android TV), or MIC
+            val sources = intArrayOf(
                 MediaRecorder.AudioSource.VOICE_COMMUNICATION,
-                SAMPLE_RATE,
-                CHANNEL_CONFIG,
-                AUDIO_FORMAT,
-                bufferSize
+                MediaRecorder.AudioSource.VOICE_RECOGNITION,
+                MediaRecorder.AudioSource.MIC
             )
-            if (record.state != AudioRecord.STATE_INITIALIZED) {
-                Log.w(TAG, "VOICE_COMMUNICATION source failed to initialize, falling back to MIC")
-                runCatching { record.release() }
-                record = AudioRecord(
-                    MediaRecorder.AudioSource.MIC,
-                    SAMPLE_RATE,
-                    CHANNEL_CONFIG,
-                    AUDIO_FORMAT,
-                    bufferSize
-                )
+            var record: AudioRecord? = null
+            for (src in sources) {
+                val candidate = AudioRecord(src, SAMPLE_RATE, CHANNEL_CONFIG, AUDIO_FORMAT, bufferSize)
+                if (candidate.state == AudioRecord.STATE_INITIALIZED) {
+                    record = candidate
+                    Log.i(TAG, "AudioRecord initialized with source: $src")
+                    break
+                }
+                runCatching { candidate.release() }
+            }
+            if (record == null || record.state != AudioRecord.STATE_INITIALIZED) {
+                return fail("AudioRecord initialization failed across all audio sources")
             }
             audioRecord = record
-
-            if (record.state != AudioRecord.STATE_INITIALIZED) {
-                return fail("AudioRecord initialization failed")
-            }
 
             // On top of the VOICE_COMMUNICATION source's own processing, where the phone offers them
             record.audioSessionId.let { sid ->

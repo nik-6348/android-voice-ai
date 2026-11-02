@@ -38,6 +38,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.unit.dp
+import com.nik.voiceassistant.ui.components.tvFocusable
 import com.nik.voiceassistant.R
 import com.nik.voiceassistant.VoiceAssistantViewModel
 import com.nik.voiceassistant.ui.screens.ActivityTab
@@ -74,7 +76,10 @@ fun VoiceAssistantScreen(viewModel: VoiceAssistantViewModel) {
                         selected = selected,
                         onClick = { selectedTab = tab },
                         icon = { Icon(if (selected) tab.selectedIcon else tab.icon, contentDescription = null) },
-                        label = { Text(stringResource(tab.title), maxLines = 1) }
+                        label = { Text(stringResource(tab.title), maxLines = 1) },
+                        modifier = Modifier.tvFocusable(shape = androidx.compose.foundation.shape.RoundedCornerShape(16.dp)) {
+                            selectedTab = tab
+                        }
                     )
                 }
             }

@@ -15,6 +15,8 @@ import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.res.painterResource
+import com.nik.voiceassistant.ui.components.tvDpadNavigable
+import com.nik.voiceassistant.ui.components.tvFocusable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
@@ -668,6 +670,7 @@ private fun Composer(
         }
     }
     val scheme = MaterialTheme.colorScheme
+    val focusManager = androidx.compose.ui.platform.LocalFocusManager.current
     Surface(
         color = scheme.surfaceContainer,
         shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
@@ -677,7 +680,9 @@ private fun Composer(
             TextField(
                 value = draft,
                 onValueChange = { draft = it },
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .tvDpadNavigable(focusManager, shape = CircleShape, onSend = { send() }),
                 placeholder = { Text(stringResource(R.string.composer_hint, name)) },
                 maxLines = 4,
                 shape = CircleShape,
@@ -691,7 +696,11 @@ private fun Composer(
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
                 keyboardActions = KeyboardActions(onSend = { send() }),
                 trailingIcon = {
-                    FilledIconButton(onClick = send, enabled = draft.isNotBlank()) {
+                    FilledIconButton(
+                        onClick = send,
+                        enabled = draft.isNotBlank(),
+                        modifier = Modifier.tvFocusable(shape = CircleShape) { send() }
+                    ) {
                         Icon(Icons.AutoMirrored.Filled.Send, contentDescription = stringResource(R.string.cd_send))
                     }
                 }
@@ -733,7 +742,7 @@ private fun ControlButton(
         FilledTonalIconButton(
             onClick = onClick,
             enabled = enabled,
-            modifier = Modifier.size(56.dp),
+            modifier = Modifier.size(56.dp).tvFocusable(shape = CircleShape) { onClick() },
             colors = if (highlighted) IconButtonDefaults.filledTonalIconButtonColors(
                 containerColor = scheme.tertiaryContainer, contentColor = scheme.onTertiaryContainer
             ) else IconButtonDefaults.filledTonalIconButtonColors()
@@ -758,7 +767,7 @@ private fun MainMicButton(isRecording: Boolean, isMicMuted: Boolean, onClick: ()
     Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.width(96.dp)) {
         FilledIconButton(
             onClick = onClick,
-            modifier = Modifier.size(72.dp),
+            modifier = Modifier.size(72.dp).tvFocusable(shape = CircleShape) { onClick() },
             colors = IconButtonDefaults.filledIconButtonColors(
                 containerColor = if (isRecording && !isMicMuted) scheme.primary else scheme.primaryContainer,
                 contentColor = if (isRecording && !isMicMuted) scheme.onPrimary else scheme.onPrimaryContainer

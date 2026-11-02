@@ -20,7 +20,7 @@ import kotlin.math.sqrt
  * Features instant barge-in / interruption flush to cut assistant speech immediately when needed.
  */
 class AudioTrackManager(
-    private val usage: Int = AudioAttributes.USAGE_VOICE_COMMUNICATION,
+    private val usage: Int = AudioAttributes.USAGE_ASSISTANT,
     private val onPlaybackAmplitudeChanged: ((Float) -> Unit)? = null,
     // true when reply audio starts coming out of the speaker, false once all of it has played
     // (plus a short tail); the mic is sent as silence meanwhile so the assistant doesn't hear itself

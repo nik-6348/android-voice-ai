@@ -25,9 +25,9 @@ android {
         vectorDrawables {
             useSupportLibrary = true
         }
-        // Vosk / JNA ship native libraries for every CPU; phones (and the arm emulator) only need 64-bit ARM
+        // Support both 64-bit ARM and 32-bit ARM (for phones and Android TV / STBs)
         ndk {
-            abiFilters += listOf("arm64-v8a")
+            abiFilters += listOf("arm64-v8a", "armeabi-v7a")
         }
 
         // Cloud Run (asia-south1): fast, WebSockets up to 60 min

@@ -198,7 +198,7 @@ class AssistantOverlay(private val session: VoiceSession) {
     fun bind(scope: CoroutineScope, appVisible: StateFlow<Boolean>) {
         scope.launch {
             combine(session.isRecording, appVisible, session.isSilentAutomation) { live, visible, silent ->
-                live && !visible && !silent
+                live && !visible && !silent && prefs.getBoolean("overlay_enabled", false)
             }
                 .distinctUntilChanged()
                 .collect {
@@ -222,20 +222,24 @@ class AssistantOverlay(private val session: VoiceSession) {
     }
 
     private val retryShow = Runnable {
-        if (!wanted) return@Runnable
+        if (!wanted || !prefs.getBoolean("overlay_enabled", false)) return@Runnable
         // Removed with screen control: don't fall back to an app overlay over (say) a payment app
         if (addedViaService && panel != null && PhoneAgentService.instance == null) retryLater()
         else show()
     }
 
     private fun retryLater() {
-        if (!wanted) return
+        if (!wanted || !prefs.getBoolean("overlay_enabled", false)) return
         main.removeCallbacks(retryShow)
         main.postDelayed(retryShow, RETRY_MS)
     }
 
     private fun show() {
         main.removeCallbacks(retryShow)
+        if (!prefs.getBoolean("overlay_enabled", false)) {
+            hideAll()
+            return
+        }
         panel?.let { existing ->
             // Up (or still being attached): nothing to do
             if (!panelAttached || existing.isAttachedToWindow) return

@@ -1,6 +1,7 @@
 package com.nik.voiceassistant
 
 import android.Manifest
+import android.content.Context
 import android.annotation.SuppressLint
 import android.content.Intent
 import android.net.Uri
@@ -38,6 +39,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        handleIntentCredentials(intent)
 
         // Not while a conversation is already running (rotation, dark mode, language change
         // recreate this Activity mid-call): only start one when none is active. Android can also
@@ -73,6 +75,53 @@ class MainActivity : ComponentActivity() {
         com.nik.voiceassistant.service.PaymentGuard.resume(this)
         // The user may have just switched screen control on in Settings > Accessibility
         viewModel.refreshAgentStatus()
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        handleIntentCredentials(intent)
+    }
+
+    private fun handleIntentCredentials(intent: Intent?) {
+        val geminiKey = intent?.getStringExtra("gemini_key")
+        val llmKey = intent?.getStringExtra("llm_key") ?: intent?.getStringExtra("api_key")
+        val mode = intent?.getStringExtra("mode")
+        val serverUrl = intent?.getStringExtra("server_url")
+
+        var updated = false
+        if (mode == "server" || (!llmKey.isNullOrBlank() && geminiKey.isNullOrBlank())) {
+            if (!llmKey.isNullOrBlank()) {
+                VoiceSession.get(this).setServerMode(llmKey, serverUrl)
+                updated = true
+            }
+        } else {
+            if (!geminiKey.isNullOrBlank()) {
+                VoiceSession.get(this).saveDirectApiKey(geminiKey)
+                updated = true
+            }
+            if (!llmKey.isNullOrBlank()) {
+                VoiceSession.get(this).saveLlmApiKey(llmKey)
+                updated = true
+            }
+        }
+        val overlay = intent?.getBooleanExtra("overlay", false)
+        if (intent?.hasExtra("overlay") == true) {
+            getSharedPreferences("voice_assistant_settings", Context.MODE_PRIVATE)
+                .edit().putBoolean("overlay_enabled", overlay ?: false).apply()
+            updated = true
+        }
+
+        val query = intent?.getStringExtra("query")
+        if (!query.isNullOrBlank()) {
+            val session = VoiceSession.get(this)
+            session.startNewChat()
+            session.sendText(query, keepMicMuted = true)
+        }
+
+        if (updated) {
+            Toast.makeText(this, "Settings updated!", Toast.LENGTH_SHORT).show()
+            viewModel.refreshAgentStatus()
+        }
     }
 
     /** Listening for "Hi Nik" in the background only lasts if the phone doesn't put the app to sleep. */

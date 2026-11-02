@@ -149,6 +149,7 @@ class GeminiLiveClient(
     private fun socketListener(cfg: LiveClient.Config) = object : WebSocketListener() {
         override fun onOpen(webSocket: WebSocket, response: Response) {
             if (!isCurrent(webSocket)) return // replaced while it was opening
+            Log.i(TAG, "Connected to Gemini Live WebSocket successfully!")
             webSocket.send(gson.toJson(mapOf("setup" to setup(cfg))))
         }
 
@@ -179,11 +180,21 @@ class GeminiLiveClient(
             // A refusal before setup with Google Search on: the key may lack Search quota while the
             // rest works, so try once more without it rather than failing the conversation
             val dropSearch = !userClosed && !socketReady && config?.search == true && !searchOff && reason.isNotBlank()
+            val isExpiredSession = code == 1008 || (code == 1000 && reason.contains("expired", ignoreCase = true)) || reason.contains("session not found", ignoreCase = true)
             when {
                 userClosed -> listener.onDisconnected(reason)
+                isExpiredSession && resumeHandle != null -> {
+                    Log.w(TAG, "Session expired or not found ($code: $reason), clearing handle and connecting fresh")
+                    resumeHandle = null
+                    listener.onResumeHandle(null)
+                    val gen = generation
+                    reconnector.execute { open(gen) }
+                }
                 dropSearch -> {
                     // The same refusal again without Search means it wasn't Search: it then stops at once
                     searchOff = true
+                    resumeHandle = null
+                    listener.onResumeHandle(null)
                     AgentTrace.log(AgentTrace.Kind.WARNING, "Gemini refused the session with Google Search on ($reason); continuing without Search (the research tool still works)")
                     val gen = generation
                     reconnector.execute { open(gen) }
@@ -206,7 +217,7 @@ class GeminiLiveClient(
 
     /** Errors no retry can fix: a wrong key or model, or a request Gemini rejects. */
     private fun isFatal(code: Int?, http: Int?): Boolean =
-        code == 1007 || code == 1008 || http == 400 || http == 401 || http == 403 || http == 404
+        code == 1007 || (code == 1008 && resumeHandle == null) || http == 400 || http == 401 || http == 403 || http == 404
 
     private fun fail(message: String) {
         userClosed = true
