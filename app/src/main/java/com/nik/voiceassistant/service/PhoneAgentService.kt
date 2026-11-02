@@ -108,6 +108,7 @@ class PhoneAgentService : AccessibilityService() {
     private var pendingJioQueryRunnable: Runnable? = null
     private var lastDispatchedJioQuery = ""
     private var lastDispatchedAt = 0L
+    @Volatile private var isJioDismissing = false
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         event ?: return
@@ -152,8 +153,15 @@ class PhoneAgentService : AccessibilityService() {
     }
 
     private fun handleJioVoiceAssistEvent(event: AccessibilityEvent) {
-        // 1. Immediately pop up Shiv's custom listening overlay to mask Jio Assistant's UI
-        TvHudOverlay.showListening(this)
+        if (isJioDismissing) {
+            // Jio assistant is closing after dispatch: ignore exit events to prevent flicker
+            return
+        }
+
+        // Show Shiv listening overlay once (instant solid mask over Jio UI)
+        if (!TvHudOverlay.isListening) {
+            TvHudOverlay.showListening(this)
+        }
 
         val root = rootInActiveWindow ?: return
         try {
@@ -162,10 +170,10 @@ class PhoneAgentService : AccessibilityService() {
                 return
             }
 
-            // 2. Real-time live speech update on Shiv's TV UI
+            // Real-time live speech update on Shiv's TV UI
             TvHudOverlay.updateSpeech(text)
 
-            // 3. Fast-path instant stop detection
+            // Fast-path instant stop detection
             if (isStopCommand(text)) {
                 pendingJioQueryRunnable?.let { mainHandler.removeCallbacks(it) }
                 pendingJioQueryRunnable = null
@@ -184,8 +192,10 @@ class PhoneAgentService : AccessibilityService() {
                 lastDispatchedAt = System.currentTimeMillis()
                 Log.i(TAG, "Dispatching captured Jio speech to Shiv: $text")
 
-                // Dismiss Jio Voice Assist UI cleanly
+                // Mark dismissing and close Jio Voice Assist UI in background
+                isJioDismissing = true
                 performGlobalAction(GLOBAL_ACTION_BACK)
+                mainHandler.postDelayed({ isJioDismissing = false }, 2000L)
 
                 // Smooth transition to Shiv processing HUD
                 TvHudOverlay.showProcessing(this@PhoneAgentService, text)

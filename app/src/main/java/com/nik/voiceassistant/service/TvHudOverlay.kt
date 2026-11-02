@@ -78,6 +78,10 @@ object TvHudOverlay {
     fun showListening(context: Context) {
         mainHandler.post {
             try {
+                if (isVisible && isFullScreenMode) {
+                    // Already actively listening: ignore repetitive accessibility events to prevent flicker
+                    return@post
+                }
                 val service = PhoneAgentService.instance
                 val hostContext = service ?: context.applicationContext
                 ensureViews(hostContext)
@@ -117,10 +121,12 @@ object TvHudOverlay {
     fun updateSpeech(speechText: String) {
         mainHandler.post {
             if (!isVisible || !isFullScreenMode) return@post
-            listeningSpeechView?.text = "\"$speechText\""
+            val formatted = "\"$speechText\""
+            if (listeningSpeechView?.text?.toString() == formatted) return@post
+            listeningSpeechView?.text = formatted
             listeningSpeechView?.setTextColor(Color.parseColor("#F8FAFC"))
             listeningSpeechView?.setTypeface(null, android.graphics.Typeface.BOLD)
-            scheduleDismiss(12000L)
+            scheduleDismiss(15000L)
         }
     }
 
@@ -397,17 +403,24 @@ object TvHudOverlay {
                 y = targetY
             }
 
-            rootContainer?.alpha = 0f
-            rootContainer?.translationY = if (isFullScreen) 0f else 30f
+            if (isFullScreen) {
+                rootContainer?.alpha = 1f
+                rootContainer?.translationY = 0f
+            } else {
+                rootContainer?.alpha = 0f
+                rootContainer?.translationY = 30f
+            }
             try {
                 wm.addView(rootContainer, params)
                 isVisible = true
 
-                rootContainer?.animate()
-                    ?.alpha(1f)
-                    ?.translationY(0f)
-                    ?.setDuration(220)
-                    ?.start()
+                if (!isFullScreen) {
+                    rootContainer?.animate()
+                        ?.alpha(1f)
+                        ?.translationY(0f)
+                        ?.setDuration(220)
+                        ?.start()
+                }
             } catch (e: Exception) {
                 Log.w(TAG, "addView failed: ${e.message}")
             }
@@ -498,10 +511,10 @@ object TvHudOverlay {
             setPadding(padH, padV, padH, padV)
 
             val bg = GradientDrawable().apply {
-                setColor(Color.parseColor("#F4070B16")) // 96% Deep Dark Obsidian
+                setColor(Color.parseColor("#FF070B16")) // 100% Solid Deep Obsidian - completely covers native Jio UI
             }
             background = bg
-            elevation = 24 * density
+            elevation = 32 * density
             layoutParams = FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.MATCH_PARENT
