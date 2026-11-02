@@ -26,6 +26,22 @@ class BootReceiver : BroadcastReceiver() {
 
     override fun onReceive(context: Context, intent: Intent?) {
         val action = intent?.action ?: return
+        if (action == "com.nik.voiceassistant.action.TEST_HUD") {
+            val type = intent.getStringExtra("type") ?: "action"
+            val q = intent.getStringExtra("q") ?: "User Question"
+            val a = intent.getStringExtra("a") ?: "Agent Response"
+            val title = intent.getStringExtra("title") ?: "⚡ Shiv Autonomous HUD"
+            val sub = intent.getStringExtra("sub")
+            when (type) {
+                "listening" -> com.nik.voiceassistant.service.TvHudOverlay.showListening(context)
+                "answer" -> com.nik.voiceassistant.service.TvHudOverlay.showAnswer(context, q, a)
+                "action" -> com.nik.voiceassistant.service.TvHudOverlay.showAction(context, title, sub)
+                "completed" -> com.nik.voiceassistant.service.TvHudOverlay.showCompleted(context, title)
+                "stopped" -> com.nik.voiceassistant.service.TvHudOverlay.showStopped(context)
+                "hide" -> com.nik.voiceassistant.service.TvHudOverlay.hide()
+            }
+            return
+        }
         // Exported for the system's boot broadcasts: anything else (another app's explicit intent) is ignored
         if (action !in BOOT_ACTIONS) return
         Log.i(TAG, "Received boot/update event: $action")
