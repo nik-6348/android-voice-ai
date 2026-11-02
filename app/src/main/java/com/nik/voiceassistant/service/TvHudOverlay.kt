@@ -66,10 +66,20 @@ object TvHudOverlay {
     @Volatile
     private var isFullScreenMode = false
 
+    @Volatile
+    var isActionRunningOrCompleted = false
+
     val isListening: Boolean
         get() = isVisible && isFullScreenMode
 
     fun isListeningOrActive(): Boolean = isVisible
+
+    fun hideForAction() {
+        mainHandler.post {
+            isActionRunningOrCompleted = true
+            hide()
+        }
+    }
 
     /**
      * Instantly shows the Full-Screen Immersion Overlay when remote mic is triggered.
@@ -78,6 +88,7 @@ object TvHudOverlay {
     fun showListening(context: Context) {
         mainHandler.post {
             try {
+                isActionRunningOrCompleted = false
                 if (isVisible && isFullScreenMode) {
                     // Already actively listening: ignore repetitive accessibility events to prevent flicker
                     return@post
@@ -136,6 +147,7 @@ object TvHudOverlay {
     fun showProcessing(context: Context, query: String) {
         mainHandler.post {
             try {
+                isActionRunningOrCompleted = false
                 val service = PhoneAgentService.instance
                 val hostContext = service ?: context.applicationContext
                 ensureViews(hostContext)
@@ -170,6 +182,10 @@ object TvHudOverlay {
     fun showAnswer(context: Context, userQuestion: String?, agentAnswer: String) {
         mainHandler.post {
             try {
+                if (isActionRunningOrCompleted) {
+                    Log.d(TAG, "Suppressed showAnswer overlay because TV action is active/completed")
+                    return@post
+                }
                 val service = PhoneAgentService.instance
                 val hostContext = service ?: context.applicationContext
                 ensureViews(hostContext)

@@ -1669,9 +1669,9 @@ class DeviceToolExecutor(
     private fun cleanTvQuery(rawQuery: String): String {
         var q = rawQuery.trim()
         // Strip out target platform phrases
-        q = q.replace(Regex("(?i)\\b(on\\s+)?(youtube|jiocinema|jio\\s+cinema|hotstar|yt|tv)\\s*(par|pe|me|mein)?\\b"), " ")
+        q = q.replace(Regex("(?i)\\b(on\\s+)?(youtube|jiocinema|jio\\s+cinema|jiotv\\+?|jio\\s+tv\\+?|live\\s+tv|hotstar|yt|tv)\\s*(par|pe|me|mein)?\\b"), " ")
         // Strip out action verbs & commands
-        q = q.replace(Regex("(?i)\\b(lagade|laga\\s+do|laga\\s+de|lagao|laga|chala\\s+do|chala\\s+de|chalao|chalana|chala|bajao|baja\\s+do|baja\\s+de|bajade|sunao|suna\\s+do|suna\\s+de|sunade|play\\s+karo|play\\s+kar\\s+do|play|khol\\s+do|khol|kholo|open\\s+karo|open|search\\s+karo|search|dhundo|dikhaye|dikhao)\\b"), " ")
+        q = q.replace(Regex("(?i)\\b(lagade|laga\\s+do|laga\\s+de|lagao|lagana|lagane|lagaye|laga|chala\\s+do|chala\\s+de|chalao|chalana|chalaye|chalane|chala|bajao|baja\\s+do|baja\\s+de|bajade|sunao|suna\\s+do|suna\\s+de|sunade|play\\s+karo|play\\s+kar\\s+do|play|khol\\s+do|khol|kholo|open\\s+karo|open|search\\s+karo|search|dhundo|dikhaye|dikhao)\\b"), " ")
         // Strip out fillers & speech recognition noise
         q = q.replace(Regex("(?i)\\b(achaar|achha\\s+sa|achha\\s+wala|achhe|badhiya\\s+sa|badhiya|koi\\s+bhi|koi|ek|zara|thoda|kripya|please|bhai|yaar)\\b"), " ")
         // Strip out dangling prepositions at ends
@@ -1686,8 +1686,10 @@ class DeviceToolExecutor(
         "star sports", "star sports 1", "star sports 2", "star sports hindi", "sony ten", "sony ten 1", "sony ten 2", "sony ten 3", "sports18", "dd sports", "sony six",
         "star plus", "sony sab", "colors", "zee tv", "star bharat", "sony entertainment", "sony tv", "&tv", "and tv",
         "zee cinema", "sony max", "star gold", "colors cineplex", "utv movies", "star movies", "sony wah", "b4u movies",
+        "zee bollywood", "dangal", "dangal 2", "shemaroo", "goldmines", "goldmines bollywood",
         "discovery", "national geographic", "nat geo", "animal planet", "history tv18", "sony bbc earth",
         "cartoon network", "pogo", "hungama", "nickelodeon", "nick", "disney", "sonic",
+        "9x jalwa", "9x jhakaas", "mastiii", "mtv beats", "9xm", "mtv",
         "live tv", "tv channel"
     )
 
@@ -1726,6 +1728,15 @@ class DeviceToolExecutor(
         "&tv" to "145",
         "and tv" to "145",
         "dd national" to "100",
+        "dangal" to "135",
+        "dangal 2" to "136",
+        "shemaroo" to "138",
+        "shemaroo tv" to "138",
+        "shemaroo marathibana" to "865",
+        "star utsav" to "132",
+        "zee anmol" to "134",
+        "colors rishtey" to "133",
+        "manoranjan tv" to "142",
 
         // Movies
         "star gold" to "203",
@@ -1735,6 +1746,14 @@ class DeviceToolExecutor(
         "star gold 2" to "208",
         "utv movies" to "210",
         "b4u movies" to "214",
+        "sony wah" to "212",
+        "zee bollywood" to "205",
+        "star utsav movies" to "211",
+        "zee anmol cinema" to "216",
+        "goldmines" to "218",
+        "goldmines bollywood" to "219",
+        "cinema tv" to "220",
+        "bfliks" to "224",
 
         // Sports
         "star sports 1" to "401",
@@ -1775,6 +1794,10 @@ class DeviceToolExecutor(
         "sony bbc earth" to "605",
 
         // Music
+        "9x jalwa" to "810",
+        "9x jhakaas" to "811",
+        "mastiii" to "802",
+        "mtv beats" to "801",
         "9xm" to "809",
         "mtv" to "701",
         "zoom" to "703",
@@ -1783,7 +1806,8 @@ class DeviceToolExecutor(
 
     private fun findChannelNumber(query: String): String? {
         val lower = query.lowercase().trim()
-        for ((name, number) in JIO_TV_CHANNEL_NUMBERS) {
+        val sortedChannels = JIO_TV_CHANNEL_NUMBERS.entries.sortedByDescending { it.key.length }
+        for ((name, number) in sortedChannels) {
             if (lower.contains(name)) return number
         }
         return null
@@ -1811,7 +1835,8 @@ class DeviceToolExecutor(
             val channelDigits = Regex("\\b(\\d{1,4})\\b").find(cleanQuery)?.groupValues?.get(1) ?: matchedChannelNumber
             val channelDisplay = if (channelDigits != null) "$cleanQuery (Channel $channelDigits)" else cleanQuery
 
-            com.nik.voiceassistant.service.TvHudOverlay.showAction(context, "⚡ Live TV: $cleanQuery", if (channelDigits != null) "Channel $channelDigits" else "Opening Live TV...")
+            // Instantly hide overlay so TV screen/video remains completely unblocked
+            com.nik.voiceassistant.service.TvHudOverlay.hide()
 
             val launchIntent = Intent(Intent.ACTION_VIEW, Uri.parse("jiotvplus://open.classicmenu")).apply {
                 setPackage("com.jio.media.jiotvplus")
@@ -1850,8 +1875,8 @@ class DeviceToolExecutor(
                 com.nik.voiceassistant.service.TvInputBridge.sendKey(KeyEvent.KEYCODE_DPAD_CENTER)
             }
 
-            com.nik.voiceassistant.service.TvHudOverlay.showCompleted(context, "Playing $cleanQuery on Live TV")
-            return withScreen(mapOf("success" to true, "opened" to "Live TV tuned to $channelDisplay"))
+            com.nik.voiceassistant.service.TvHudOverlay.hide()
+            return mapOf("success" to true, "opened" to "Live TV tuned to $channelDisplay")
         }
 
         val app = targetApp?.lowercase()?.trim() ?: "youtube"
@@ -1909,13 +1934,13 @@ class DeviceToolExecutor(
         val currentPkg = PhoneAgentService.instance?.rootInActiveWindow?.packageName?.toString()
         // If already in YouTube TV and asking for ordinal card, click without re-searching!
         if (currentPkg == "com.jio.yt" && targetCard > 1) {
-            com.nik.voiceassistant.service.TvHudOverlay.showAction(context, "⚡ Card $targetCard Play Ho Raha Hai...", null)
+            com.nik.voiceassistant.service.TvHudOverlay.hide()
             PhoneAgentService.instance?.clickYtCard(targetCard)
-            com.nik.voiceassistant.service.TvHudOverlay.showCompleted(context, "Card $targetCard Playing")
+            com.nik.voiceassistant.service.TvHudOverlay.hide()
             return withScreen(mapOf("success" to true, "opened" to "Selected card $targetCard in YouTube TV"))
         }
 
-        com.nik.voiceassistant.service.TvHudOverlay.showAction(context, "⚡ YouTube Par Play Ho Raha Hai...", cleanQuery)
+        com.nik.voiceassistant.service.TvHudOverlay.hide()
         return try {
             if (intent.resolveActivity(packageManager) != null) {
                 context.startActivity(intent)
@@ -1931,7 +1956,7 @@ class DeviceToolExecutor(
                     // Dispatch MEDIA_PLAY to ensure playback resumes
                     am?.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_MEDIA_PLAY))
                     am?.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_MEDIA_PLAY))
-                    com.nik.voiceassistant.service.TvHudOverlay.showCompleted(context, "YouTube: $cleanQuery")
+                    com.nik.voiceassistant.service.TvHudOverlay.hide()
                 }
                 withScreen(mapOf("success" to true, "opened" to "$app search for \"$cleanQuery\"${if (shouldPlay) " and playing video card $targetCard" else ""}"))
             } else {
@@ -1941,7 +1966,7 @@ class DeviceToolExecutor(
                 if (shouldPlay) {
                     Thread.sleep(1600)
                     PhoneAgentService.instance?.clickYtCard(targetCard)
-                    com.nik.voiceassistant.service.TvHudOverlay.showCompleted(context, "YouTube: $cleanQuery")
+                    com.nik.voiceassistant.service.TvHudOverlay.hide()
                 }
                 withScreen(mapOf("success" to true, "opened" to "YouTube fallback for \"$cleanQuery\""))
             }

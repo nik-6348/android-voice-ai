@@ -765,6 +765,8 @@ class VoiceSession private constructor(val context: Context) {
         }
     }
 
+    @Volatile private var hasExecutedTvAction = false
+
     private val liveCallback: LiveClient.Callback = object : LiveClient.Callback {
             override fun onConnected() {
                 val wasReconnecting = reconnecting
@@ -807,6 +809,7 @@ class VoiceSession private constructor(val context: Context) {
             }
 
             override fun onUserTranscript(text: String) {
+                hasExecutedTvAction = false
                 touch()
                 markTaskActivity()
                 com.nik.voiceassistant.service.TvHudOverlay.show(context, "🎙️ \"$text\"", "Shiv processing kar raha hai...", 10000L)
@@ -839,7 +842,11 @@ class VoiceSession private constructor(val context: Context) {
                 _liveReply.value = fullReply
                 replyTurnOpen = true
                 if (!webSocketClient.isToolRunning()) {
-                    com.nik.voiceassistant.service.TvHudOverlay.showAnswer(context, _currentUserQuery.value, fullReply)
+                    if (isTvDevice && hasExecutedTvAction) {
+                        // Background voice only: DO NOT show overlay card over video/playback!
+                    } else {
+                        com.nik.voiceassistant.service.TvHudOverlay.showAnswer(context, _currentUserQuery.value, fullReply)
+                    }
                 }
             }
 
@@ -860,9 +867,15 @@ class VoiceSession private constructor(val context: Context) {
                 touch()
                 markTaskActivity()
                 autoMuteForWork(tool = true)
+                hasExecutedTvAction = true
                 _activeToolStatus.value = statusText
-                val label = if (statusText.isNotBlank()) statusText else "Action chal raha hai: $toolName"
-                com.nik.voiceassistant.service.TvHudOverlay.showAction(context, "⚡ $label", _currentUserQuery.value)
+                if (isTvDevice) {
+                    // Instantly dismiss overlay when action begins so TV content is unobstructed
+                    com.nik.voiceassistant.service.TvHudOverlay.hideForAction()
+                } else {
+                    val label = if (statusText.isNotBlank()) statusText else "Action chal raha hai: $toolName"
+                    com.nik.voiceassistant.service.TvHudOverlay.showAction(context, "⚡ $label", _currentUserQuery.value)
+                }
             }
 
             override fun onModelAudioStart() {
@@ -911,7 +924,9 @@ class VoiceSession private constructor(val context: Context) {
                 lastToolEnd = System.currentTimeMillis()
                 touch()
                 markTaskActivity()
-                com.nik.voiceassistant.service.TvHudOverlay.update("✓ $toolName", resultSummary.take(60), 3000L)
+                if (!isTvDevice) {
+                    com.nik.voiceassistant.service.TvHudOverlay.update("✓ $toolName", resultSummary.take(60), 3000L)
+                }
                 // args arrive already redacted (no PIN, no codes, no password text)
                 addTranscript("tool", "Executed $toolName $args: $resultSummary")
 
@@ -924,10 +939,10 @@ class VoiceSession private constructor(val context: Context) {
 
     private val toolRunner: ToolCallRunner = ToolCallRunner(toolExecutor, liveCallback, ::beforeToolResponse,
         waitForAudio = {
-            val isTv = context.packageManager.hasSystemFeature(android.content.pm.PackageManager.FEATURE_LEANBACK) ||
-                context.packageManager.hasSystemFeature(android.content.pm.PackageManager.FEATURE_TELEVISION) ||
-                (context.resources.configuration.uiMode and android.content.res.Configuration.UI_MODE_TYPE_MASK) == android.content.res.Configuration.UI_MODE_TYPE_TELEVISION
-            if (!isTv && !_fastActionMode.value && !silentMacroRun && !isAutomationRun) audioTrackManager.waitUntilSilent()
+            if (!_fastActionMode.value && !silentMacroRun && !isAutomationRun) {
+                // Wait for the introductory voice speech ("Theek hai, main...") to finish before launching TV apps
+                audioTrackManager.waitUntilSilent(maxMs = 3500L)
+            }
         })
     private val directClient: GeminiLiveClient = GeminiLiveClient(audioTrackManager, toolRunner, { toolExecutor.declarations }, liveCallback)
     private val relayClient: LiveAudioWebSocketClient = LiveAudioWebSocketClient(audioTrackManager, toolRunner, { toolExecutor.declarations }, liveCallback)
@@ -1379,6 +1394,7 @@ class VoiceSession private constructor(val context: Context) {
     fun sendText(text: String, keepMicMuted: Boolean = true) {
         val t = text.trim()
         if (t.isEmpty()) return
+        hasExecutedTvAction = false
         _currentUserQuery.value = t
         com.nik.voiceassistant.service.TvHudOverlay.showProcessing(context, t)
         addTranscript("user", t)
@@ -1465,6 +1481,7 @@ class VoiceSession private constructor(val context: Context) {
     }
 
     private fun resetChat() {
+        hasExecutedTvAction = false
         saveJob?.cancel()
         webSocketClient.clearResumeHandle()
         prefs.edit().remove("resume_handle").remove("resume_at").remove("active_session_id").apply()
@@ -1528,11 +1545,12 @@ class VoiceSession private constructor(val context: Context) {
 
 ANDROID TV / JIO SET-TOP BOX MODE:
 You are operating an Android TV / Jio Set-Top Box.
-1. ACTION QUERIES (when user asks to play songs, videos, movies, TV channels, or open apps, e.g. 'Aaj Tak laga do Live TV par', 'Star Sports 1 chalao', 'Mahakal song YouTube par chalao'):
+1. ACTION QUERIES (when user asks to play songs, videos, movies, TV channels, or open apps, e.g. 'Aaj Tak laga do Live TV par', 'Star Sports 1 chalao', 'Mahakal song YouTube par chalao', '9X Jalwa chalao'):
    - Start speaking immediately at the very beginning: 'Theek hai, main [channel/item] laga raha hoon...'
    - Then immediately call search_tv with the clean query and play_first=true! (For TV channels or Live TV, pass app='livetv').
    - Remove conversational fillers, verbs ('laga do', 'chala de'), and platform names from the query.
-   - After executing the tool, say ONLY ONE short line: 'Haan, laga diya!' or 'Haan, play kar diya!' and end the turn immediately.
+   - After executing the tool, speak purely in the background while video is playing. Say ONLY ONE short line: 'Haan, laga diya!' or 'Haan, play kar diya!' and STOP IMMEDIATELY.
+   - CRITICAL: NEVER ask follow-up questions like 'Is there anything else I can help you with?' or 'Kuch aur dekhna hai?'. Say nothing more!
 2. INFORMATIONAL QUERIES (questions, facts, weather, time, scores, chit-chat, e.g. 'Aaj ka mausam kaisa hai?', 'Time kya hua?', 'Match score kya hai?', 'India ka PM kaun hai?'):
    - DO NOT call search_tv!
    - DO NOT open any app (no YouTube, no Live TV, no browser)!
