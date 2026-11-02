@@ -281,12 +281,13 @@ class DeviceToolExecutor(
         ),
         function(
             "search_tv",
-            "Directly searches and opens content inside TV apps (YouTube TV, JioCinema, Hotstar, or system TV search). " +
-                "If the user wants to play a song/video (e.g. 'play ...'), set play_first=true to automatically play the top result.",
-            required = listOf("query" to param("string", "Search query, movie title, video title or show name")),
+            "Directly searches and opens content inside TV apps (YouTube TV, JioCinema, Hotstar, Live TV / JioTV+, or system TV search). " +
+                "If the user wants to play a song/video or tune to a TV channel, set play_first=true to automatically play or tune.",
+            required = listOf("query" to param("string", "Search query, movie title, video title, show name, or TV channel name")),
             optional = listOf(
-                "app" to param("string", "Target app: youtube, jiocinema, hotstar, global (default youtube)", listOf("youtube", "jiocinema", "hotstar", "global")),
-                "play_first" to param("boolean", "If true, automatically plays the first video in the search results (default true if user says 'play')")
+                "app" to param("string", "Target app: youtube, jiocinema, hotstar, livetv, global (default youtube)", listOf("youtube", "jiocinema", "hotstar", "livetv", "global")),
+                "channel_number" to param("string", "Optional channel number if known (e.g. 319 for Zee Cinema HD on JioTV+)"),
+                "play_first" to param("boolean", "If true, automatically plays the first video in the search results or tunes directly")
             )
         ),
         function(
@@ -741,7 +742,7 @@ class DeviceToolExecutor(
 
                 "dpad" -> if (agent == null) mapOf("error" to AGENT_OFF) else agent.dpad(str("action") ?: "select", int("repeat") ?: 1)
 
-                "search_tv" -> searchTv(str("query") ?: "", str("app"), bool("play_first") ?: false)
+                "search_tv" -> searchTv(str("query") ?: "", str("app"), bool("play_first") ?: false, str("channel_number"))
 
                 "find_contact" -> findContact(str("name") ?: "")
 
@@ -1694,114 +1695,146 @@ class DeviceToolExecutor(
     )
 
     private val JIO_TV_CHANNEL_NUMBERS = mapOf(
-        // Hindi News
-        "aaj tak" to "305",
-        "abp news" to "312",
-        "abp" to "312",
-        "india tv" to "314",
-        "zee news" to "316",
-        "ndtv india" to "320",
-        "ndtv" to "320",
-        "republic bharat" to "322",
-        "news18 india" to "324",
-        "news18" to "324",
-        "news 18" to "324",
-        "times now navbharat" to "326",
-        "times now" to "350",
-        "republic tv" to "352",
-        "india today" to "354",
-        "cnn news18" to "356",
-        "dd news" to "300",
+        // Hindi Movies
+        "zee cinema" to "319",
+        "zee cinema hd" to "319",
+        "zee cinema sd" to "321",
+        "sony max" to "312",
+        "sony max hd" to "312",
+        "sony max sd" to "478",
+        "star gold" to "308",
+        "star gold hd" to "308",
+        "star gold sd" to "309",
+        "star gold 2" to "310",
+        "colors cineplex" to "344",
+        "colors cineplex hd" to "344",
+        "zee bollywood" to "323",
+        "&pictures" to "325",
+        "and pictures" to "325",
+        "&pictures hd" to "325",
+        "utv movies" to "314",
+        "utv action" to "316",
+        "zee action" to "327",
+        "zee anmol cinema" to "329",
+        "goldmines" to "332",
+        "goldmines bollywood" to "333",
+        "b4u movies" to "335",
+        "star utsav movies" to "311",
+        "cinema tv" to "336",
+        "bfliks" to "224",
 
         // Hindi GEC (Entertainment)
         "star plus" to "115",
-        "sony tv" to "120",
-        "sony entertainment" to "120",
-        "sony set" to "120",
-        "set" to "120",
-        "sony sab" to "125",
-        "sab tv" to "125",
-        "sab" to "125",
-        "zee tv" to "130",
-        "colors" to "140",
-        "star bharat" to "107",
-        "&tv" to "145",
-        "and tv" to "145",
+        "star plus hd" to "115",
+        "star plus sd" to "114",
+        "sony tv" to "128",
+        "sony entertainment" to "128",
+        "sony entertainment television" to "128",
+        "sony set" to "128",
+        "set" to "128",
+        "sony sab" to "132",
+        "sony sab hd" to "132",
+        "sab tv" to "132",
+        "sab" to "132",
+        "zee tv" to "141",
+        "zee tv hd" to "141",
+        "colors" to "147",
+        "colors hd" to "147",
+        "star bharat" to "108",
+        "&tv" to "137",
+        "and tv" to "137",
         "dd national" to "100",
-        "dangal" to "135",
-        "dangal 2" to "136",
-        "shemaroo" to "138",
-        "shemaroo tv" to "138",
+        "dangal" to "148",
+        "dangal 2" to "149",
+        "shemaroo" to "151",
+        "shemaroo tv" to "151",
         "shemaroo marathibana" to "865",
-        "star utsav" to "132",
-        "zee anmol" to "134",
-        "colors rishtey" to "133",
+        "star utsav" to "116",
+        "zee anmol" to "142",
+        "colors rishtey" to "150",
         "manoranjan tv" to "142",
 
-        // Movies
-        "star gold" to "203",
-        "sony max" to "202",
-        "zee cinema" to "204",
-        "colors cineplex" to "206",
-        "star gold 2" to "208",
-        "utv movies" to "210",
-        "b4u movies" to "214",
-        "sony wah" to "212",
-        "zee bollywood" to "205",
-        "star utsav movies" to "211",
-        "zee anmol cinema" to "216",
-        "goldmines" to "218",
-        "goldmines bollywood" to "219",
-        "cinema tv" to "220",
-        "bfliks" to "224",
+        // Hindi & English News
+        "aaj tak" to "502",
+        "aaj tak hd" to "502",
+        "aaj tak sd" to "508",
+        "zee news" to "511",
+        "abp news" to "512",
+        "abp" to "512",
+        "india tv" to "514",
+        "news18 india" to "504",
+        "news18" to "504",
+        "news 18" to "504",
+        "times now navbharat" to "522",
+        "good news today" to "516",
+        "ndtv india" to "520",
+        "ndtv" to "520",
+        "republic bharat" to "518",
+        "dd news" to "500",
+        "india today" to "551",
+        "ndtv 24x7" to "601",
+        "times now" to "554",
+        "republic tv" to "558",
+        "cnn news18" to "556",
 
         // Sports
-        "star sports 1" to "401",
-        "star sports" to "401",
-        "star sports hindi" to "402",
-        "star sports 2" to "404",
-        "sports18 1" to "403",
-        "sports18" to "403",
-        "sports 18" to "403",
-        "sony sports ten 1" to "405",
-        "sony sports 1" to "405",
-        "sony ten 1" to "405",
-        "sony ten" to "405",
-        "sony sports" to "405",
-        "sony sports ten 2" to "406",
-        "sony ten 2" to "406",
-        "sony sports ten 3" to "407",
-        "sony ten 3" to "407",
-        "dd sports" to "400",
+        "star sports 1" to "456",
+        "star sports 1 hd" to "456",
+        "star sports 1 hindi" to "458",
+        "star sports hindi" to "458",
+        "star sports 2" to "460",
+        "star sports" to "456",
+        "sports18 1" to "474",
+        "sports18" to "474",
+        "sports 18" to "474",
+        "sony sports ten 1" to "470",
+        "sony sports 1" to "470",
+        "sony ten 1" to "470",
+        "sony ten" to "470",
+        "sony sports" to "470",
+        "sony sports ten 2" to "471",
+        "sony ten 2" to "471",
+        "sony sports ten 3" to "472",
+        "sony ten 3" to "472",
+        "sony sports ten 5" to "475",
+        "sony ten 5" to "475",
+        "dd sports" to "453",
 
         // Kids
-        "cartoon network" to "501",
-        "cn" to "501",
-        "pogo" to "502",
-        "hungama" to "503",
-        "nick" to "504",
-        "nickelodeon" to "504",
-        "sonic" to "506",
-        "disney" to "505",
+        "cartoon network" to "651",
+        "cn" to "651",
+        "pogo" to "670",
+        "hungama" to "663",
+        "nick" to "653",
+        "nickelodeon" to "653",
+        "sonic" to "655",
+        "disney channel" to "661",
+        "disney" to "661",
+        "sony yay" to "667",
+        "discovery kids" to "669",
 
         // Infotainment & Knowledge
-        "discovery" to "601",
-        "national geographic" to "602",
-        "nat geo" to "602",
-        "history tv18" to "603",
-        "history" to "603",
-        "animal planet" to "604",
-        "sony bbc earth" to "605",
+        "discovery" to "702",
+        "discovery hd" to "702",
+        "national geographic" to "706",
+        "nat geo" to "706",
+        "history tv18" to "708",
+        "history" to "708",
+        "animal planet" to "710",
+        "sony bbc earth" to "712",
+        "nat geo wild" to "714",
 
         // Music
-        "9x jalwa" to "810",
-        "9x jhakaas" to "811",
-        "mastiii" to "802",
-        "mtv beats" to "801",
-        "9xm" to "809",
-        "mtv" to "701",
-        "zoom" to "703",
-        "b4u music" to "705"
+        "9xm" to "810",
+        "9x jalwa" to "811",
+        "9x jhakaas" to "812",
+        "mastiii" to "808",
+        "mtv beats" to "802",
+        "mtv hd" to "806",
+        "mtv" to "806",
+        "zoom" to "804",
+        "b4u music" to "809",
+        "music india" to "204"
     )
 
     private fun findChannelNumber(query: String): String? {
@@ -1824,15 +1857,17 @@ class DeviceToolExecutor(
      * Direct Android TV search intent: opens YouTube TV, Live TV (JioTV+), JioCinema, Hotstar, or Android TV global search.
      * Automatically clicks and plays the top search result without blocking or leaving on the results page.
      */
-    private fun searchTv(query: String, targetApp: String?, autoPlay: Boolean = false): Map<String, Any?> {
+    private fun searchTv(query: String, targetApp: String?, autoPlay: Boolean = false, explicitChannel: String? = null): Map<String, Any?> {
         if (query.isBlank()) return mapOf("error" to "Give a search query")
         val lowerQ = query.lowercase().trim()
         val cleanQuery = cleanTvQuery(query)
 
         // 1. Check if the user is asking for Live TV or a specific TV channel (e.g. Aaj Tak, Star Sports, Live TV)
         if (targetApp == "livetv" || targetApp == "jiotv" || isTvChannelRequest(query)) {
-            val matchedChannelNumber = findChannelNumber(cleanQuery)
-            val channelDigits = Regex("\\b(\\d{1,4})\\b").find(cleanQuery)?.groupValues?.get(1) ?: matchedChannelNumber
+            val matchedChannelNumber = explicitChannel?.takeIf { it.isNotBlank() } ?: findChannelNumber(cleanQuery)
+            val channelDigits = explicitChannel?.takeIf { it.isNotBlank() }
+                ?: Regex("\\b(\\d{1,4})\\b").find(cleanQuery)?.groupValues?.get(1)
+                ?: matchedChannelNumber
             val channelDisplay = if (channelDigits != null) "$cleanQuery (Channel $channelDigits)" else cleanQuery
 
             // Instantly hide overlay so TV screen/video remains completely unblocked
@@ -1858,7 +1893,7 @@ class DeviceToolExecutor(
                 channelDigits.forEach { digit ->
                     val code = KeyEvent.KEYCODE_0 + (digit - '0')
                     com.nik.voiceassistant.service.TvInputBridge.sendKey(code)
-                    Thread.sleep(180)
+                    Thread.sleep(280)
                 }
                 Thread.sleep(600)
                 com.nik.voiceassistant.service.TvInputBridge.sendKey(KeyEvent.KEYCODE_DPAD_CENTER)
@@ -1868,8 +1903,16 @@ class DeviceToolExecutor(
                     val gvaIntent = Intent("com.jio.media.stb.ondemand.patchwall.GVA").apply {
                         setPackage("com.jio.media.jiotvplus")
                         putExtra("SEARCH_KEY", cleanQuery)
+                        putExtra("KEY_SEARCH_TYPE", "VOICE")
                     }
                     context.sendBroadcast(gvaIntent)
+                } catch (ignored: Exception) {}
+                try {
+                    val vsIntent = Intent(Intent.ACTION_VIEW, Uri.parse("jiotvplus://voice_search/$cleanQuery")).apply {
+                        setPackage("com.jio.media.jiotvplus")
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+                    }
+                    context.startActivity(vsIntent)
                 } catch (ignored: Exception) {}
                 Thread.sleep(1200)
                 com.nik.voiceassistant.service.TvInputBridge.sendKey(KeyEvent.KEYCODE_DPAD_CENTER)

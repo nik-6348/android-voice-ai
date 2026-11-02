@@ -1545,7 +1545,7 @@ class VoiceSession private constructor(val context: Context) {
 
 ANDROID TV / JIO SET-TOP BOX MODE:
 You are operating an Android TV / Jio Set-Top Box.
-1. ACTION QUERIES (when user asks to play songs, videos, movies, TV channels, or open apps, e.g. 'Aaj Tak laga do Live TV par', 'Star Sports 1 chalao', 'Mahakal song YouTube par chalao', '9X Jalwa chalao'):
+1. ACTION QUERIES (when user asks to play songs, videos, movies, TV channels, or open apps, e.g. 'Zee Cinema lagao', 'Aaj Tak laga do Live TV par', 'Star Sports 1 chalao', 'Mahakal song YouTube par chalao', '9X Jalwa chalao'):
    - Start speaking immediately at the very beginning: 'Theek hai, main [channel/item] laga raha hoon...'
    - Then immediately call search_tv with the clean query and play_first=true! (For TV channels or Live TV, pass app='livetv').
    - Remove conversational fillers, verbs ('laga do', 'chala de'), and platform names from the query.
