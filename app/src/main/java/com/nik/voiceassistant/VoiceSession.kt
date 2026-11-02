@@ -1141,10 +1141,16 @@ class VoiceSession private constructor(val context: Context) {
         sendAutomation(text, silent = true)
     }
 
+    val isTvDevice: Boolean
+        get() = context.packageManager.hasSystemFeature(android.content.pm.PackageManager.FEATURE_LEANBACK) ||
+            context.packageManager.hasSystemFeature(android.content.pm.PackageManager.FEATURE_TELEVISION) ||
+            (context.resources.configuration.uiMode and android.content.res.Configuration.UI_MODE_TYPE_MASK) == android.content.res.Configuration.UI_MODE_TYPE_TELEVISION
+
     fun start(preroll: ByteArray? = null, keepMicMuted: Boolean = false) {
+        val effectiveKeepMicMuted = keepMicMuted || isTvDevice
         scope.launch {
             if (_isRecording.value) return@launch
-            if (!keepMicMuted && ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            if (!effectiveKeepMicMuted && ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
                 _connectionStatus.value = ConnectionStatus.ERROR
                 addTranscript("system", "Microphone permission is off: open the app and allow the microphone.")
                 onConversationEnded?.invoke()
@@ -1159,7 +1165,7 @@ class VoiceSession private constructor(val context: Context) {
                 return@launch
             }
             webSocketClient = if (direct) directClient else relayClient
-            Log.i(TAG, "Conversation starting${if (preroll != null) " (wake word, ${preroll.size} bytes preroll)" else ""}${if (keepMicMuted) " [silent macro]" else ""}")
+            Log.i(TAG, "Conversation starting${if (preroll != null) " (wake word, ${preroll.size} bytes preroll)" else ""}${if (effectiveKeepMicMuted) " [silent macro]" else ""}")
             _connectionStatus.value = ConnectionStatus.CONNECTING
             endRequested = false
             touch()
@@ -1167,10 +1173,10 @@ class VoiceSession private constructor(val context: Context) {
             toolExecutor.resetPlan()
             _liveReply.value = ""
             replyTurnOpen = false
-            if (!keepMicMuted) openMic()
+            if (!effectiveKeepMicMuted) openMic()
             // The service keeps the mic and the process alive while the screen is off or the app is closed
-            if (!keepMicMuted) VoiceAssistantService.startConversation(context)
-            if (!keepMicMuted) {
+            if (!effectiveKeepMicMuted) VoiceAssistantService.startConversation(context)
+            if (!effectiveKeepMicMuted) {
                 if (!callAudio.enter() && inPhoneCall()) {
                     _connectionStatus.value = ConnectionStatus.DISCONNECTED
                     addTranscript("system", "A phone call is on: try again after it.")
@@ -1194,7 +1200,7 @@ class VoiceSession private constructor(val context: Context) {
                 )
             )
             _isRecording.value = true
-            if (!keepMicMuted) {
+            if (!effectiveKeepMicMuted) {
                 if (!audioRecordManager.startRecording(scope)) {
                     // onError has already ended it with the reason; make sure it is over
                     endConversation("⚠️ The microphone couldn't start. Tap the mic to try again.")
@@ -1430,12 +1436,12 @@ class VoiceSession private constructor(val context: Context) {
     }
 
     /** A fresh conversation; a running one carries on as the new chat (new connection, no old context). */
-    fun startNewChat() {
+    fun startNewChat(keepMicMuted: Boolean = false) {
         val wasActive = _isRecording.value
         if (wasActive) shutDown()
         resetChat()
         addTranscript("system", "New conversation started")
-        if (wasActive) start()
+        if (wasActive) start(keepMicMuted = if (isTvDevice) true else keepMicMuted)
     }
 
     private fun resetChat() {

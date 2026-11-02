@@ -202,7 +202,7 @@ class PhoneAgentService : AccessibilityService() {
 
                 // Dispatch to Shiv AI Agent as a fresh new session
                 val session = com.nik.voiceassistant.VoiceSession.get(applicationContext)
-                session.startNewChat()
+                session.startNewChat(keepMicMuted = true)
                 session.sendText(text, keepMicMuted = true)
             }
             // 2000ms debounce gives user full 2 seconds to pause naturally without cut-off
