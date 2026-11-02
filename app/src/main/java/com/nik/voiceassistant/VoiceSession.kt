@@ -3,6 +3,8 @@ package com.nik.voiceassistant
 import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
+import android.media.AudioAttributes
+import android.media.AudioManager
 import android.util.Log
 import androidx.core.content.ContextCompat
 import com.nik.voiceassistant.security.AgentPolicy
@@ -693,6 +695,10 @@ class VoiceSession private constructor(val context: Context) {
     }
 
     val audioTrackManager = AudioTrackManager(
+        usage = if (context.packageManager.hasSystemFeature(android.content.pm.PackageManager.FEATURE_LEANBACK) ||
+            context.packageManager.hasSystemFeature(android.content.pm.PackageManager.FEATURE_TELEVISION) ||
+            (context.resources.configuration.uiMode and android.content.res.Configuration.UI_MODE_TYPE_MASK) == android.content.res.Configuration.UI_MODE_TYPE_TELEVISION
+        ) AudioAttributes.USAGE_MEDIA else AudioAttributes.USAGE_ASSISTANT,
         onPlaybackAmplitudeChanged = { amp ->
             _aiAmplitude.value = amp
             if (amp > 0.02f) touch()
@@ -887,8 +893,11 @@ class VoiceSession private constructor(val context: Context) {
                     taskInProgressUntil = 0L
                     endRequested = true
                     scope.launch {
-                        while (audioTrackManager.isAudible()) delay(100)
-                        delay(350)
+                        // Ensure all speech audio has completely played through the speakers
+                        if (!silentMacroRun) {
+                            audioTrackManager.awaitPlaybackComplete(timeoutMs = 25000L)
+                        }
+                        delay(if (isTv) 2000L else 350L)
                         endConversation(if (isTv) "TV action complete" else "Automation complete")
                     }
                 } else {
@@ -1173,6 +1182,17 @@ class VoiceSession private constructor(val context: Context) {
             toolExecutor.resetPlan()
             _liveReply.value = ""
             replyTurnOpen = false
+            if (isTvDevice) {
+                audioTrackManager.usage = AudioAttributes.USAGE_MEDIA
+                val am = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+                if (am != null && am.isStreamMute(AudioManager.STREAM_MUSIC)) {
+                    try {
+                        am.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_UNMUTE, 0)
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Failed to unmute STREAM_MUSIC: ${e.message}")
+                    }
+                }
+            }
             if (!effectiveKeepMicMuted) openMic()
             // The service keeps the mic and the process alive while the screen is off or the app is closed
             if (!effectiveKeepMicMuted) VoiceAssistantService.startConversation(context)

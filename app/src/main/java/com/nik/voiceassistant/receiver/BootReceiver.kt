@@ -39,6 +39,25 @@ class BootReceiver : BroadcastReceiver() {
                 "completed" -> com.nik.voiceassistant.service.TvHudOverlay.showCompleted(context, title)
                 "stopped" -> com.nik.voiceassistant.service.TvHudOverlay.showStopped(context)
                 "hide" -> com.nik.voiceassistant.service.TvHudOverlay.hide()
+                "query" -> {
+                    val qText = intent.getStringExtra("text") ?: "Hello bro"
+                    val session = com.nik.voiceassistant.VoiceSession.get(context)
+                    session.sendText(qText, keepMicMuted = true)
+                }
+                "audio" -> {
+                    val session = com.nik.voiceassistant.VoiceSession.get(context)
+                    val sampleRate = 24000
+                    val numSamples = (sampleRate * 0.8).toInt()
+                    val pcm = ByteArray(numSamples * 2)
+                    for (i in 0 until numSamples) {
+                        val angle = 2.0 * Math.PI * i * 523.25 / sampleRate
+                        val sample = (Math.sin(angle) * 16000).toInt().toShort()
+                        pcm[i * 2] = (sample.toInt() and 0xFF).toByte()
+                        pcm[i * 2 + 1] = ((sample.toInt() shr 8) and 0xFF).toByte()
+                    }
+                    session.audioTrackManager.enqueueAudioChunk(pcm)
+                    Log.i(TAG, "Queued 0.8s test tone to AudioTrackManager")
+                }
             }
             return
         }

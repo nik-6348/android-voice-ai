@@ -8,6 +8,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
@@ -20,7 +21,7 @@ import kotlin.math.sqrt
  * Features instant barge-in / interruption flush to cut assistant speech immediately when needed.
  */
 class AudioTrackManager(
-    private val usage: Int = AudioAttributes.USAGE_ASSISTANT,
+    @Volatile var usage: Int = AudioAttributes.USAGE_ASSISTANT,
     private val onPlaybackAmplitudeChanged: ((Float) -> Unit)? = null,
     // true when reply audio starts coming out of the speaker, false once all of it has played
     // (plus a short tail); the mic is sent as silence meanwhile so the assistant doesn't hear itself
@@ -61,6 +62,39 @@ class AudioTrackManager(
 
     /** Reply audio is coming out of the speaker now (or just stopped, within TAIL_MS). */
     fun isAudible(): Boolean = audible.get()
+
+    /** Chunks currently waiting in queue + unplayed samples in AudioTrack buffer */
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    fun hasPendingAudio(): Boolean {
+        if (!audioQueue.isEmpty) return true
+        val track = audioTrack ?: return false
+        return try {
+            val head = track.playbackHeadPosition.toLong()
+            val unplayed = framesWritten.get() - head
+            // At 24kHz, 1200 frames is 50ms
+            unplayed > 1200 || audible.get()
+        } catch (e: Exception) {
+            audible.get()
+        }
+    }
+
+    /**
+     * Suspends until all queued and buffering audio has played completely through the speakers,
+     * or until [timeoutMs] has elapsed.
+     */
+    suspend fun awaitPlaybackComplete(timeoutMs: Long = 30000L) {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        var idleChecks = 0
+        while (System.currentTimeMillis() < deadline) {
+            if (!hasPendingAudio()) {
+                idleChecks++
+                if (idleChecks >= 4) break // 400ms of consecutive idle means truly finished
+            } else {
+                idleChecks = 0
+            }
+            delay(100)
+        }
+    }
 
     /**
      * Blocks the calling thread until the audio queue has drained and the speaker has gone silent,
@@ -120,9 +154,10 @@ class AudioTrackManager(
         }
 
         try {
+            track.setVolume(1.0f)
             track.play()
             isPlaying.set(true)
-            Log.i(TAG, "AudioTrack initialized at $SAMPLE_RATE Hz, bufferSize: $bufferSize")
+            Log.i(TAG, "AudioTrack initialized at $SAMPLE_RATE Hz, bufferSize: $bufferSize, usage: $usage")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to start AudioTrack: ${e.message}", e)
         }
@@ -195,7 +230,8 @@ class AudioTrackManager(
                     continue
                 }
                 if (written > 0) {
-                    framesWritten.addAndGet(written / 2L)
+                    val total = framesWritten.addAndGet(written / 2L)
+                    Log.d(TAG, "AudioTrack wrote: $written bytes (total frames: $total)")
                     onPlaybackAmplitudeChanged?.let { callback ->
                         val rms = calculateRms(chunk, written)
                         callback(rms)
@@ -210,6 +246,7 @@ class AudioTrackManager(
      */
     fun enqueueAudioChunk(chunk: ByteArray) {
         if (chunk.isEmpty() || mutePlayback) return
+        Log.d(TAG, "enqueueAudioChunk: ${chunk.size} bytes, generation=${flushGeneration.get()}")
         audioQueue.trySend(flushGeneration.get() to chunk)
     }
 

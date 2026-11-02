@@ -354,6 +354,10 @@ class GeminiLiveClient(
     }
 
     private fun serverContent(content: JsonObject) {
+        val hasTurn = content.obj("modelTurn") != null
+        val txt = content.obj("outputTranscription")?.str("text")
+        val tc = content.bool("turnComplete")
+        Log.d(TAG, "serverContent: hasTurn=$hasTurn, text=$txt, turnComplete=$tc")
         content.obj("inputTranscription")?.str("text")?.let { words ->
             synchronized(userWords) { userWords.append(words) }
             listener.onUserSpeaking()
