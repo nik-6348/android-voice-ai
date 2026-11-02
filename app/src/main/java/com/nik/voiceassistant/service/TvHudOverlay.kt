@@ -26,9 +26,14 @@ import android.widget.TextView
  * Uses TYPE_ACCESSIBILITY_OVERLAY via PhoneAgentService so no extra permissions are required.
  *
  * Supports two distinct presentation modes:
- * 1. Expanded Listening Panel: Wide glassmorphism panel with glowing orb, live transcribed speech,
- *    and actionable TV hints (completely covers native Jio UI).
- * 2. Compact Action HUD: Streamlined floating pill during LLM thinking, tool execution, and completed states.
+ * 1. Full-Screen Immersion Mode (Listening & Informational Answers):
+ *    - Completely covers the screen (masking native Jio Voice Assist UI)
+ *    - Dynamic glowing mic waveform bars reacting to speech
+ *    - User question display ("AAPNE POOCHHA")
+ *    - Agent answer card ("SHIV KA JAWAAB") for Q&A without opening any app
+ * 2. Compact Bottom Action HUD:
+ *    - Automatically collapses to a sleek bottom floating pill during tool execution
+ *      (e.g. Live TV tuning, YouTube card playback) so content plays completely unblocked!
  */
 object TvHudOverlay {
     private const val TAG = "TvHudOverlay"
@@ -36,12 +41,16 @@ object TvHudOverlay {
     private var windowManager: WindowManager? = null
     private var rootContainer: FrameLayout? = null
 
-    // Expanded Listening UI
-    private var listeningLayout: LinearLayout? = null
-    private var listeningOrbView: ImageView? = null
+    // 1. Full-Screen Immersion UI
+    private var fullScreenLayout: LinearLayout? = null
+    private var statusBadgeView: TextView? = null
     private var listeningSpeechView: TextView? = null
+    private var answerCardContainer: LinearLayout? = null
+    private var agentAnswerView: TextView? = null
+    private val waveBars = ArrayList<View>()
+    private val waveAnimators = ArrayList<ValueAnimator>()
 
-    // Compact Action HUD UI
+    // 2. Compact Bottom Action HUD UI
     private var compactLayout: LinearLayout? = null
     private var compactDotView: ImageView? = null
     private var compactTitleView: TextView? = null
@@ -55,16 +64,16 @@ object TvHudOverlay {
     private var isVisible = false
 
     @Volatile
-    private var isListeningMode = false
+    private var isFullScreenMode = false
 
     val isListening: Boolean
-        get() = isVisible && isListeningMode
+        get() = isVisible && isFullScreenMode
 
     fun isListeningOrActive(): Boolean = isVisible
 
     /**
-     * Instantly shows the expanded Listening Panel when the remote mic is triggered.
-     * Replaces the native Jio Voice Assistant UI with Shiv's custom neon glass UI.
+     * Instantly shows the Full-Screen Immersion Overlay when remote mic is triggered.
+     * Completely masks native Jio Voice Assistant UI with Shiv's neon audio wave UI.
      */
     fun showListening(context: Context) {
         mainHandler.post {
@@ -73,24 +82,29 @@ object TvHudOverlay {
                 val hostContext = service ?: context.applicationContext
                 ensureViews(hostContext)
 
-                isListeningMode = true
-                listeningLayout?.visibility = View.VISIBLE
+                isFullScreenMode = true
+                fullScreenLayout?.visibility = View.VISIBLE
                 compactLayout?.visibility = View.GONE
+                answerCardContainer?.visibility = View.GONE
+
+                // Reset badge to listening state
+                statusBadgeView?.text = "● SUN RAHA HOON"
+                statusBadgeView?.setTextColor(Color.parseColor("#10B981")) // Emerald Green
+                (statusBadgeView?.background as? GradientDrawable)?.apply {
+                    setColor(Color.parseColor("#2510B981"))
+                    setStroke(2, Color.parseColor("#4D10B981"))
+                }
 
                 // Default initial waiting speech state
                 listeningSpeechView?.text = "Boliye, main sun raha hoon..."
                 listeningSpeechView?.setTextColor(Color.parseColor("#94A3B8"))
                 listeningSpeechView?.setTypeface(null, android.graphics.Typeface.ITALIC)
 
-                val density = hostContext.resources.displayMetrics.density
-                val widthPx = (720 * density).toInt()
-                val yOffset = (36 * density).toInt()
+                attachOrUpdateWindow(hostContext, isFullScreen = true)
+                startWaveAnimation()
 
-                attachOrUpdateWindow(hostContext, widthPx, yOffset)
-                startOrbPulseAnimation(listeningOrbView)
-
-                // Generous safety dismiss in case no speech arrives
-                scheduleDismiss(12000L)
+                // Safety dismiss in case no speech arrives for 15s
+                scheduleDismiss(15000L)
             } catch (e: Exception) {
                 Log.w(TAG, "Failed to show listening HUD: ${e.message}")
             }
@@ -98,20 +112,20 @@ object TvHudOverlay {
     }
 
     /**
-     * Updates the recognized speech in real time as the user speaks into the remote.
+     * Updates recognized speech in real time as the user speaks into the remote.
      */
     fun updateSpeech(speechText: String) {
         mainHandler.post {
-            if (!isVisible || !isListeningMode) return@post
+            if (!isVisible || !isFullScreenMode) return@post
             listeningSpeechView?.text = "\"$speechText\""
             listeningSpeechView?.setTextColor(Color.parseColor("#F8FAFC"))
             listeningSpeechView?.setTypeface(null, android.graphics.Typeface.BOLD)
-            scheduleDismiss(10000L)
+            scheduleDismiss(12000L)
         }
     }
 
     /**
-     * Transitions smoothly to the compact processing HUD when the speech is being analyzed.
+     * Transitions smoothly to thinking state while Gemini analyzes the user's query.
      */
     fun showProcessing(context: Context, query: String) {
         mainHandler.post {
@@ -120,22 +134,24 @@ object TvHudOverlay {
                 val hostContext = service ?: context.applicationContext
                 ensureViews(hostContext)
 
-                isListeningMode = false
-                listeningLayout?.visibility = View.GONE
-                compactLayout?.visibility = View.VISIBLE
+                isFullScreenMode = true
+                fullScreenLayout?.visibility = View.VISIBLE
+                compactLayout?.visibility = View.GONE
+                answerCardContainer?.visibility = View.GONE
 
-                compactTitleView?.text = "⚡ Shiv Soch Raha Hai..."
-                compactSubtitleView?.visibility = View.VISIBLE
-                compactSubtitleView?.text = query
-                setDotColor(Color.parseColor("#38BDF8")) // Cyan
+                statusBadgeView?.text = "⚡ SOCH RAHA HOON..."
+                statusBadgeView?.setTextColor(Color.parseColor("#38BDF8")) // Cyan
+                (statusBadgeView?.background as? GradientDrawable)?.apply {
+                    setColor(Color.parseColor("#2538BDF8"))
+                    setStroke(2, Color.parseColor("#4D38BDF8"))
+                }
 
-                val density = hostContext.resources.displayMetrics.density
-                val widthPx = (480 * density).toInt()
-                val yOffset = (48 * density).toInt()
+                listeningSpeechView?.text = "\"$query\""
+                listeningSpeechView?.setTextColor(Color.parseColor("#F8FAFC"))
+                listeningSpeechView?.setTypeface(null, android.graphics.Typeface.BOLD)
 
-                attachOrUpdateWindow(hostContext, widthPx, yOffset)
-                startOrbPulseAnimation(compactDotView)
-                scheduleDismiss(10000L)
+                attachOrUpdateWindow(hostContext, isFullScreen = true)
+                scheduleDismiss(12000L)
             } catch (e: Exception) {
                 Log.w(TAG, "Failed to show processing HUD: ${e.message}")
             }
@@ -143,7 +159,47 @@ object TvHudOverlay {
     }
 
     /**
-     * Displays tool execution progress (e.g. YouTube search, tapping card).
+     * Displays an informational answer directly on the Full-Screen Overlay without opening any app!
+     */
+    fun showAnswer(context: Context, userQuestion: String?, agentAnswer: String) {
+        mainHandler.post {
+            try {
+                val service = PhoneAgentService.instance
+                val hostContext = service ?: context.applicationContext
+                ensureViews(hostContext)
+
+                isFullScreenMode = true
+                fullScreenLayout?.visibility = View.VISIBLE
+                compactLayout?.visibility = View.GONE
+
+                statusBadgeView?.text = "💬 JAWAAB"
+                statusBadgeView?.setTextColor(Color.parseColor("#A78BFA")) // Purple / Lavender
+                (statusBadgeView?.background as? GradientDrawable)?.apply {
+                    setColor(Color.parseColor("#25A78BFA"))
+                    setStroke(2, Color.parseColor("#4DA78BFA"))
+                }
+
+                if (!userQuestion.isNullOrBlank()) {
+                    listeningSpeechView?.text = "\"$userQuestion\""
+                    listeningSpeechView?.setTextColor(Color.parseColor("#F8FAFC"))
+                    listeningSpeechView?.setTypeface(null, android.graphics.Typeface.BOLD)
+                }
+
+                answerCardContainer?.visibility = View.VISIBLE
+                agentAnswerView?.text = agentAnswer
+
+                attachOrUpdateWindow(hostContext, isFullScreen = true)
+                stopWaveAnimation()
+                scheduleDismiss(9000L)
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to show answer HUD: ${e.message}")
+            }
+        }
+    }
+
+    /**
+     * Transitions from Full Screen to Compact Bottom Pill HUD when an ACTION starts
+     * (e.g. tuning Live TV, starting YouTube video) so content plays unblocked.
      */
     fun showAction(context: Context, actionTitle: String, details: String? = null) {
         mainHandler.post {
@@ -152,9 +208,10 @@ object TvHudOverlay {
                 val hostContext = service ?: context.applicationContext
                 ensureViews(hostContext)
 
-                isListeningMode = false
-                listeningLayout?.visibility = View.GONE
+                isFullScreenMode = false
+                fullScreenLayout?.visibility = View.GONE
                 compactLayout?.visibility = View.VISIBLE
+                stopWaveAnimation()
 
                 compactTitleView?.text = actionTitle
                 if (!details.isNullOrBlank()) {
@@ -165,11 +222,8 @@ object TvHudOverlay {
                 }
                 setDotColor(Color.parseColor("#F59E0B")) // Amber
 
-                val density = hostContext.resources.displayMetrics.density
-                val widthPx = (480 * density).toInt()
-                val yOffset = (48 * density).toInt()
-
-                attachOrUpdateWindow(hostContext, widthPx, yOffset)
+                attachOrUpdateWindow(hostContext, isFullScreen = false)
+                startOrbPulseAnimation(compactDotView)
                 scheduleDismiss(12000L)
             } catch (e: Exception) {
                 Log.w(TAG, "Failed to show action HUD: ${e.message}")
@@ -178,7 +232,7 @@ object TvHudOverlay {
     }
 
     /**
-     * Displays instant playback stopped confirmation.
+     * Displays instant playback stopped confirmation in the bottom pill HUD.
      */
     fun showStopped(context: Context) {
         mainHandler.post {
@@ -187,20 +241,17 @@ object TvHudOverlay {
                 val hostContext = service ?: context.applicationContext
                 ensureViews(hostContext)
 
-                isListeningMode = false
-                listeningLayout?.visibility = View.GONE
+                isFullScreenMode = false
+                fullScreenLayout?.visibility = View.GONE
                 compactLayout?.visibility = View.VISIBLE
+                stopWaveAnimation()
 
                 compactTitleView?.text = "⏹️ Playback Stopped"
                 compactSubtitleView?.visibility = View.VISIBLE
                 compactSubtitleView?.text = "Audio aur video pause kar diya gaya"
                 setDotColor(Color.parseColor("#EF4444")) // Red
 
-                val density = hostContext.resources.displayMetrics.density
-                val widthPx = (460 * density).toInt()
-                val yOffset = (48 * density).toInt()
-
-                attachOrUpdateWindow(hostContext, widthPx, yOffset)
+                attachOrUpdateWindow(hostContext, isFullScreen = false)
                 stopPulseAnimation()
                 scheduleDismiss(2200L)
             } catch (e: Exception) {
@@ -210,7 +261,7 @@ object TvHudOverlay {
     }
 
     /**
-     * Displays completion message and auto-dismisses.
+     * Displays completion message in the bottom pill HUD and auto-dismisses.
      */
     fun showCompleted(context: Context, message: String? = null) {
         mainHandler.post {
@@ -219,67 +270,20 @@ object TvHudOverlay {
                 val hostContext = service ?: context.applicationContext
                 ensureViews(hostContext)
 
-                isListeningMode = false
-                listeningLayout?.visibility = View.GONE
+                isFullScreenMode = false
+                fullScreenLayout?.visibility = View.GONE
                 compactLayout?.visibility = View.VISIBLE
+                stopWaveAnimation()
 
                 compactTitleView?.text = "✓ ${message ?: "Completed"}"
                 compactSubtitleView?.visibility = View.GONE
                 setDotColor(Color.parseColor("#10B981")) // Green
 
-                val density = hostContext.resources.displayMetrics.density
-                val widthPx = (440 * density).toInt()
-                val yOffset = (48 * density).toInt()
-
-                attachOrUpdateWindow(hostContext, widthPx, yOffset)
+                attachOrUpdateWindow(hostContext, isFullScreen = false)
                 stopPulseAnimation()
-                scheduleDismiss(2200L)
+                scheduleDismiss(2500L)
             } catch (e: Exception) {
                 Log.w(TAG, "Failed to show completed HUD: ${e.message}")
-            }
-        }
-    }
-
-    /**
-     * Standard unified show method for backwards compatibility with VoiceSession.
-     */
-    fun show(context: Context, title: String, subtitle: String? = null, autoDismissMs: Long = 6000L) {
-        mainHandler.post {
-            when {
-                title.contains("✓") || title.contains("Ready") || title.contains("Play") -> showCompleted(context, subtitle ?: title)
-                title.contains("⚙️") -> showAction(context, title, subtitle)
-                title.contains("⏹️") -> showStopped(context)
-                title.contains("🎙️") && subtitle?.contains("processing", ignoreCase = true) == true -> showProcessing(context, title.replace("🎙️", "").trim(' ', '"'))
-                else -> {
-                    val service = PhoneAgentService.instance
-                    val hostContext = service ?: context.applicationContext
-                    ensureViews(hostContext)
-
-                    isListeningMode = false
-                    listeningLayout?.visibility = View.GONE
-                    compactLayout?.visibility = View.VISIBLE
-
-                    compactTitleView?.text = title
-                    if (!subtitle.isNullOrBlank()) {
-                        compactSubtitleView?.visibility = View.VISIBLE
-                        compactSubtitleView?.text = subtitle
-                    } else {
-                        compactSubtitleView?.visibility = View.GONE
-                    }
-
-                    val color = when {
-                        title.contains("⚠️") || title.contains("Error") -> Color.parseColor("#EF4444")
-                        else -> Color.parseColor("#38BDF8")
-                    }
-                    setDotColor(color)
-
-                    val density = hostContext.resources.displayMetrics.density
-                    val widthPx = (480 * density).toInt()
-                    val yOffset = (48 * density).toInt()
-
-                    attachOrUpdateWindow(hostContext, widthPx, yOffset)
-                    scheduleDismiss(autoDismissMs)
-                }
             }
         }
     }
@@ -289,10 +293,12 @@ object TvHudOverlay {
      */
     fun update(title: String, subtitle: String? = null, autoDismissMs: Long = 4000L) {
         mainHandler.post {
-            if (!isVisible) return@post
+            val service = PhoneAgentService.instance ?: return@post
             when {
-                title.contains("✓") -> showCompleted(PhoneAgentService.instance ?: return@post, subtitle ?: title)
-                title.contains("⚙️") -> showAction(PhoneAgentService.instance ?: return@post, title, subtitle)
+                title.contains("✓") -> showCompleted(service, subtitle ?: title)
+                title.contains("⚙️") || title.contains("⚡") -> showAction(service, title, subtitle)
+                title.contains("⏹️") -> showStopped(service)
+                title.startsWith("Shiv:") -> showAnswer(service, null, subtitle ?: title.removePrefix("Shiv:").trim())
                 else -> {
                     compactTitleView?.text = title
                     if (!subtitle.isNullOrBlank()) {
@@ -305,6 +311,13 @@ object TvHudOverlay {
                 }
             }
         }
+    }
+
+    /**
+     * Backwards-compatible show method.
+     */
+    fun show(context: Context, title: String, subtitle: String? = null, autoDismissMs: Long = 6000L) {
+        update(title, subtitle, autoDismissMs)
     }
 
     fun scheduleDismiss(delayMs: Long) {
@@ -323,10 +336,11 @@ object TvHudOverlay {
             if (!isVisible || rootContainer == null) return@post
             dismissRunnable?.let { mainHandler.removeCallbacks(it) }
             stopPulseAnimation()
+            stopWaveAnimation()
             rootContainer?.animate()
                 ?.alpha(0f)
-                ?.translationY(30f)
-                ?.setDuration(200)
+                ?.translationY(20f)
+                ?.setDuration(180)
                 ?.setListener(object : AnimatorListenerAdapter() {
                     override fun onAnimationEnd(animation: Animator) {
                         try {
@@ -337,7 +351,7 @@ object TvHudOverlay {
                             Log.w(TAG, "Error removing view: ${e.message}")
                         } finally {
                             isVisible = false
-                            isListeningMode = false
+                            isFullScreenMode = false
                         }
                     }
                 })
@@ -345,7 +359,7 @@ object TvHudOverlay {
         }
     }
 
-    private fun attachOrUpdateWindow(context: Context, targetWidthPx: Int, targetYPx: Int) {
+    private fun attachOrUpdateWindow(context: Context, isFullScreen: Boolean) {
         val targetContext = PhoneAgentService.instance ?: context
         val wm = (targetContext.getSystemService(Context.WINDOW_SERVICE) as? WindowManager) ?: return
         windowManager = wm
@@ -357,6 +371,12 @@ object TvHudOverlay {
             else -> @Suppress("DEPRECATION") WindowManager.LayoutParams.TYPE_PHONE
         }
 
+        val density = targetContext.resources.displayMetrics.density
+        val targetWidth = if (isFullScreen) WindowManager.LayoutParams.MATCH_PARENT else (520 * density).toInt()
+        val targetHeight = if (isFullScreen) WindowManager.LayoutParams.MATCH_PARENT else WindowManager.LayoutParams.WRAP_CONTENT
+        val targetGravity = if (isFullScreen) Gravity.FILL else (Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL)
+        val targetY = if (isFullScreen) 0 else (44 * density).toInt()
+
         if (rootContainer?.parent != null && !isVisible) {
             try {
                 wm.removeViewImmediate(rootContainer)
@@ -365,20 +385,20 @@ object TvHudOverlay {
 
         if (!isVisible && rootContainer != null) {
             val params = WindowManager.LayoutParams(
-                targetWidthPx,
-                WindowManager.LayoutParams.WRAP_CONTENT,
+                targetWidth,
+                targetHeight,
                 type,
                 WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                     WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
                     WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
                 PixelFormat.TRANSLUCENT
             ).apply {
-                gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
-                y = targetYPx
+                gravity = targetGravity
+                y = targetY
             }
 
             rootContainer?.alpha = 0f
-            rootContainer?.translationY = 40f
+            rootContainer?.translationY = if (isFullScreen) 0f else 30f
             try {
                 wm.addView(rootContainer, params)
                 isVisible = true
@@ -393,9 +413,11 @@ object TvHudOverlay {
             }
         } else if (isVisible && rootContainer != null) {
             val params = rootContainer?.layoutParams as? WindowManager.LayoutParams
-            if (params != null && (params.width != targetWidthPx || params.y != targetYPx)) {
-                params.width = targetWidthPx
-                params.y = targetYPx
+            if (params != null && (params.width != targetWidth || params.height != targetHeight || params.gravity != targetGravity || params.y != targetY)) {
+                params.width = targetWidth
+                params.height = targetHeight
+                params.gravity = targetGravity
+                params.y = targetY
                 try {
                     wm.updateViewLayout(rootContainer, params)
                 } catch (e: Exception) {
@@ -423,8 +445,34 @@ object TvHudOverlay {
     private fun stopPulseAnimation() {
         pulseAnimator?.cancel()
         pulseAnimator = null
-        listeningOrbView?.alpha = 1f
         compactDotView?.alpha = 1f
+    }
+
+    private fun startWaveAnimation() {
+        stopWaveAnimation()
+        waveBars.forEachIndexed { i, bar ->
+            val density = bar.resources.displayMetrics.density
+            val minH = (12 * density).toInt()
+            val maxH = ((26 + (i % 3) * 16) * density).toInt()
+            val anim = ValueAnimator.ofInt(minH, maxH).apply {
+                duration = (360 + (i * 90)).toLong()
+                repeatMode = ValueAnimator.REVERSE
+                repeatCount = ValueAnimator.INFINITE
+                addUpdateListener { va ->
+                    val h = va.animatedValue as Int
+                    val lp = bar.layoutParams
+                    lp.height = h
+                    bar.layoutParams = lp
+                }
+                start()
+            }
+            waveAnimators.add(anim)
+        }
+    }
+
+    private fun stopWaveAnimation() {
+        waveAnimators.forEach { it.cancel() }
+        waveAnimators.clear()
     }
 
     private fun ensureViews(context: Context) {
@@ -435,34 +483,32 @@ object TvHudOverlay {
         // Root Container
         rootContainer = FrameLayout(context).apply {
             layoutParams = FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.WRAP_CONTENT,
-                FrameLayout.LayoutParams.WRAP_CONTENT
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
             )
         }
 
         // ==========================================
-        // 1. EXPANDED LISTENING PANEL (Replaces Jio UI)
+        // 1. FULL-SCREEN IMMERSION OVERLAY (Listening & Answers)
         // ==========================================
-        listeningLayout = LinearLayout(context).apply {
+        fullScreenLayout = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
-            val padH = (26 * density).toInt()
-            val padV = (18 * density).toInt()
+            val padH = (52 * density).toInt()
+            val padV = (36 * density).toInt()
             setPadding(padH, padV, padH, padV)
 
             val bg = GradientDrawable().apply {
-                setColor(Color.parseColor("#F40A0F1D")) // 95% Deep Obsidian Slate
-                cornerRadius = 24 * density
-                setStroke((2.5f * density).toInt(), Color.parseColor("#06B6D4")) // Neon Cyan
+                setColor(Color.parseColor("#F4070B16")) // 96% Deep Dark Obsidian
             }
             background = bg
             elevation = 24 * density
             layoutParams = FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
-                FrameLayout.LayoutParams.WRAP_CONTENT
+                FrameLayout.LayoutParams.MATCH_PARENT
             )
         }
 
-        // Header Row: Orb, Title, Spacer, Listening Badge
+        // Header Row: Logo, Title, Spacer, Status Badge
         val headerRow = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -472,25 +518,12 @@ object TvHudOverlay {
             )
         }
 
-        listeningOrbView = ImageView(context).apply {
-            val orbSize = (22 * density).toInt()
-            layoutParams = LinearLayout.LayoutParams(orbSize, orbSize).apply {
-                marginEnd = (12 * density).toInt()
-            }
-            val orbDrawable = GradientDrawable().apply {
-                shape = GradientDrawable.OVAL
-                setColor(Color.parseColor("#06B6D4")) // Cyan Glow Orb
-            }
-            setImageDrawable(orbDrawable)
-        }
-        headerRow.addView(listeningOrbView)
-
         val brandTitle = TextView(context).apply {
             text = "✨ SHIV AI ASSISTANT"
-            textSize = 14f
+            textSize = 15f
             setTextColor(Color.parseColor("#38BDF8"))
             setTypeface(null, android.graphics.Typeface.BOLD)
-            letterSpacing = 0.06f
+            letterSpacing = 0.08f
         }
         headerRow.addView(brandTitle)
 
@@ -499,65 +532,166 @@ object TvHudOverlay {
         }
         headerRow.addView(spacer)
 
-        val badge = TextView(context).apply {
+        statusBadgeView = TextView(context).apply {
             text = "● SUN RAHA HOON"
-            textSize = 11f
+            textSize = 11.5f
             setTextColor(Color.parseColor("#10B981"))
             setTypeface(null, android.graphics.Typeface.BOLD)
-            val bPadH = (10 * density).toInt()
-            val bPadV = (4 * density).toInt()
+            val bPadH = (12 * density).toInt()
+            val bPadV = (5 * density).toInt()
             setPadding(bPadH, bPadV, bPadH, bPadV)
             background = GradientDrawable().apply {
                 setColor(Color.parseColor("#2510B981"))
-                cornerRadius = 12 * density
-                setStroke((1 * density).toInt(), Color.parseColor("#4D10B981"))
+                cornerRadius = 14 * density
+                setStroke((1.5f * density).toInt(), Color.parseColor("#4D10B981"))
             }
         }
-        headerRow.addView(badge)
-        listeningLayout?.addView(headerRow)
+        headerRow.addView(statusBadgeView)
+        fullScreenLayout?.addView(headerRow)
 
-        // Divider
-        val divider = View(context).apply {
-            val dHeight = (1 * density).toInt().coerceAtLeast(1)
+        // Mic Wave Container (Equalizer bars)
+        val waveContainer = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+            val marginV = (24 * density).toInt()
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
-                dHeight
+                (60 * density).toInt()
             ).apply {
-                topMargin = (10 * density).toInt()
-                bottomMargin = (10 * density).toInt()
+                topMargin = marginV
+                bottomMargin = marginV
             }
-            setBackgroundColor(Color.parseColor("#2638BDF8"))
         }
-        listeningLayout?.addView(divider)
 
-        // Speech Text Display (Real-time live transcript)
+        waveBars.clear()
+        for (i in 0 until 5) {
+            val bar = View(context).apply {
+                val barW = (7 * density).toInt()
+                val barH = (16 * density).toInt()
+                val marginH = (6 * density).toInt()
+                layoutParams = LinearLayout.LayoutParams(barW, barH).apply {
+                    setMargins(marginH, 0, marginH, 0)
+                }
+                val barBg = GradientDrawable().apply {
+                    setColor(Color.parseColor("#06B6D4")) // Neon Cyan
+                    cornerRadius = 4 * density
+                }
+                background = barBg
+            }
+            waveBars.add(bar)
+            waveContainer.addView(bar)
+        }
+        fullScreenLayout?.addView(waveContainer)
+
+        // User Question Card
+        val userCard = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            val cPadH = (24 * density).toInt()
+            val cPadV = (16 * density).toInt()
+            setPadding(cPadH, cPadV, cPadH, cPadV)
+            val bg = GradientDrawable().apply {
+                setColor(Color.parseColor("#1E1E293B")) // Slate glass
+                cornerRadius = 18 * density
+                setStroke((1.5f * density).toInt(), Color.parseColor("#4038BDF8"))
+            }
+            background = bg
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply {
+                bottomMargin = (18 * density).toInt()
+            }
+        }
+
+        val userLabel = TextView(context).apply {
+            text = "🗣️ AAPNE POOCHHA:"
+            textSize = 12f
+            setTextColor(Color.parseColor("#38BDF8"))
+            setTypeface(null, android.graphics.Typeface.BOLD)
+            letterSpacing = 0.05f
+        }
+        userCard.addView(userLabel)
+
         listeningSpeechView = TextView(context).apply {
-            textSize = 19f
+            textSize = 21f
             setTextColor(Color.parseColor("#94A3B8"))
             setTypeface(null, android.graphics.Typeface.ITALIC)
-            maxLines = 2
+            maxLines = 3
             ellipsize = android.text.TextUtils.TruncateAt.END
             text = "Boliye, main sun raha hoon..."
-        }
-        listeningLayout?.addView(listeningSpeechView)
-
-        // Footer Hints Row
-        val hintText = TextView(context).apply {
-            text = "💡 'Stop' ya 'Ruko' bol kar pause karein  •  Back button dabakar cancel"
-            textSize = 11.5f
-            setTextColor(Color.parseColor("#64748B"))
-            val marginT = (8 * density).toInt()
+            val marginT = (6 * density).toInt()
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
             ).apply { topMargin = marginT }
         }
-        listeningLayout?.addView(hintText)
+        userCard.addView(listeningSpeechView)
+        fullScreenLayout?.addView(userCard)
 
-        rootContainer?.addView(listeningLayout)
+        // Agent Answer Card (for Informational Queries)
+        answerCardContainer = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            val cPadH = (24 * density).toInt()
+            val cPadV = (16 * density).toInt()
+            setPadding(cPadH, cPadV, cPadH, cPadV)
+            val bg = GradientDrawable().apply {
+                setColor(Color.parseColor("#1E064E3B")) // Deep Emerald glass
+                cornerRadius = 18 * density
+                setStroke((1.5f * density).toInt(), Color.parseColor("#4010B981"))
+            }
+            background = bg
+            visibility = View.GONE
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            )
+        }
+
+        val agentLabel = TextView(context).apply {
+            text = "🤖 SHIV KA JAWAAB:"
+            textSize = 12f
+            setTextColor(Color.parseColor("#10B981"))
+            setTypeface(null, android.graphics.Typeface.BOLD)
+            letterSpacing = 0.05f
+        }
+        answerCardContainer?.addView(agentLabel)
+
+        agentAnswerView = TextView(context).apply {
+            textSize = 19f
+            setTextColor(Color.parseColor("#F1F5F9"))
+            setTypeface(null, android.graphics.Typeface.NORMAL)
+            maxLines = 5
+            ellipsize = android.text.TextUtils.TruncateAt.END
+            val marginT = (6 * density).toInt()
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { topMargin = marginT }
+        }
+        answerCardContainer?.addView(agentAnswerView)
+        fullScreenLayout?.addView(answerCardContainer)
+
+        val bottomSpacer = View(context).apply {
+            layoutParams = LinearLayout.LayoutParams(0, 0, 1f)
+        }
+        fullScreenLayout?.addView(bottomSpacer)
+
+        // Footer Hints
+        val hintText = TextView(context).apply {
+            text = "💡 TV remote se bole  •  'Stop' bol kar pause karein  •  Back button dabakar cancel"
+            textSize = 11.5f
+            setTextColor(Color.parseColor("#64748B"))
+            gravity = Gravity.CENTER
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            )
+        }
+        fullScreenLayout?.addView(hintText)
+        rootContainer?.addView(fullScreenLayout)
 
         // ==========================================
-        // 2. COMPACT ACTION HUD (Processing & Actions)
+        // 2. COMPACT BOTTOM ACTION HUD (Tool Execution & Live Playback)
         // ==========================================
         compactLayout = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL

@@ -442,6 +442,8 @@ class VoiceSession private constructor(val context: Context) {
     // The assistant's reply in the current turn (cleared when the user speaks); shown over other apps
     private val _liveReply = MutableStateFlow("")
     val liveReply: StateFlow<String> = _liveReply.asStateFlow()
+    private val _currentUserQuery = MutableStateFlow("")
+    val currentUserQuery: StateFlow<String> = _currentUserQuery.asStateFlow()
     @Volatile private var replyTurnOpen = false
 
     @Volatile private var currentSession: ConversationSession? = null
@@ -827,9 +829,12 @@ class VoiceSession private constructor(val context: Context) {
                 modelActive()
                 autoMuteForWork(tool = false)
                 addTranscript("assistant", text)
-                _liveReply.value = if (replyTurnOpen) joinSpoken(_liveReply.value, text) else text.trim()
+                val fullReply = if (replyTurnOpen) joinSpoken(_liveReply.value, text) else text.trim()
+                _liveReply.value = fullReply
                 replyTurnOpen = true
-                com.nik.voiceassistant.service.TvHudOverlay.update("Shiv:", text.take(90), 5000L)
+                if (!webSocketClient.isToolRunning()) {
+                    com.nik.voiceassistant.service.TvHudOverlay.showAnswer(context, _currentUserQuery.value, fullReply)
+                }
             }
 
             override fun onResumeHandle(handle: String?) {
@@ -851,7 +856,7 @@ class VoiceSession private constructor(val context: Context) {
                 autoMuteForWork(tool = true)
                 _activeToolStatus.value = statusText
                 val label = if (statusText.isNotBlank()) statusText else "Action chal raha hai: $toolName"
-                com.nik.voiceassistant.service.TvHudOverlay.update("⚙️ $label", toolName, 12000L)
+                com.nik.voiceassistant.service.TvHudOverlay.showAction(context, "⚡ $label", _currentUserQuery.value)
             }
 
             override fun onModelAudioStart() {
@@ -1348,7 +1353,8 @@ class VoiceSession private constructor(val context: Context) {
     fun sendText(text: String, keepMicMuted: Boolean = true) {
         val t = text.trim()
         if (t.isEmpty()) return
-        com.nik.voiceassistant.service.TvHudOverlay.show(context, "🎙️ \"$t\"", "Shiv processing kar raha hai...", 10000L)
+        _currentUserQuery.value = t
+        com.nik.voiceassistant.service.TvHudOverlay.showProcessing(context, t)
         addTranscript("user", t)
         AgentTrace.log(AgentTrace.Kind.USER, "(query) $t")
         traceUserInput(t, "text")
@@ -1496,13 +1502,15 @@ class VoiceSession private constructor(val context: Context) {
 
 ANDROID TV / JIO SET-TOP BOX MODE:
 You are operating an Android TV / Jio Set-Top Box.
-1. When user asks to play songs, videos, movies, or TV channels (e.g. 'Mahakal ke song lagade YouTube par achaar', 'Aaj Tak chala do', 'Star Sports', 'Live TV lagao'):
-   - Immediately call search_tv with the clean query and play_first=true!
-   - Remove all conversational fillers, verbs ('lagade', 'chala do'), and platform names from query.
-   - For TV channels or Live TV, pass app='livetv' or app='jiotv'.
-2. FINAL CONFIRMATION RULE: After executing the tool, say ONLY ONE short line in Hindi:
-   'Haan, play kar diya!' or 'Haan, laga diya!'.
-   Do not ask follow-up questions. Do not keep chatting. End the turn immediately so the user can enjoy their video/channel.
+1. ACTION QUERIES (when user asks to play songs, videos, movies, TV channels, or open apps, e.g. 'Aaj Tak laga do Live TV par', 'Star Sports 1 chalao', 'Mahakal song YouTube par chalao'):
+   - Start speaking immediately at the very beginning: 'Theek hai, main [channel/item] laga raha hoon...'
+   - Then immediately call search_tv with the clean query and play_first=true! (For TV channels or Live TV, pass app='livetv').
+   - Remove conversational fillers, verbs ('laga do', 'chala de'), and platform names from the query.
+   - After executing the tool, say ONLY ONE short line: 'Haan, laga diya!' or 'Haan, play kar diya!' and end the turn immediately.
+2. INFORMATIONAL QUERIES (questions, facts, weather, time, scores, chit-chat, e.g. 'Aaj ka mausam kaisa hai?', 'Time kya hua?', 'Match score kya hai?', 'India ka PM kaun hai?'):
+   - DO NOT call search_tv!
+   - DO NOT open any app (no YouTube, no Live TV, no browser)!
+   - Answer directly by speaking via voice! Keep your answer concise and accurate in natural Hindi/Hinglish (under 2 sentences).
 """ else ""
 
         val base = DEFAULT_INSTRUCTIONS

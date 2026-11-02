@@ -117,9 +117,6 @@ class PhoneAgentService : AccessibilityService() {
             return
         }
         if (event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
-            if (TvHudOverlay.isListening) {
-                TvHudOverlay.scheduleDismiss(1200L)
-            }
             pkg?.let { PaymentGuard.onForeground(this, it) }
             return
         }
@@ -198,8 +195,8 @@ class PhoneAgentService : AccessibilityService() {
                 session.startNewChat()
                 session.sendText(text, keepMicMuted = true)
             }
-            // 700ms debounce allows the user to finish speaking their phrase
-            mainHandler.postDelayed(pendingJioQueryRunnable!!, 700L)
+            // 2000ms debounce gives user full 2 seconds to pause naturally without cut-off
+            mainHandler.postDelayed(pendingJioQueryRunnable!!, 2000L)
         } catch (e: Exception) {
             Log.w(TAG, "Error in Jio voice bridge: ${e.message}")
         }

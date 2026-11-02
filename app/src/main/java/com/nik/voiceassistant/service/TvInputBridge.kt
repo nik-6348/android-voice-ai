@@ -34,8 +34,19 @@ object TvInputBridge {
     }
 
     fun injectKey(keyCode: Int): Boolean {
-        return sendCommand("input keyevent $keyCode")
+        val ok = sendCommand("input keyevent $keyCode")
+        if (!ok) {
+            try {
+                Runtime.getRuntime().exec(arrayOf("input", "keyevent", keyCode.toString()))
+                return true
+            } catch (e: Exception) {
+                Log.w(TAG, "exec fallback failed: ${e.message}")
+            }
+        }
+        return ok
     }
+
+    fun sendKey(keyCode: Int): Boolean = injectKey(keyCode)
 
     fun dpadCenter(): Boolean = injectKey(KeyEvent.KEYCODE_DPAD_CENTER)
     fun dpadDown(): Boolean = injectKey(KeyEvent.KEYCODE_DPAD_DOWN)

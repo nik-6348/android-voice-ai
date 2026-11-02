@@ -1691,9 +1691,108 @@ class DeviceToolExecutor(
         "live tv", "tv channel"
     )
 
+    private val JIO_TV_CHANNEL_NUMBERS = mapOf(
+        // Hindi News
+        "aaj tak" to "305",
+        "abp news" to "312",
+        "abp" to "312",
+        "india tv" to "314",
+        "zee news" to "316",
+        "ndtv india" to "320",
+        "ndtv" to "320",
+        "republic bharat" to "322",
+        "news18 india" to "324",
+        "news18" to "324",
+        "news 18" to "324",
+        "times now navbharat" to "326",
+        "times now" to "350",
+        "republic tv" to "352",
+        "india today" to "354",
+        "cnn news18" to "356",
+        "dd news" to "300",
+
+        // Hindi GEC (Entertainment)
+        "star plus" to "115",
+        "sony tv" to "120",
+        "sony entertainment" to "120",
+        "sony set" to "120",
+        "set" to "120",
+        "sony sab" to "125",
+        "sab tv" to "125",
+        "sab" to "125",
+        "zee tv" to "130",
+        "colors" to "140",
+        "star bharat" to "107",
+        "&tv" to "145",
+        "and tv" to "145",
+        "dd national" to "100",
+
+        // Movies
+        "star gold" to "203",
+        "sony max" to "202",
+        "zee cinema" to "204",
+        "colors cineplex" to "206",
+        "star gold 2" to "208",
+        "utv movies" to "210",
+        "b4u movies" to "214",
+
+        // Sports
+        "star sports 1" to "401",
+        "star sports" to "401",
+        "star sports hindi" to "402",
+        "star sports 2" to "404",
+        "sports18 1" to "403",
+        "sports18" to "403",
+        "sports 18" to "403",
+        "sony sports ten 1" to "405",
+        "sony sports 1" to "405",
+        "sony ten 1" to "405",
+        "sony ten" to "405",
+        "sony sports" to "405",
+        "sony sports ten 2" to "406",
+        "sony ten 2" to "406",
+        "sony sports ten 3" to "407",
+        "sony ten 3" to "407",
+        "dd sports" to "400",
+
+        // Kids
+        "cartoon network" to "501",
+        "cn" to "501",
+        "pogo" to "502",
+        "hungama" to "503",
+        "nick" to "504",
+        "nickelodeon" to "504",
+        "sonic" to "506",
+        "disney" to "505",
+
+        // Infotainment & Knowledge
+        "discovery" to "601",
+        "national geographic" to "602",
+        "nat geo" to "602",
+        "history tv18" to "603",
+        "history" to "603",
+        "animal planet" to "604",
+        "sony bbc earth" to "605",
+
+        // Music
+        "9xm" to "809",
+        "mtv" to "701",
+        "zoom" to "703",
+        "b4u music" to "705"
+    )
+
+    private fun findChannelNumber(query: String): String? {
+        val lower = query.lowercase().trim()
+        for ((name, number) in JIO_TV_CHANNEL_NUMBERS) {
+            if (lower.contains(name)) return number
+        }
+        return null
+    }
+
     private fun isTvChannelRequest(query: String): Boolean {
         val lower = query.lowercase().trim()
-        if (lower.startsWith("channel") || lower.contains("live tv") || lower.contains("tv channel")) return true
+        if (lower.startsWith("channel") || lower.contains("live tv") || lower.contains("tv channel") || lower.contains("tv par") || lower.contains("tv pe")) return true
+        if (JIO_TV_CHANNEL_NUMBERS.keys.any { lower.contains(it) }) return true
         return TV_CHANNEL_NAMES.any { lower.contains(it) }
     }
 
@@ -1708,29 +1807,51 @@ class DeviceToolExecutor(
 
         // 1. Check if the user is asking for Live TV or a specific TV channel (e.g. Aaj Tak, Star Sports, Live TV)
         if (targetApp == "livetv" || targetApp == "jiotv" || isTvChannelRequest(query)) {
-            com.nik.voiceassistant.service.TvHudOverlay.update("⚡ Live TV: $cleanQuery", null, 3000L)
-            val launchIntent = packageManager.getLeanbackLaunchIntentForPackage("com.jio.media.jiotvplus")
-                ?: packageManager.getLaunchIntentForPackage("com.jio.media.jiotvplus")
-                ?: packageManager.getLeanbackLaunchIntentForPackage("com.jio.media.livetv")
-                ?: packageManager.getLaunchIntentForPackage("com.jio.media.livetv")
-            if (launchIntent != null) {
-                launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
-                context.startActivity(launchIntent)
+            val matchedChannelNumber = findChannelNumber(cleanQuery)
+            val channelDigits = Regex("\\b(\\d{1,4})\\b").find(cleanQuery)?.groupValues?.get(1) ?: matchedChannelNumber
+            val channelDisplay = if (channelDigits != null) "$cleanQuery (Channel $channelDigits)" else cleanQuery
 
-                // If user specified channel digits (e.g. "channel 102"), inject key events for the numbers
-                val channelDigits = Regex("\\b(\\d{1,4})\\b").find(cleanQuery)?.groupValues?.get(1)
-                if (channelDigits != null) {
-                    Thread.sleep(1500)
-                    val audio = context.getSystemService(Context.AUDIO_SERVICE) as? android.media.AudioManager
-                    channelDigits.forEach { digit ->
-                        val code = KeyEvent.KEYCODE_0 + (digit - '0')
-                        audio?.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, code))
-                        audio?.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_UP, code))
-                        Thread.sleep(120)
-                    }
-                }
-                return withScreen(mapOf("success" to true, "opened" to "Live TV tuned to $cleanQuery"))
+            com.nik.voiceassistant.service.TvHudOverlay.showAction(context, "⚡ Live TV: $cleanQuery", if (channelDigits != null) "Channel $channelDigits" else "Opening Live TV...")
+
+            val launchIntent = Intent(Intent.ACTION_VIEW, Uri.parse("jiotvplus://open.classicmenu")).apply {
+                setPackage("com.jio.media.jiotvplus")
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
             }
+            try {
+                context.startActivity(launchIntent)
+            } catch (e: Exception) {
+                val fallbackIntent = packageManager.getLeanbackLaunchIntentForPackage("com.jio.media.jiotvplus")
+                    ?: packageManager.getLaunchIntentForPackage("com.jio.media.jiotvplus")
+                fallbackIntent?.let {
+                    it.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+                    context.startActivity(it)
+                }
+            }
+
+            if (channelDigits != null) {
+                Thread.sleep(1200)
+                channelDigits.forEach { digit ->
+                    val code = KeyEvent.KEYCODE_0 + (digit - '0')
+                    com.nik.voiceassistant.service.TvInputBridge.sendKey(code)
+                    Thread.sleep(180)
+                }
+                Thread.sleep(600)
+                com.nik.voiceassistant.service.TvInputBridge.sendKey(KeyEvent.KEYCODE_DPAD_CENTER)
+            } else {
+                // Send GVA broadcast to search within JioTV+
+                try {
+                    val gvaIntent = Intent("com.jio.media.stb.ondemand.patchwall.GVA").apply {
+                        setPackage("com.jio.media.jiotvplus")
+                        putExtra("SEARCH_KEY", cleanQuery)
+                    }
+                    context.sendBroadcast(gvaIntent)
+                } catch (ignored: Exception) {}
+                Thread.sleep(1200)
+                com.nik.voiceassistant.service.TvInputBridge.sendKey(KeyEvent.KEYCODE_DPAD_CENTER)
+            }
+
+            com.nik.voiceassistant.service.TvHudOverlay.showCompleted(context, "Playing $cleanQuery on Live TV")
+            return withScreen(mapOf("success" to true, "opened" to "Live TV tuned to $channelDisplay"))
         }
 
         val app = targetApp?.lowercase()?.trim() ?: "youtube"
@@ -1788,12 +1909,13 @@ class DeviceToolExecutor(
         val currentPkg = PhoneAgentService.instance?.rootInActiveWindow?.packageName?.toString()
         // If already in YouTube TV and asking for ordinal card, click without re-searching!
         if (currentPkg == "com.jio.yt" && targetCard > 1) {
-            com.nik.voiceassistant.service.TvHudOverlay.update("⚡ Card $targetCard Play Ho Raha Hai...", null, 2500L)
+            com.nik.voiceassistant.service.TvHudOverlay.showAction(context, "⚡ Card $targetCard Play Ho Raha Hai...", null)
             PhoneAgentService.instance?.clickYtCard(targetCard)
+            com.nik.voiceassistant.service.TvHudOverlay.showCompleted(context, "Card $targetCard Playing")
             return withScreen(mapOf("success" to true, "opened" to "Selected card $targetCard in YouTube TV"))
         }
 
-        com.nik.voiceassistant.service.TvHudOverlay.update("⚡ YouTube Par Play Ho Raha Hai...", cleanQuery, 3000L)
+        com.nik.voiceassistant.service.TvHudOverlay.showAction(context, "⚡ YouTube Par Play Ho Raha Hai...", cleanQuery)
         return try {
             if (intent.resolveActivity(packageManager) != null) {
                 context.startActivity(intent)
@@ -1809,6 +1931,7 @@ class DeviceToolExecutor(
                     // Dispatch MEDIA_PLAY to ensure playback resumes
                     am?.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_MEDIA_PLAY))
                     am?.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_MEDIA_PLAY))
+                    com.nik.voiceassistant.service.TvHudOverlay.showCompleted(context, "YouTube: $cleanQuery")
                 }
                 withScreen(mapOf("success" to true, "opened" to "$app search for \"$cleanQuery\"${if (shouldPlay) " and playing video card $targetCard" else ""}"))
             } else {
@@ -1818,6 +1941,7 @@ class DeviceToolExecutor(
                 if (shouldPlay) {
                     Thread.sleep(1600)
                     PhoneAgentService.instance?.clickYtCard(targetCard)
+                    com.nik.voiceassistant.service.TvHudOverlay.showCompleted(context, "YouTube: $cleanQuery")
                 }
                 withScreen(mapOf("success" to true, "opened" to "YouTube fallback for \"$cleanQuery\""))
             }
