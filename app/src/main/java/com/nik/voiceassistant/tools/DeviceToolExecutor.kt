@@ -75,11 +75,27 @@ class DeviceToolExecutor(
     private val packageManager: PackageManager = context.packageManager
     private val cameraManager = context.getSystemService(Context.CAMERA_SERVICE) as? CameraManager
 
+    val isTvDevice: Boolean by lazy {
+        packageManager.hasSystemFeature(PackageManager.FEATURE_LEANBACK) ||
+            packageManager.hasSystemFeature(PackageManager.FEATURE_TELEVISION) ||
+            (context.resources.configuration.uiMode and android.content.res.Configuration.UI_MODE_TYPE_MASK) == android.content.res.Configuration.UI_MODE_TYPE_TELEVISION
+    }
+
     /**
      * Function declarations sent to Gemini in the session setup message (JSON Schema parameters).
      * Adding a tool = a declaration here + a branch in execute(); the server needs no change.
      */
-    val declarations: List<Map<String, Any>> = listOf(
+    val declarations: List<Map<String, Any>> by lazy {
+        if (!isTvDevice) rawDeclarations else {
+            val tvAllowed = setOf(
+                "search_tv", "dpad", "open_app", "list_apps", "set_volume",
+                "wait", "end_conversation", "get_time", "navigate", "launch_intent"
+            )
+            rawDeclarations.filter { it["name"] in tvAllowed }
+        }
+    }
+
+    private val rawDeclarations: List<Map<String, Any>> = listOf(
         function(
             "read_screen",
             "Reads what is on the phone screen now: the foreground app and a numbered list of elements " +
@@ -514,7 +530,7 @@ class DeviceToolExecutor(
         // Arguments can hold message text and numbers: only the tool name is logged
         Log.i(TAG, "Executing tool: $toolName")
         // Auto-start a 1-step plan when acting without an existing plan
-        if (toolName !in passiveTools) {
+        if (!isTvDevice && toolName !in passiveTools) {
             val current = planEngine.plan.value
             if (current == null || current.status in setOf("done", "failed")) {
                 val userGoal = userText().lines().lastOrNull { it.isNotBlank() }?.trim() ?: toolName
@@ -1416,6 +1432,7 @@ class DeviceToolExecutor(
      * row, or the same call over and over. It tells the model to change approach instead of looping.
      */
     private fun withProgressCheck(toolName: String, args: Map<String, Any?>, result: Map<String, Any?>): Map<String, Any?> {
+        if (isTvDevice) return result
         planEngine.plan.value?.tried?.add(toolName)
         @Suppress("UNCHECKED_CAST")
         val screen = (result["screen"] as? Map<String, Any?>) ?: result.takeIf { toolName == "read_screen" }
@@ -1889,14 +1906,8 @@ class DeviceToolExecutor(
             }
 
             if (channelDigits != null) {
-                Thread.sleep(1200)
-                channelDigits.forEach { digit ->
-                    val code = KeyEvent.KEYCODE_0 + (digit - '0')
-                    com.nik.voiceassistant.service.TvInputBridge.sendKey(code)
-                    Thread.sleep(280)
-                }
-                Thread.sleep(600)
-                com.nik.voiceassistant.service.TvInputBridge.sendKey(KeyEvent.KEYCODE_DPAD_CENTER)
+                Thread.sleep(700)
+                com.nik.voiceassistant.service.TvInputBridge.tuneChannel(channelDigits)
             } else {
                 // Send GVA broadcast to search within JioTV+
                 try {

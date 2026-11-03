@@ -16,7 +16,7 @@ import java.net.Socket
 object TvInputBridge {
     private const val TAG = "TvInputBridge"
     private const val BRIDGE_PORT = 9998
-    private const val TIMEOUT_MS = 250
+    private const val TIMEOUT_MS = 60
 
     fun sendCommand(cmd: String): Boolean {
         return try {
@@ -34,16 +34,19 @@ object TvInputBridge {
     }
 
     fun injectKey(keyCode: Int): Boolean {
-        val ok = sendCommand("input keyevent $keyCode")
-        if (!ok) {
-            try {
-                Runtime.getRuntime().exec(arrayOf("input", "keyevent", keyCode.toString()))
-                return true
-            } catch (e: Exception) {
-                Log.w(TAG, "exec fallback failed: ${e.message}")
+        return sendCommand("input keyevent $keyCode")
+    }
+
+    fun tuneChannel(channelDigits: String): Boolean {
+        val cmd = buildString {
+            channelDigits.forEachIndexed { index, digit ->
+                val code = KeyEvent.KEYCODE_0 + (digit - '0')
+                if (index > 0) append(" && sleep 0.22 && ")
+                append("input keyevent $code")
             }
+            append(" && sleep 0.4 && input keyevent ${KeyEvent.KEYCODE_DPAD_CENTER}")
         }
-        return ok
+        return sendCommand(cmd)
     }
 
     fun sendKey(keyCode: Int): Boolean = injectKey(keyCode)

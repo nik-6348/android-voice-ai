@@ -842,8 +842,11 @@ class VoiceSession private constructor(val context: Context) {
                 _liveReply.value = fullReply
                 replyTurnOpen = true
                 if (!webSocketClient.isToolRunning()) {
-                    if (isTvDevice && hasExecutedTvAction) {
+                    if (isTvDevice) {
                         // Background voice only: DO NOT show overlay card over video/playback!
+                        if (!hasExecutedTvAction && !com.nik.voiceassistant.service.TvHudOverlay.isActionRunningOrCompleted) {
+                            com.nik.voiceassistant.service.TvHudOverlay.showAnswer(context, _currentUserQuery.value, fullReply)
+                        }
                     } else {
                         com.nik.voiceassistant.service.TvHudOverlay.showAnswer(context, _currentUserQuery.value, fullReply)
                     }
@@ -1231,7 +1234,7 @@ class VoiceSession private constructor(val context: Context) {
             webSocketClient.connect(
                 LiveClient.Config(
                     serverUrl = _serverUrl.value, apiKey = key, model = _selectedModel.value, voice = _selectedVoice.value,
-                    search = _isSearchEnabled.value, instructions = ::instructionsFor, resumeHandle = resumeHandleToUse
+                    search = if (isTvDevice) false else _isSearchEnabled.value, instructions = ::instructionsFor, resumeHandle = resumeHandleToUse
                 )
             )
             _isRecording.value = true
@@ -1532,37 +1535,53 @@ class VoiceSession private constructor(val context: Context) {
      * transcript) so a new session still knows what was going on.
      */
     private fun instructionsFor(resuming: Boolean): String {
+        val isTv = context.packageManager.hasSystemFeature(android.content.pm.PackageManager.FEATURE_LEANBACK) ||
+            context.packageManager.hasSystemFeature(android.content.pm.PackageManager.FEATURE_TELEVISION) ||
+            (context.resources.configuration.uiMode and android.content.res.Configuration.UI_MODE_TYPE_MASK) == android.content.res.Configuration.UI_MODE_TYPE_TELEVISION
+
+        if (isTv) {
+            val tvBase = """
+You are {NAME}, an ultra-fast autonomous AI voice assistant operating an Android TV / Jio Set-Top Box.
+Device: {DEVICE}.
+
+FAST SINGLE-TURN ACTION RULES (NO MULTI-STEP PLANNING):
+1. ACTION QUERIES (when user asks to play songs, videos, movies, TV channels, open apps, adjust volume, or navigate):
+   - Examples: 'Zee Cinema lagao', 'Aaj Tak chala do', 'Star Sports 1 Live TV par lagao', 'Mahakal song YouTube par chalao', 'Hotstar kholo', 'Volume kam karo'.
+   - NEVER call update_plan or complete_step! There is no multi-step plan on TV.
+   - Speak a very brief natural intro right at the start: 'Theek hai, main [item] laga raha hoon...'
+   - Call the target tool immediately on Turn 1 (e.g. search_tv with play_first=true, open_app, set_volume, or dpad)!
+   - For Live TV channels, pass app='livetv' in search_tv.
+   - After executing the action tool, say ONLY ONE short line in the background while video is playing: 'Haan, laga diya!' or 'Haan, play kar diya!' and STOP IMMEDIATELY.
+   - Do NOT ask follow-up questions ('Kuch aur dekhna hai?'). Say nothing more.
+
+2. INFORMATIONAL QUERIES (questions, facts, weather, time, scores, general talk):
+   - Examples: 'Aaj ka mausam kaisa hai?', 'Time kya hua?', 'Match score kya hai?', 'India ka PM kaun hai?'.
+   - DO NOT call search_tv or open any app!
+   - Answer directly and concisely via voice (1-2 sentences in natural Hindi/Hinglish).
+""".trimIndent()
+                .replace("{NAME}", _assistantName.value)
+                .replace("{DEVICE}", toolExecutor.deviceProfile())
+
+            if (resuming) return tvBase
+            val recent = _transcripts.value.filter { it.sender == "user" || it.sender == "assistant" }.takeLast(6)
+            if (recent.isEmpty()) return tvBase
+            val lines = recent.joinToString("\n") { (if (it.sender == "user") "User: " else "You: ") + it.text.take(300) }
+            return "$tvBase\n\nEarlier in this conversation:\n$lines"
+        }
+
         val vision = if (_visionFrames.value && webSocketClient.supportsVision)
             "\n            SEEING: after each action you also get an image of the screen. Use it with the element list: it shows what the list misses (popups, ads, images, colours, where things are). Close what is in the way first."
         else ""
         val fastMode = if (_fastActionMode.value)
             "\n\nFAST ACTION MODE IS ON: Act silently. Do NOT speak or narrate while working — no \"theek hai\", no step-by-step commentary. Just do the actions. Speak ONLY once: after the very last action, say one short line reporting the final result or asking what's next."
         else ""
-        val isTv = context.packageManager.hasSystemFeature(android.content.pm.PackageManager.FEATURE_LEANBACK) ||
-            context.packageManager.hasSystemFeature(android.content.pm.PackageManager.FEATURE_TELEVISION) ||
-            (context.resources.configuration.uiMode and android.content.res.Configuration.UI_MODE_TYPE_MASK) == android.content.res.Configuration.UI_MODE_TYPE_TELEVISION
-        val tvInstructions = if (isTv) """
-
-ANDROID TV / JIO SET-TOP BOX MODE:
-You are operating an Android TV / Jio Set-Top Box.
-1. ACTION QUERIES (when user asks to play songs, videos, movies, TV channels, or open apps, e.g. 'Zee Cinema lagao', 'Aaj Tak laga do Live TV par', 'Star Sports 1 chalao', 'Mahakal song YouTube par chalao', '9X Jalwa chalao'):
-   - Start speaking immediately at the very beginning: 'Theek hai, main [channel/item] laga raha hoon...'
-   - Then immediately call search_tv with the clean query and play_first=true! (For TV channels or Live TV, pass app='livetv').
-   - Remove conversational fillers, verbs ('laga do', 'chala de'), and platform names from the query.
-   - After executing the tool, speak purely in the background while video is playing. Say ONLY ONE short line: 'Haan, laga diya!' or 'Haan, play kar diya!' and STOP IMMEDIATELY.
-   - CRITICAL: NEVER ask follow-up questions like 'Is there anything else I can help you with?' or 'Kuch aur dekhna hai?'. Say nothing more!
-2. INFORMATIONAL QUERIES (questions, facts, weather, time, scores, chit-chat, e.g. 'Aaj ka mausam kaisa hai?', 'Time kya hua?', 'Match score kya hai?', 'India ka PM kaun hai?'):
-   - DO NOT call search_tv!
-   - DO NOT open any app (no YouTube, no Live TV, no browser)!
-   - Answer directly by speaking via voice! Keep your answer concise and accurate in natural Hindi/Hinglish (under 2 sentences).
-""" else ""
 
         val base = DEFAULT_INSTRUCTIONS
             .replace("{NAME}", _assistantName.value)
             .replace("{SELF}", toolExecutor.selfDescription())
             .replace("{OWNER}", ownerLine())
             .replace("{DEVICE}", toolExecutor.deviceProfile())
-            .replace("{VISION}", vision) + fastMode + tvInstructions + "\n\n" + lockPolicy()
+            .replace("{VISION}", vision) + fastMode + "\n\n" + lockPolicy()
         if (resuming) return base
         val recent = _transcripts.value.filter { it.sender == "user" || it.sender == "assistant" }.takeLast(10)
         if (recent.isEmpty()) return base
