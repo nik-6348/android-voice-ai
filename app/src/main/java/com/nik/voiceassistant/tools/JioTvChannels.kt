@@ -82,10 +82,6 @@ object JioTvChannels {
         "mtv beats" to "802",
         "music india" to "204", // Verified on Jio STB TV Guide (204)
         "e24" to "813", // Verified on Jio STB TV Guide (813)
-        "9x jalwa" to "811",
-        "9x jhakaas" to "812",
-        "mastiii" to "808",
-        "b4u music" to "809",
 
         // Hindi & English News
         "aaj tak" to "502",
@@ -135,6 +131,8 @@ object JioTvChannels {
 
         // Kids
         "cartoon network" to "651",
+        "cartoon tv" to "651",
+        "cartoon" to "651",
         "cn" to "651",
         "pogo" to "670",
         "hungama" to "663",
@@ -217,3 +215,4 @@ object JioTvChannels {
         return false
     }
 }
+

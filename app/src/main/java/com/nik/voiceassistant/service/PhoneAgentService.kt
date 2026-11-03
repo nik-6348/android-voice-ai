@@ -205,8 +205,8 @@ class PhoneAgentService : AccessibilityService() {
                 session.startNewChat(keepMicMuted = true)
                 session.sendText(text, keepMicMuted = true)
             }
-            // 2000ms debounce gives user full 2 seconds to pause naturally without cut-off
-            mainHandler.postDelayed(pendingJioQueryRunnable!!, 2000L)
+            // Ultra-responsive 350ms debounce dispatches as soon as user finishes speaking
+            mainHandler.postDelayed(pendingJioQueryRunnable!!, 350L)
         } catch (e: Exception) {
             Log.w(TAG, "Error in Jio voice bridge: ${e.message}")
         }

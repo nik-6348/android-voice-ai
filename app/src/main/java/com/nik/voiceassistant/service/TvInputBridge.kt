@@ -41,10 +41,10 @@ object TvInputBridge {
         val cmd = buildString {
             channelDigits.forEachIndexed { index, digit ->
                 val code = KeyEvent.KEYCODE_0 + (digit - '0')
-                if (index > 0) append(" && sleep 0.22 && ")
+                if (index > 0) append(" && sleep 0.15 && ")
                 append("input keyevent $code")
             }
-            append(" && sleep 0.4 && input keyevent ${KeyEvent.KEYCODE_DPAD_CENTER}")
+            append(" && sleep 0.25 && input keyevent ${KeyEvent.KEYCODE_DPAD_CENTER}")
         }
         return sendCommand(cmd)
     }

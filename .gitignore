@@ -17,3 +17,5 @@ local.properties
 # Release signing (password) - never commit
 keystore.properties
 *.jks
+
+jio-apk-inspect/
