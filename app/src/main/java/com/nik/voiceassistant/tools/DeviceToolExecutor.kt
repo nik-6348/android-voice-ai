@@ -1686,10 +1686,14 @@ class DeviceToolExecutor(
      */
     private fun cleanTvQuery(rawQuery: String): String {
         var q = rawQuery.trim()
+        // Common speech recognition phonetic fixes
+        q = q.replace(Regex("(?i)\\bnine\\s*x\\b"), "9x")
+        q = q.replace(Regex("(?i)\\bzee\\s*ciman[a-z]*\\b"), "zee cinema")
+        q = q.replace(Regex("(?i)\\bzee\\s*cinam[a-z]*\\b"), "zee cinema")
         // Strip out target platform phrases
         q = q.replace(Regex("(?i)\\b(on\\s+)?(youtube|jiocinema|jio\\s+cinema|jiotv\\+?|jio\\s+tv\\+?|live\\s+tv|hotstar|yt|tv)\\s*(par|pe|me|mein)?\\b"), " ")
         // Strip out action verbs & commands
-        q = q.replace(Regex("(?i)\\b(lagade|laga\\s+do|laga\\s+de|lagao|lagana|lagane|lagaye|laga|chala\\s+do|chala\\s+de|chalao|chalana|chalaye|chalane|chala|bajao|baja\\s+do|baja\\s+de|bajade|sunao|suna\\s+do|suna\\s+de|sunade|play\\s+karo|play\\s+kar\\s+do|play|khol\\s+do|khol|kholo|open\\s+karo|open|search\\s+karo|search|dhundo|dikhaye|dikhao)\\b"), " ")
+        q = q.replace(Regex("(?i)\\b(lagade|laga\\s+do|laga\\s+de|lagao|lagana|lagane|lagaye|lagan|laga|chala\\s+do|chala\\s+de|chalao|chalana|chalaye|chalane|chala|bajao|baja\\s+do|baja\\s+de|bajade|sunao|suna\\s+do|suna\\s+de|sunade|play\\s+karo|play\\s+kar\\s+do|play|khol\\s+do|khol|kholo|open\\s+karo|open|search\\s+karo|search|dhundo|dikhaye|dikhao)\\b"), " ")
         // Strip out fillers & speech recognition noise
         q = q.replace(Regex("(?i)\\b(achaar|achha\\s+sa|achha\\s+wala|achhe|badhiya\\s+sa|badhiya|koi\\s+bhi|koi|ek|zara|thoda|kripya|please|bhai|yaar)\\b"), " ")
         // Strip out dangling prepositions at ends
@@ -1714,15 +1718,32 @@ class DeviceToolExecutor(
             val channelDigits = explicitChannel?.takeIf { it.isNotBlank() }
                 ?: Regex("\\b(\\d{1,4})\\b").find(cleanQuery)?.groupValues?.get(1)
                 ?: matchedChannelNumber
-            val channelDisplay = if (channelDigits != null) "$cleanQuery (Channel $channelDigits)" else cleanQuery
+
+            if (channelDigits == null) {
+                return mapOf("success" to false, "error" to "Channel '$cleanQuery' ka channel number nahi mila. Kripya channel number bataiye.")
+            }
+
+            val channelDisplay = "$cleanQuery (Channel $channelDigits)"
 
             // Instantly hide overlay so TV screen/video remains completely unblocked
             com.nik.voiceassistant.service.TvHudOverlay.hide()
 
-            val currentPkg = PhoneAgentService.instance?.rootInActiveWindow?.packageName?.toString()
-            val isJioTvForeground = currentPkg == "com.jio.media.jiotvplus" || currentPkg == "com.jio.media.livetv"
+            val rootNode = PhoneAgentService.instance?.rootInActiveWindow
+            val currentPkg = rootNode?.packageName?.toString()
 
-            if (!isJioTvForeground) {
+            // Check if Live TV Classic Player is ALREADY playing full screen
+            val isPlayerActive = (currentPkg == "com.jio.media.jiotvplus" || currentPkg == "com.jio.media.livetv") &&
+                (rootNode?.findAccessibilityNodeInfosByViewId("com.jio.media.jiotvplus:id/videoView")?.isNotEmpty() == true ||
+                 rootNode?.findAccessibilityNodeInfosByViewId("com.jio.media.jiotvplus:id/watermarkClassicTV")?.isNotEmpty() == true)
+
+            if (isPlayerActive) {
+                // TV is ALREADY playing live video! Dismiss any active banner/overlay first
+                com.nik.voiceassistant.service.TvInputBridge.sendKey(KeyEvent.KEYCODE_BACK)
+                Thread.sleep(120)
+                // Instantly tune the channel with zero delay
+                com.nik.voiceassistant.service.TvInputBridge.tuneChannel(channelDigits)
+            } else {
+                // TV is NOT playing Live TV (it may be on Home screen or another app)
                 val launchIntent = Intent(Intent.ACTION_VIEW, Uri.parse("jiotvplus://open.classicmenu")).apply {
                     setPackage("com.jio.media.jiotvplus")
                     addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
@@ -1742,39 +1763,16 @@ class DeviceToolExecutor(
                 val startWait = System.currentTimeMillis()
                 while (System.currentTimeMillis() - startWait < 3000L) {
                     Thread.sleep(150)
-                    val pkg = PhoneAgentService.instance?.rootInActiveWindow?.packageName?.toString()
-                    if (pkg == "com.jio.media.jiotvplus" || pkg == "com.jio.media.livetv") {
+                    val r = PhoneAgentService.instance?.rootInActiveWindow
+                    val pkg = r?.packageName?.toString()
+                    val hasVideo = r?.findAccessibilityNodeInfosByViewId("com.jio.media.jiotvplus:id/videoView")?.isNotEmpty() == true
+                    if (hasVideo || pkg == "com.jio.media.jiotvplus" || pkg == "com.jio.media.livetv") {
                         ready = true
                         break
                     }
                 }
-                // Extra settling delay for the window event loop / player surface
-                Thread.sleep(if (ready) 600 else 1400)
-            } else {
-                Thread.sleep(100)
-            }
-
-            if (channelDigits != null) {
+                Thread.sleep(if (ready) 600 else 1200)
                 com.nik.voiceassistant.service.TvInputBridge.tuneChannel(channelDigits)
-            } else {
-                // Send GVA broadcast to search within JioTV+
-                try {
-                    val gvaIntent = Intent("com.jio.media.stb.ondemand.patchwall.GVA").apply {
-                        setPackage("com.jio.media.jiotvplus")
-                        putExtra("SEARCH_KEY", cleanQuery)
-                        putExtra("KEY_SEARCH_TYPE", "VOICE")
-                    }
-                    context.sendBroadcast(gvaIntent)
-                } catch (ignored: Exception) {}
-                try {
-                    val vsIntent = Intent(Intent.ACTION_VIEW, Uri.parse("jiotvplus://voice_search/$cleanQuery")).apply {
-                        setPackage("com.jio.media.jiotvplus")
-                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
-                    }
-                    context.startActivity(vsIntent)
-                } catch (ignored: Exception) {}
-                Thread.sleep(1200)
-                com.nik.voiceassistant.service.TvInputBridge.sendKey(KeyEvent.KEYCODE_DPAD_CENTER)
             }
 
             com.nik.voiceassistant.service.TvHudOverlay.hide()

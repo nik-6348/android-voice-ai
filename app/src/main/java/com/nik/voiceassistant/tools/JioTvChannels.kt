@@ -77,11 +77,28 @@ object JioTvChannels {
         // Music Channels
         "9xm" to "809", // Verified on Jio STB TV Guide (809)
         "zoom" to "811", // Verified on Jio STB TV Guide (811)
+        "zing" to "826", // Verified on Jio STB TV Guide (826)
+        "9x jalwa" to "825", // Verified on Jio STB TV Guide
+        "9xjalwa" to "825",
+        "nine x jalwa" to "825",
+        "nine x" to "809",
+        "b4u music" to "822", // Verified on Jio STB TV Guide (822)
+        "b4u" to "822",
+        "mastiii" to "822",
+        "masti" to "822",
+        "mastii" to "822",
+        "agni song" to "1377", // Verified on Jio STB TV Guide (1377)
+        "nh bollyraga" to "4097", // Verified on Jio STB TV Guide (4097)
         "mtv" to "806", // Verified on Jio STB TV Guide (806)
         "mtv hd" to "806",
         "mtv beats" to "802",
         "music india" to "204", // Verified on Jio STB TV Guide (204)
         "e24" to "813", // Verified on Jio STB TV Guide (813)
+        "shree sanatan tv" to "815", // Verified on Jio STB TV Guide (815)
+        "sanatan tv" to "815",
+        "hamara lakshya" to "814", // Verified on Jio STB TV Guide (814)
+        "valam dayro" to "816", // Verified on Jio STB TV Guide (816)
+        "shiksha tv" to "812", // Verified on Jio STB TV Guide (812)
 
         // Hindi & English News
         "aaj tak" to "502",
