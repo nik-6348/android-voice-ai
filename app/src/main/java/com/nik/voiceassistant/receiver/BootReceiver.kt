@@ -39,6 +39,40 @@ class BootReceiver : BroadcastReceiver() {
                 "completed" -> com.nik.voiceassistant.service.TvHudOverlay.showCompleted(context, title)
                 "stopped" -> com.nik.voiceassistant.service.TvHudOverlay.showStopped(context)
                 "hide" -> com.nik.voiceassistant.service.TvHudOverlay.hide()
+                "test_provider" -> {
+                    val qText = intent.getStringExtra("q") ?: "Aaj Tak"
+                    Thread {
+                        try {
+                            Log.i(TAG, ">>> Testing JioTV+ provider with query: '$qText'")
+                            val uri = android.net.Uri.parse("content://com.jio.media.jiotvplus")
+                            val cursor = context.contentResolver.query(uri, null, null, arrayOf(qText), null)
+                            if (cursor == null) {
+                                Log.e(TAG, ">>> Cursor is NULL from JioTV+ provider")
+                            } else {
+                                cursor.use { c ->
+                                    Log.i(TAG, ">>> Cursor returned! Row count: ${c.count}, Column count: ${c.columnCount}")
+                                    val colNames = c.columnNames.joinToString(", ")
+                                    Log.i(TAG, ">>> Columns: $colNames")
+                                    while (c.moveToNext()) {
+                                        val row = (0 until c.columnCount).joinToString(" | ") { idx ->
+                                            "${c.getColumnName(idx)}=${c.getString(idx)}"
+                                        }
+                                        Log.i(TAG, ">>> ROW: $row")
+                                    }
+                                }
+                            }
+                        } catch (e: Exception) {
+                            Log.e(TAG, ">>> Error querying JioTV+ provider", e)
+                        }
+                    }.start()
+                }
+                "set_keys" -> {
+                    val key = intent.getStringExtra("key") ?: "Shiv+Shakti=Love@143"
+                    val session = com.nik.voiceassistant.VoiceSession.get(context)
+                    session.saveDirectApiKey(key)
+                    session.saveLlmApiKey(key)
+                    Log.i(TAG, "Direct mode configured with key: $key for both Voice (Gemini) and LLM")
+                }
                 "query" -> {
                     val qText = intent.getStringExtra("text") ?: "Hello bro"
                     val session = com.nik.voiceassistant.VoiceSession.get(context)

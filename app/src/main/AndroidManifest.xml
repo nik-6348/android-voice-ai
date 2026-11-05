@@ -93,7 +93,15 @@
         <intent>
             <action android:name="com.android.settings.action.SETTINGS_SEARCH" />
         </intent>
+        <package android:name="com.jio.media.jiotvplus" />
+        <package android:name="com.jio.yt" />
+        <package android:name="com.android.app.jio.voiceassist" />
+        <provider android:authorities="com.jio.media.jiotvplus" />
+        <provider android:authorities="com.jio.yt.GLOBALSEARCH" />
     </queries>
+
+    <!-- Device assistant / STB query permissions -->
+    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" tools:ignore="QueryAllPackagesPermission" />
 
     <!-- Screen Overlay / Draw over other apps (floating assistant UI & status) -->
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />

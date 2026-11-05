@@ -205,8 +205,8 @@ class PhoneAgentService : AccessibilityService() {
                 session.startNewChat(keepMicMuted = true)
                 session.sendText(text, keepMicMuted = true)
             }
-            // Ultra-responsive 350ms debounce dispatches as soon as user finishes speaking
-            mainHandler.postDelayed(pendingJioQueryRunnable!!, 350L)
+            // 1200ms debounce ensures user has fully finished speaking before dispatching
+            mainHandler.postDelayed(pendingJioQueryRunnable!!, 1200L)
         } catch (e: Exception) {
             Log.w(TAG, "Error in Jio voice bridge: ${e.message}")
         }
