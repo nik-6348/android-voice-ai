@@ -1780,7 +1780,8 @@ class DeviceToolExecutor(
         }
 
         val app = targetApp?.lowercase()?.trim() ?: "youtube"
-        val shouldPlay = autoPlay ||
+        // Always auto-play for YouTube TV (search result pe rukna user experience kharab karta hai)
+        val shouldPlay = autoPlay || app == "youtube" ||
             lowerQ.contains("play") ||
             lowerQ.contains("chalao") ||
             lowerQ.contains("chalana") ||

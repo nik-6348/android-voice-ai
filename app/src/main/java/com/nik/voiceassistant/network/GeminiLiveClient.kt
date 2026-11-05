@@ -255,9 +255,9 @@ class GeminiLiveClient(
                 "realtimeInputConfig", mapOf(
                     "automaticActivityDetection" to mapOf(
                         "startOfSpeechSensitivity" to "START_SENSITIVITY_HIGH",
-                        "endOfSpeechSensitivity" to "END_SENSITIVITY_HIGH",
-                        "prefixPaddingMs" to 100,
-                        "silenceDurationMs" to 600
+                        "endOfSpeechSensitivity" to "END_SENSITIVITY_LOW",
+                        "prefixPaddingMs" to 200,
+                        "silenceDurationMs" to 1500
                     )
                 )
             )

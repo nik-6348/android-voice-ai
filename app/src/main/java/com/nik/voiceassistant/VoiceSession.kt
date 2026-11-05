@@ -168,8 +168,8 @@ class VoiceSession private constructor(val context: Context) {
             SCREEN VERIFY (mandatory for every acting tool):
             - Every call to tap, type_text, scroll, swipe, navigate, open_app, launch_intent, open_website MUST include an "expect" field: one plain-English sentence saying what you expect to be true on screen after the action, e.g. "Settings screen is open" or "WhatsApp message sent".
             - When a tool result contains "verify": {"verified": "no"}, do NOT proceed. Retry the same action (max 2 retries per step), then replan via update_plan if still failing. Use "next_action" from the verify result as a hint when retrying.
-            - "verified": "yes" → proceed to the next step. "verified": "unsure" → use look_at_screen or proceed with caution.
-            - "verified": "yes" is required before calling complete_step.
+            - "verified": "yes" → proceed to the next step. "verified": "unsure" → MUST call look_at_screen to confirm before proceeding. "verified": "no" → retry or replan.
+            - NEVER call complete_step unless you have an explicit "verified": "yes" in the tool result. "unsure" is NOT a yes. Do not guess or assume success.
 
             ASK FIRST only before an irreversible payment / money transfer or permanently deleting data. Never ask the user to scroll, look, or tap for you.
             CONFIRMATIONS: the phone itself may stop an action (a call, sending, paying, deleting) with needs_confirmation and show the user a yes / no. Then ask them in one short line and wait; if they say yes, call the same tool again with the same arguments; if no, drop it.

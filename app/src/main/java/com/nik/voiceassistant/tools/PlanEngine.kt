@@ -86,6 +86,10 @@ class PlanEngine {
         if (verifyResult?.verified == "no") {
             return "verify failed: ${verifyResult.evidence}"
         }
+        // Block completion if verify is unsure and a verifier was used (not a background step)
+        if (verifyResult?.verified == "unsure" && verifyResult.via != "background") {
+            return "verify inconclusive (${verifyResult.via}): ${verifyResult.evidence} — call look_at_screen to confirm before completing"
+        }
 
         val now = System.currentTimeMillis()
         val updatedSteps = current.steps.toMutableList()
