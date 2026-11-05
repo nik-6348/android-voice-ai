@@ -38,13 +38,16 @@ object TvInputBridge {
     }
 
     fun tuneChannel(channelDigits: String): Boolean {
+        // JioTV+'s channel-number overlay drops/resets digits typed faster than ~300ms apart
+        // (confirmed on-device: "502" at 150ms gaps lands as "02" -> "No Channel Found").
+        // 450ms is the verified-safe gap.
         val cmd = buildString {
             channelDigits.forEachIndexed { index, digit ->
                 val code = KeyEvent.KEYCODE_0 + (digit - '0')
-                if (index > 0) append(" && sleep 0.15 && ")
+                if (index > 0) append(" && sleep 0.45 && ")
                 append("input keyevent $code")
             }
-            append(" && sleep 0.25 && input keyevent ${KeyEvent.KEYCODE_DPAD_CENTER}")
+            append(" && sleep 0.6 && input keyevent ${KeyEvent.KEYCODE_DPAD_CENTER}")
         }
         return sendCommand(cmd)
     }
