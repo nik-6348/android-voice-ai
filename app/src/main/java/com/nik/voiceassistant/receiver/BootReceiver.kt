@@ -24,45 +24,7 @@ class BootReceiver : BroadcastReceiver() {
         )
 
         fun ensureBlokadaVpnActive(context: Context) {
-            Thread {
-                try {
-                    // 1. Wait for system clock to be synchronized (year >= 2024)
-                    // On STB boot without hardware RTC, time starts at 2015.
-                    // If Blokada DoH starts before NTP sync, TLS cert check fails and breaks internet!
-                    var attempts = 0
-                    while (attempts < 20) {
-                        val currentYear = java.util.Calendar.getInstance().get(java.util.Calendar.YEAR)
-                        if (currentYear >= 2024) break
-                        Log.i(TAG, "Waiting for STB clock to sync via NTP (current year: $currentYear)...")
-                        Thread.sleep(1500)
-                        attempts++
-                    }
-
-                    val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? android.net.ConnectivityManager
-                    val isVpnActive = cm?.allNetworks?.any { network ->
-                        cm.getNetworkCapabilities(network)?.hasTransport(android.net.NetworkCapabilities.TRANSPORT_VPN) == true
-                    } == true
-                    if (!isVpnActive) {
-                        val pm = context.packageManager
-                        val blokadaPkg = "org.blokada.origin.alarm"
-                        if (pm.getLaunchIntentForPackage(blokadaPkg) != null) {
-                            Log.i(TAG, "STB clock verified. Auto-starting Blokada to enforce ad blocking.")
-                            val launchIntent = pm.getLaunchIntentForPackage(blokadaPkg)?.apply {
-                                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION)
-                            }
-                            if (launchIntent != null) {
-                                context.startActivity(launchIntent)
-                                Thread.sleep(2000)
-                                PhoneAgentService.instance?.performGlobalAction(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_HOME)
-                            }
-                        }
-                    } else {
-                        Log.i(TAG, "Blokada AdBlocker VPN is active.")
-                    }
-                } catch (e: Exception) {
-                    Log.w(TAG, "Couldn't ensure Blokada VPN active: ${e.message}")
-                }
-            }.start()
+            com.nik.voiceassistant.service.BlokadaVpnController.ensureBlokadaVpnSafely(context)
         }
     }
 
@@ -121,6 +83,7 @@ class BootReceiver : BroadcastReceiver() {
                     session.sendText(qText, keepMicMuted = true)
                 }
                 "resume" -> com.nik.voiceassistant.service.TvPlaybackStateManager.resumeLastPlayed(context)
+                "test_blokada" -> ensureBlokadaVpnActive(context)
                 "audio" -> {
                     val session = com.nik.voiceassistant.VoiceSession.get(context)
                     val sampleRate = 24000
