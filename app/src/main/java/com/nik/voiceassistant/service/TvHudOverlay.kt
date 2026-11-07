@@ -70,7 +70,7 @@ object TvHudOverlay {
     var isActionRunningOrCompleted = false
 
     val isListening: Boolean
-        get() = isVisible && isFullScreenMode
+        get() = isVisible && !isActionRunningOrCompleted
 
     fun isListeningOrActive(): Boolean = isVisible
 
@@ -82,44 +82,33 @@ object TvHudOverlay {
     }
 
     /**
-     * Instantly shows the Full-Screen Immersion Overlay when remote mic is triggered.
-     * Completely masks native Jio Voice Assistant UI with Shiv's neon audio wave UI.
+     * Shows the sleek compact Bottom Pill HUD when remote mic is triggered.
+     * Content on TV stays 100% visible and unblocked.
+     * Auto-dismisses in 2.0s if user speaks nothing.
      */
     fun showListening(context: Context) {
         mainHandler.post {
             try {
                 isActionRunningOrCompleted = false
-                if (isVisible && isFullScreenMode) {
-                    // Already actively listening: ignore repetitive accessibility events to prevent flicker
-                    return@post
-                }
                 val service = PhoneAgentService.instance
                 val hostContext = service ?: context.applicationContext
                 ensureViews(hostContext)
 
-                isFullScreenMode = true
-                fullScreenLayout?.visibility = View.VISIBLE
-                compactLayout?.visibility = View.GONE
-                answerCardContainer?.visibility = View.GONE
+                isFullScreenMode = false
+                fullScreenLayout?.visibility = View.GONE
+                compactLayout?.visibility = View.VISIBLE
+                stopWaveAnimation()
 
-                // Reset badge to listening state
-                statusBadgeView?.text = "● SUN RAHA HOON"
-                statusBadgeView?.setTextColor(Color.parseColor("#10B981")) // Emerald Green
-                (statusBadgeView?.background as? GradientDrawable)?.apply {
-                    setColor(Color.parseColor("#2510B981"))
-                    setStroke(2, Color.parseColor("#4D10B981"))
-                }
+                compactTitleView?.text = "● Sun raha hoon..."
+                compactSubtitleView?.visibility = View.VISIBLE
+                compactSubtitleView?.text = "Boliye, kya chalana hai?"
+                setDotColor(Color.parseColor("#10B981")) // Emerald Green
 
-                // Default initial waiting speech state
-                listeningSpeechView?.text = "Boliye, main sun raha hoon..."
-                listeningSpeechView?.setTextColor(Color.parseColor("#94A3B8"))
-                listeningSpeechView?.setTypeface(null, android.graphics.Typeface.ITALIC)
+                attachOrUpdateWindow(hostContext, isFullScreen = false)
+                startOrbPulseAnimation(compactDotView)
 
-                attachOrUpdateWindow(hostContext, isFullScreen = true)
-                startWaveAnimation()
-
-                // Safety dismiss in case no speech arrives for 15s
-                scheduleDismiss(15000L)
+                // 2.0s auto-dismiss if user says nothing!
+                scheduleDismiss(2000L)
             } catch (e: Exception) {
                 Log.w(TAG, "Failed to show listening HUD: ${e.message}")
             }
@@ -127,17 +116,16 @@ object TvHudOverlay {
     }
 
     /**
-     * Updates recognized speech in real time as the user speaks into the remote.
+     * Updates recognized speech in real time in the compact bottom pill.
      */
     fun updateSpeech(speechText: String) {
         mainHandler.post {
-            if (!isVisible || !isFullScreenMode) return@post
+            if (!isVisible) return@post
             val formatted = "\"$speechText\""
-            if (listeningSpeechView?.text?.toString() == formatted) return@post
-            listeningSpeechView?.text = formatted
-            listeningSpeechView?.setTextColor(Color.parseColor("#F8FAFC"))
-            listeningSpeechView?.setTypeface(null, android.graphics.Typeface.BOLD)
-            scheduleDismiss(15000L)
+            if (compactTitleView?.text?.toString() == formatted) return@post
+            compactTitleView?.text = formatted
+            compactSubtitleView?.visibility = View.GONE
+            scheduleDismiss(2500L)
         }
     }
 
@@ -152,24 +140,19 @@ object TvHudOverlay {
                 val hostContext = service ?: context.applicationContext
                 ensureViews(hostContext)
 
-                isFullScreenMode = true
-                fullScreenLayout?.visibility = View.VISIBLE
-                compactLayout?.visibility = View.GONE
-                answerCardContainer?.visibility = View.GONE
+                isFullScreenMode = false
+                fullScreenLayout?.visibility = View.GONE
+                compactLayout?.visibility = View.VISIBLE
+                stopWaveAnimation()
 
-                statusBadgeView?.text = "⚡ SOCH RAHA HOON..."
-                statusBadgeView?.setTextColor(Color.parseColor("#38BDF8")) // Cyan
-                (statusBadgeView?.background as? GradientDrawable)?.apply {
-                    setColor(Color.parseColor("#2538BDF8"))
-                    setStroke(2, Color.parseColor("#4D38BDF8"))
-                }
+                compactTitleView?.text = "⚡ Soch raha hoon..."
+                compactSubtitleView?.visibility = View.VISIBLE
+                compactSubtitleView?.text = "\"$query\""
+                setDotColor(Color.parseColor("#38BDF8")) // Cyan
 
-                listeningSpeechView?.text = "\"$query\""
-                listeningSpeechView?.setTextColor(Color.parseColor("#F8FAFC"))
-                listeningSpeechView?.setTypeface(null, android.graphics.Typeface.BOLD)
-
-                attachOrUpdateWindow(hostContext, isFullScreen = true)
-                scheduleDismiss(12000L)
+                attachOrUpdateWindow(hostContext, isFullScreen = false)
+                startOrbPulseAnimation(compactDotView)
+                scheduleDismiss(3000L)
             } catch (e: Exception) {
                 Log.w(TAG, "Failed to show processing HUD: ${e.message}")
             }
@@ -177,7 +160,7 @@ object TvHudOverlay {
     }
 
     /**
-     * Displays an informational answer directly on the Full-Screen Overlay without opening any app!
+     * Displays answer in the sleek bottom pill HUD without blocking TV playback.
      */
     fun showAnswer(context: Context, userQuestion: String?, agentAnswer: String) {
         mainHandler.post {
@@ -190,29 +173,19 @@ object TvHudOverlay {
                 val hostContext = service ?: context.applicationContext
                 ensureViews(hostContext)
 
-                isFullScreenMode = true
-                fullScreenLayout?.visibility = View.VISIBLE
-                compactLayout?.visibility = View.GONE
-
-                statusBadgeView?.text = "💬 JAWAAB"
-                statusBadgeView?.setTextColor(Color.parseColor("#A78BFA")) // Purple / Lavender
-                (statusBadgeView?.background as? GradientDrawable)?.apply {
-                    setColor(Color.parseColor("#25A78BFA"))
-                    setStroke(2, Color.parseColor("#4DA78BFA"))
-                }
-
-                if (!userQuestion.isNullOrBlank()) {
-                    listeningSpeechView?.text = "\"$userQuestion\""
-                    listeningSpeechView?.setTextColor(Color.parseColor("#F8FAFC"))
-                    listeningSpeechView?.setTypeface(null, android.graphics.Typeface.BOLD)
-                }
-
-                answerCardContainer?.visibility = View.VISIBLE
-                agentAnswerView?.text = agentAnswer
-
-                attachOrUpdateWindow(hostContext, isFullScreen = true)
+                isFullScreenMode = false
+                fullScreenLayout?.visibility = View.GONE
+                compactLayout?.visibility = View.VISIBLE
                 stopWaveAnimation()
-                scheduleDismiss(9000L)
+
+                compactTitleView?.text = "🤖 Shiv:"
+                compactSubtitleView?.visibility = View.VISIBLE
+                compactSubtitleView?.text = agentAnswer.take(180)
+                setDotColor(Color.parseColor("#A78BFA")) // Purple / Lavender
+
+                attachOrUpdateWindow(hostContext, isFullScreen = false)
+                stopPulseAnimation()
+                scheduleDismiss(4000L)
             } catch (e: Exception) {
                 Log.w(TAG, "Failed to show answer HUD: ${e.message}")
             }
@@ -359,6 +332,14 @@ object TvHudOverlay {
             dismissRunnable?.let { mainHandler.removeCallbacks(it) }
             stopPulseAnimation()
             stopWaveAnimation()
+
+            // Also dismiss native Jio Voice Assistant UI if it's still lingering on screen
+            try {
+                if (PhoneAgentService.instance?.rootInActiveWindow?.packageName == "com.android.app.jio.voiceassist") {
+                    PhoneAgentService.instance?.performGlobalAction(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_BACK)
+                }
+            } catch (_: Exception) {}
+
             rootContainer?.animate()
                 ?.alpha(0f)
                 ?.translationY(20f)
