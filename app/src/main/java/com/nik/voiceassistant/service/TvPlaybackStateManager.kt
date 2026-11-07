@@ -57,6 +57,10 @@ object TvPlaybackStateManager {
                 // If user is in JioTV+, keep or set mode as livetv
                 if (prefs.getString(KEY_MODE, null) != "global") {
                     edit.putString(KEY_MODE, "livetv")
+                    val existingId = prefs.getString(KEY_TARGET_ID, null)
+                    if (existingId != null && !existingId.all { it.isDigit() }) {
+                        edit.remove(KEY_TARGET_ID)
+                    }
                 }
             }
             packageName == "com.jio.yt" || packageName == "com.google.android.youtube.tv" -> {
@@ -94,7 +98,8 @@ object TvPlaybackStateManager {
 
         when (mode) {
             "livetv" -> {
-                val uriStr = if (!targetId.isNullOrBlank()) {
+                val isNumericChannel = !targetId.isNullOrBlank() && targetId.all { it.isDigit() }
+                val uriStr = if (isNumericChannel) {
                     "jiotvplus://open.classicplayer?cid=$targetId&source=VA"
                 } else {
                     "jiotvplus://open.classicplayer"

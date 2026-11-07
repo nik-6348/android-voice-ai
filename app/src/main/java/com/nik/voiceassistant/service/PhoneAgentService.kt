@@ -73,9 +73,43 @@ class PhoneAgentService : AccessibilityService() {
     @Volatile
     private var elementSignatures: List<String> = emptyList()
 
+    @Volatile
+    private var isScreenReceiverRegistered = false
+    private val screenWakeReceiver = object : android.content.BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            val action = intent?.action ?: return
+            if (action == Intent.ACTION_SCREEN_ON || action == Intent.ACTION_USER_PRESENT || action == Intent.ACTION_DREAMING_STOPPED) {
+                Log.i(TAG, "TV woke up from standby ($action)! Auto-resuming last played content...")
+                Thread {
+                    try {
+                        Thread.sleep(1500L) // Wait for display hardware and HDMI-CEC to settle
+                        TvPlaybackStateManager.resumeLastPlayed(this@PhoneAgentService)
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Error in wake auto-resume: ${e.message}")
+                    }
+                }.start()
+            }
+        }
+    }
+
     override fun onServiceConnected() {
         instance = this
         Log.i(TAG, "Phone agent connected")
+        // Register standby wake receiver for auto-resume when TV wakes from sleep (remote power button)
+        if (!isScreenReceiverRegistered) {
+            val screenFilter = android.content.IntentFilter().apply {
+                addAction(Intent.ACTION_SCREEN_ON)
+                addAction(Intent.ACTION_USER_PRESENT)
+                addAction(Intent.ACTION_DREAMING_STOPPED)
+            }
+            try {
+                registerReceiver(screenWakeReceiver, screenFilter)
+                isScreenReceiverRegistered = true
+                Log.i(TAG, "Registered screen wake receiver for auto-resume on TV standby wake-up")
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to register screen wake receiver: ${e.message}")
+            }
+        }
         // Bound at boot and after updates too: start listening for "Hi Nik" without the app being opened
         if (com.nik.voiceassistant.VoiceSession.get(this).isWakeWordEnabled.value && !VoiceAssistantService.listeningOk) bringUpListening()
         // Auto-ensure Blokada AdBlocker VPN is active on boot/reconnect
@@ -308,6 +342,12 @@ class PhoneAgentService : AccessibilityService() {
 
     override fun onDestroy() {
         instance = null
+        if (isScreenReceiverRegistered) {
+            try {
+                unregisterReceiver(screenWakeReceiver)
+                isScreenReceiverRegistered = false
+            } catch (_: Exception) {}
+        }
         super.onDestroy()
     }
 
