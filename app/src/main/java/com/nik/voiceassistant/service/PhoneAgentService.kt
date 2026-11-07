@@ -80,6 +80,15 @@ class PhoneAgentService : AccessibilityService() {
         if (com.nik.voiceassistant.VoiceSession.get(this).isWakeWordEnabled.value && !VoiceAssistantService.listeningOk) bringUpListening()
         // Auto-ensure Blokada AdBlocker VPN is active on boot/reconnect
         com.nik.voiceassistant.receiver.BootReceiver.ensureBlokadaVpnActive(this)
+        // Auto-resume last played Live TV channel or media on TV boot/power-on
+        Thread {
+            try {
+                Thread.sleep(2500L)
+                TvPlaybackStateManager.resumeLastPlayed(this)
+            } catch (e: Exception) {
+                Log.w(TAG, "Error in auto-resume on boot: ${e.message}")
+            }
+        }.start()
     }
 
     /**
@@ -120,7 +129,16 @@ class PhoneAgentService : AccessibilityService() {
             return
         }
         if (event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
-            pkg?.let { PaymentGuard.onForeground(this, it) }
+            val cls = event.className?.toString()
+            if (cls == "com.iwedia.ui.rjio.launcher.ui.intro.JioPrerollVideoActivity") {
+                Log.i(TAG, "Detected Jio Boot Preroll Video Ad! Auto-dismissing immediately.")
+                performGlobalAction(GLOBAL_ACTION_BACK)
+                return
+            }
+            pkg?.let {
+                PaymentGuard.onForeground(this, it)
+                TvPlaybackStateManager.saveForegroundApp(this, it)
+            }
             return
         }
         val isToast = event.eventType == AccessibilityEvent.TYPE_NOTIFICATION_STATE_CHANGED && event.parcelableData !is android.app.Notification

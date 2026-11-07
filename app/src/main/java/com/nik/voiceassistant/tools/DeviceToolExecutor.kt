@@ -1813,6 +1813,7 @@ class DeviceToolExecutor(
 
         try {
             context.startActivity(tuneIntent)
+            com.nik.voiceassistant.service.TvPlaybackStateManager.saveChannel(context, channelDigits, channelDisplay)
         } catch (e: Exception) {
             Log.e(TAG, "Primary JioTV+ tuneIntent failed, trying app scheme fallback", e)
             try {
@@ -2018,6 +2019,7 @@ class DeviceToolExecutor(
                         addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED)
                     }
                     context.startActivity(intent)
+                    com.nik.voiceassistant.service.TvPlaybackStateManager.saveGlobalContent(context, bestMatch.contentId, bestMatch.title)
 
                     if (autoPlay) {
                         Thread {
@@ -2096,6 +2098,7 @@ class DeviceToolExecutor(
                 }
                 try {
                     context.startActivity(playIntent)
+                    com.nik.voiceassistant.service.TvPlaybackStateManager.saveYouTube(context, resolvedVideo.videoId, resolvedVideo.title)
                     val verified = verifyMediaPlayback(listOf("com.jio.yt"), 4000L)
                     com.nik.voiceassistant.service.TvHudOverlay.hide()
                     return if (verified) {

@@ -120,6 +120,7 @@ class BootReceiver : BroadcastReceiver() {
                     val session = com.nik.voiceassistant.VoiceSession.get(context)
                     session.sendText(qText, keepMicMuted = true)
                 }
+                "resume" -> com.nik.voiceassistant.service.TvPlaybackStateManager.resumeLastPlayed(context)
                 "audio" -> {
                     val session = com.nik.voiceassistant.VoiceSession.get(context)
                     val sampleRate = 24000
@@ -165,5 +166,15 @@ class BootReceiver : BroadcastReceiver() {
         }
 
         ensureBlokadaVpnActive(context)
+
+        // Auto-resume last played Live TV channel or OTT media on TV boot
+        Thread {
+            try {
+                Thread.sleep(2800L)
+                com.nik.voiceassistant.service.TvPlaybackStateManager.resumeLastPlayed(context)
+            } catch (e: Exception) {
+                Log.w(TAG, "Error in boot auto-resume: ${e.message}")
+            }
+        }.start()
     }
 }
