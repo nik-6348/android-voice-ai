@@ -61,6 +61,9 @@ object TvHudOverlay {
     private var dismissRunnable: Runnable? = null
 
     @Volatile
+    var isOverlayEnabled = false
+
+    @Volatile
     private var isVisible = false
 
     @Volatile
@@ -70,9 +73,9 @@ object TvHudOverlay {
     var isActionRunningOrCompleted = false
 
     val isListening: Boolean
-        get() = isVisible && !isActionRunningOrCompleted
+        get() = isOverlayEnabled && isVisible && !isActionRunningOrCompleted
 
-    fun isListeningOrActive(): Boolean = isVisible
+    fun isListeningOrActive(): Boolean = isOverlayEnabled && isVisible
 
     fun hideForAction() {
         mainHandler.post {
@@ -87,6 +90,7 @@ object TvHudOverlay {
      * Auto-dismisses in 2.0s if user speaks nothing.
      */
     fun showListening(context: Context) {
+        if (!isOverlayEnabled) return
         mainHandler.post {
             try {
                 isActionRunningOrCompleted = false
@@ -119,6 +123,7 @@ object TvHudOverlay {
      * Updates recognized speech in real time in the compact bottom pill.
      */
     fun updateSpeech(speechText: String) {
+        if (!isOverlayEnabled) return
         mainHandler.post {
             if (!isVisible) return@post
             val formatted = "\"$speechText\""
@@ -133,6 +138,7 @@ object TvHudOverlay {
      * Transitions smoothly to thinking state while Gemini analyzes the user's query.
      */
     fun showProcessing(context: Context, query: String) {
+        if (!isOverlayEnabled) return
         mainHandler.post {
             try {
                 isActionRunningOrCompleted = false
@@ -163,6 +169,7 @@ object TvHudOverlay {
      * Displays answer in the sleek bottom pill HUD without blocking TV playback.
      */
     fun showAnswer(context: Context, userQuestion: String?, agentAnswer: String) {
+        if (!isOverlayEnabled) return
         mainHandler.post {
             try {
                 if (isActionRunningOrCompleted) {
@@ -197,6 +204,7 @@ object TvHudOverlay {
      * (e.g. tuning Live TV, starting YouTube video) so content plays unblocked.
      */
     fun showAction(context: Context, actionTitle: String, details: String? = null) {
+        if (!isOverlayEnabled) return
         mainHandler.post {
             try {
                 val service = PhoneAgentService.instance
@@ -230,6 +238,7 @@ object TvHudOverlay {
      * Displays instant playback stopped confirmation in the bottom pill HUD.
      */
     fun showStopped(context: Context) {
+        if (!isOverlayEnabled) return
         mainHandler.post {
             try {
                 val service = PhoneAgentService.instance
@@ -259,6 +268,7 @@ object TvHudOverlay {
      * Displays completion message in the bottom pill HUD and auto-dismisses.
      */
     fun showCompleted(context: Context, message: String? = null) {
+        if (!isOverlayEnabled) return
         mainHandler.post {
             try {
                 val service = PhoneAgentService.instance
@@ -287,6 +297,7 @@ object TvHudOverlay {
      * Standard unified update method for VoiceSession tool updates.
      */
     fun update(title: String, subtitle: String? = null, autoDismissMs: Long = 4000L) {
+        if (!isOverlayEnabled) return
         mainHandler.post {
             val service = PhoneAgentService.instance ?: return@post
             when {
@@ -312,6 +323,7 @@ object TvHudOverlay {
      * Backwards-compatible show method.
      */
     fun show(context: Context, title: String, subtitle: String? = null, autoDismissMs: Long = 6000L) {
+        if (!isOverlayEnabled) return
         update(title, subtitle, autoDismissMs)
     }
 
@@ -328,7 +340,6 @@ object TvHudOverlay {
 
     fun hide() {
         mainHandler.post {
-            if (!isVisible || rootContainer == null) return@post
             dismissRunnable?.let { mainHandler.removeCallbacks(it) }
             stopPulseAnimation()
             stopWaveAnimation()
@@ -339,6 +350,12 @@ object TvHudOverlay {
                     PhoneAgentService.instance?.performGlobalAction(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_BACK)
                 }
             } catch (_: Exception) {}
+
+            if (!isVisible || rootContainer == null) {
+                isVisible = false
+                isFullScreenMode = false
+                return@post
+            }
 
             rootContainer?.animate()
                 ?.alpha(0f)
@@ -363,6 +380,10 @@ object TvHudOverlay {
     }
 
     private fun attachOrUpdateWindow(context: Context, isFullScreen: Boolean) {
+        if (!isOverlayEnabled) {
+            Log.d(TAG, "HUD Overlay is disabled. Skipping window attachment.")
+            return
+        }
         val targetContext = PhoneAgentService.instance ?: context
         val wm = (targetContext.getSystemService(Context.WINDOW_SERVICE) as? WindowManager) ?: return
         windowManager = wm

@@ -1955,6 +1955,57 @@ class DeviceToolExecutor(
         return bestCandidate?.takeIf { it.score >= 0.30 }
     }
 
+    /**
+     * Direct execution of TV voice commands without LLM network round-trip latency:
+     * - Live TV Channel lookup & auto-tune (JioTV+)
+     * - YouTube content lookup & direct auto-play (Cobalt)
+     * - STB Universal Content Provider (Movies, Series, VOD) & auto-play
+     * - Jio STB PatchWall Global Search fallback
+     */
+    fun executeTvDirect(query: String): Map<String, Any?> {
+        return searchTv(query, targetApp = null, autoPlay = true)
+    }
+
+    /**
+     * Checks if a voice query is a conversational or informational question (e.g. weather, time, jokes, general knowledge)
+     * rather than a media playback/tuning intent.
+     */
+    fun isConversationalQuery(query: String): Boolean {
+        val lower = query.lowercase().trim()
+        val clean = cleanTvQuery(query)
+
+        // 1. Live TV channels & channel numbers are NEVER conversational
+        if (JioTvChannels.isTvChannel(query) || JioTvChannels.isTvChannel(clean)) return false
+        if (Regex("\\b(\\d{1,4})\\b").containsMatchIn(clean) && (lower.contains("channel") || lower.contains("chalan") || lower.contains("number") || lower.contains("pe"))) return false
+
+        // 2. Songs, music, bhajans, popular creators are NEVER conversational
+        if (isSongOrMusicQuery(clean) || isSongOrMusicQuery(query)) return false
+
+        // 3. Media playback commands & keywords
+        val mediaKeywords = listOf(
+            "chalao", "chala do", "chala de", "chala", "chalana",
+            "lagao", "laga do", "laga de", "laga", "lagana",
+            "bajao", "baja do", "baja de", "bajade", "baja",
+            "play", "sunao", "suna do", "suna de", "sunade",
+            "dikhao", "dikhaye", "dikhana", "kholo", "khol do", "open",
+            "movie", "film", "picture", "cinema", "web series", "series", "season", "episode",
+            "serial", "drama", "trailer", "video", "cartoon", "natak",
+            "youtube", "jiotv", "jiocinema", "hotstar", "netflix", "prime video"
+        )
+        if (mediaKeywords.any { lower.contains(it) }) return false
+
+        // 4. Conversational question markers
+        val questionKeywords = listOf(
+            "weather", "mausam", "temperature", "time", "samay", "date", "tarikh",
+            "kaun hai", "who is", "who was", "kya hai", "what is", "kya hota", "kya hoti",
+            "kaise kare", "how to", "kyun", "kyu", "why", "kab hua", "when was", "when is",
+            "kahan hai", "kaha hai", "where is", "kitna", "kitne", "how much", "how many",
+            "joke", "chutkula", "kahani", "story", "shayari", "poem",
+            "tum kaun", "aap kaun", "tera naam", "apna naam", "shiv"
+        )
+        return questionKeywords.any { lower.contains(it) }
+    }
+
     private fun searchTv(query: String, targetApp: String?, autoPlay: Boolean = false, explicitChannel: String? = null): Map<String, Any?> {
         if (query.isBlank()) return mapOf("error" to "Give a search query")
         val lowerQ = query.lowercase().trim()
@@ -1985,6 +2036,11 @@ class DeviceToolExecutor(
                 ?: Regex("\\b(\\d{1,4})\\b").find(cleanQuery)?.groupValues?.get(1)
 
             if (channelDigits == null) {
+                // Before failing, check if STB ContentProvider has this channel
+                val stbCandidate = searchGlobalStbContent(cleanQuery)
+                if (stbCandidate != null && stbCandidate.isChannel) {
+                    return tuneJioTvChannel(stbCandidate.contentId, stbCandidate.title)
+                }
                 return mapOf("success" to false, "error" to "Channel '$cleanQuery' ka channel number nahi mila. Kripya channel number bataiye.")
             }
 

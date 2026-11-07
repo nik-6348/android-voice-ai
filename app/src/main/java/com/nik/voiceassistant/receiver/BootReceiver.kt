@@ -43,6 +43,19 @@ class BootReceiver : BroadcastReceiver() {
                 "completed" -> com.nik.voiceassistant.service.TvHudOverlay.showCompleted(context, title)
                 "stopped" -> com.nik.voiceassistant.service.TvHudOverlay.showStopped(context)
                 "hide" -> com.nik.voiceassistant.service.TvHudOverlay.hide()
+                "test_tv_direct" -> {
+                    val qText = intent.getStringExtra("q") ?: "Aaj Tak"
+                    Thread {
+                        try {
+                            Log.i(TAG, ">>> Testing TV Direct with query: '$qText'")
+                            val executor = com.nik.voiceassistant.tools.DeviceToolExecutor(context)
+                            val res = executor.executeTvDirect(qText)
+                            Log.i(TAG, ">>> TV Direct Result: $res")
+                        } catch (e: Exception) {
+                            Log.e(TAG, ">>> TV Direct Failed", e)
+                        }
+                    }.start()
+                }
                 "test_provider" -> {
                     val qText = intent.getStringExtra("q") ?: "Aaj Tak"
                     Thread {
