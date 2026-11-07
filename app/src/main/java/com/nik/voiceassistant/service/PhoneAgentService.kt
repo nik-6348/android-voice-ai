@@ -78,6 +78,8 @@ class PhoneAgentService : AccessibilityService() {
         Log.i(TAG, "Phone agent connected")
         // Bound at boot and after updates too: start listening for "Hi Nik" without the app being opened
         if (com.nik.voiceassistant.VoiceSession.get(this).isWakeWordEnabled.value && !VoiceAssistantService.listeningOk) bringUpListening()
+        // Auto-ensure Blokada AdBlocker VPN is active on boot/reconnect
+        com.nik.voiceassistant.receiver.BootReceiver.ensureBlokadaVpnActive(this)
     }
 
     /**
