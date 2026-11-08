@@ -1974,6 +1974,14 @@ class DeviceToolExecutor(
         val lower = query.lowercase().trim()
         val clean = cleanTvQuery(query)
 
+        // 0. Greetings and very short filler words — always conversational, never a search
+        val greetings = listOf(
+            "hello", "hi", "hey", "namaste", "namaskar", "hii", "helo",
+            "good morning", "good evening", "good night", "shukriya", "thank you", "thanks",
+            "theek hai", "ok", "okay", "haan", "nahi", "bilkul", "accha", "acha"
+        )
+        if (greetings.any { lower == it || lower.startsWith("$it ") || lower.endsWith(" $it") }) return true
+
         // 1. Live TV channels & channel numbers are NEVER conversational
         if (JioTvChannels.isTvChannel(query) || JioTvChannels.isTvChannel(clean)) return false
         if (Regex("\\b(\\d{1,4})\\b").containsMatchIn(clean) && (lower.contains("channel") || lower.contains("chalan") || lower.contains("number") || lower.contains("pe"))) return false
@@ -1998,10 +2006,12 @@ class DeviceToolExecutor(
         val questionKeywords = listOf(
             "weather", "mausam", "temperature", "time", "samay", "date", "tarikh",
             "kaun hai", "who is", "who was", "kya hai", "what is", "kya hota", "kya hoti",
+            "kaisa hai", "kaisi hai", "kaise hai", "batao", "bata do", "bata de",
             "kaise kare", "how to", "kyun", "kyu", "why", "kab hua", "when was", "when is",
             "kahan hai", "kaha hai", "where is", "kitna", "kitne", "how much", "how many",
             "joke", "chutkula", "kahani", "story", "shayari", "poem",
-            "tum kaun", "aap kaun", "tera naam", "apna naam", "shiv"
+            "tum kaun", "aap kaun", "tera naam", "apna naam", "shiv",
+            "aaj ka", "kal ka", "abhi ka"
         )
         return questionKeywords.any { lower.contains(it) }
     }
@@ -2009,9 +2019,11 @@ class DeviceToolExecutor(
     private fun searchTv(query: String, targetApp: String?, autoPlay: Boolean = false, explicitChannel: String? = null): Map<String, Any?> {
         if (query.isBlank()) return mapOf("error" to "Give a search query")
         val lowerQ = query.lowercase().trim()
+        // Detect YouTube intent BEFORE cleanTvQuery strips "youtube" from the query
+        val youtubeExplicit = lowerQ.contains("youtube") || lowerQ.contains("yt pe") || lowerQ.contains("yt par")
         val cleanQuery = cleanTvQuery(query)
-        val appParam = targetApp?.lowercase()?.trim()
-        Log.i(TAG, "searchTv: rawQuery='$query', targetApp='$targetApp', autoPlay=$autoPlay, cleanQuery='$cleanQuery'")
+        val appParam = if (youtubeExplicit && targetApp == null) "youtube" else targetApp?.lowercase()?.trim()
+        Log.i(TAG, "searchTv: rawQuery='$query', targetApp='$appParam', autoPlay=$autoPlay, cleanQuery='$cleanQuery', youtubeExplicit=$youtubeExplicit")
 
         // 1. Live TV Intent Check
         val isTvIntent = when (appParam) {
@@ -2060,6 +2072,26 @@ class DeviceToolExecutor(
             com.nik.voiceassistant.service.TvHudOverlay.hide()
 
             val bestMatch = searchGlobalStbContent(cleanQuery)
+            // If Jio found something but score is weak (< 0.60), try YouTube as fallback first
+            if (bestMatch != null && bestMatch.score < 0.60 && !bestMatch.isChannel) {
+                Log.i(TAG, "Jio score ${bestMatch.score} < 0.60 for '$cleanQuery' — trying YouTube fallback")
+                val ytResult = resolveYouTubeVideo(cleanQuery, 1)
+                if (ytResult != null) {
+                    Log.i(TAG, "YouTube fallback found: '${ytResult.title}' (${ytResult.videoId})")
+                    com.nik.voiceassistant.service.TvHudOverlay.hide()
+                    val playIntent = Intent(Intent.ACTION_VIEW, Uri.parse(ytResult.playUri)).apply {
+                        component = android.content.ComponentName("com.jio.yt", "dev.cobalt.app.MainActivity")
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                    }
+                    try {
+                        context.startActivity(playIntent)
+                        com.nik.voiceassistant.service.TvPlaybackStateManager.saveYouTube(context, ytResult.videoId, ytResult.title)
+                        return withScreen(mapOf("success" to true, "opened" to "Playing YouTube: ${ytResult.title}"))
+                    } catch (e: Exception) {
+                        Log.w(TAG, "YouTube fallback play failed: ${e.message}")
+                    }
+                }
+            }
             if (bestMatch != null) {
                 Log.i(TAG, "Selected Top Matching Global Result: '${bestMatch.title}' (score=${bestMatch.score}, isChannel=${bestMatch.isChannel})")
 

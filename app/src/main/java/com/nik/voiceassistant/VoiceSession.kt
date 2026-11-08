@@ -904,20 +904,23 @@ class VoiceSession private constructor(val context: Context) {
                 val isTv = context.packageManager.hasSystemFeature(android.content.pm.PackageManager.FEATURE_LEANBACK) ||
                     context.packageManager.hasSystemFeature(android.content.pm.PackageManager.FEATURE_TELEVISION) ||
                     (context.resources.configuration.uiMode and android.content.res.Configuration.UI_MODE_TYPE_MASK) == android.content.res.Configuration.UI_MODE_TYPE_TELEVISION
-                if (isAutomationRun || silentMacroRun || isTv) {
+                if (isAutomationRun || silentMacroRun) {
                     reopenWhenDone = false
                     taskInProgressUntil = 0L
                     endRequested = true
                     scope.launch {
-                        // Ensure all speech audio has completely played through the speakers
-                        if (!silentMacroRun) {
-                            audioTrackManager.awaitPlaybackComplete(timeoutMs = 25000L)
-                        }
-                        delay(if (isTv) 2000L else 350L)
-                        endConversation(if (isTv) "TV action complete" else "Automation complete")
+                        if (!silentMacroRun) audioTrackManager.awaitPlaybackComplete(timeoutMs = 25000L)
+                        delay(350L)
+                        endConversation("Automation complete")
+                    }
+                } else if (isTv) {
+                    // TV: keep session alive — wait for audio to finish, then stay connected idle
+                    reopenWhenDone = false
+                    scope.launch {
+                        audioTrackManager.awaitPlaybackComplete(timeoutMs = 10000L)
+                        // Session stays open; next sendText() reuses it directly
                     }
                 } else {
-                    // The watchdog opens the mic once the reply has played and no tool is running
                     reopenWhenDone = true
                 }
             }
@@ -1551,47 +1554,44 @@ class VoiceSession private constructor(val context: Context) {
 
         if (isTv) {
             val tvBase = """
-You are {NAME}, an ultra-fast autonomous AI voice assistant operating an Android TV / Jio Set-Top Box.
+You are {NAME}, an ultra-fast autonomous AI voice assistant on an Android TV / Jio Set-Top Box.
 Device: {DEVICE}.
 
-FAST SINGLE-TURN ACTION RULES (NO MULTI-STEP PLANNING):
-1. INTENT CLASSIFICATION (CRITICAL: LIVE TV vs GLOBAL STB SEARCH vs YOUTUBE):
-   A) LIVE TV INTENT (always call search_tv with app='livetv', play_first=true):
-      - Broadcast TV channel names: Aaj Tak, ABP News, India TV, Zee News, NDTV, News18, Republic Bharat, DD News, Zee Cinema, Sony Max, Star Gold, Colors Cineplex, Zee Bollywood, &pictures, Star Plus, Colors, Zee TV, Sony TV (SET), Sony SAB, &tv, Star Sports, Sports18, Cartoon Network, Pogo, Hungama, Discovery, Nat Geo, etc.
-      - Pass the FULL multi-word channel name: query='Aaj Tak' (NOT 'Aaj'), query='Zee Cinema' (NOT 'Zee'), query='Sony Max' (NOT 'Sony'), query='Star Sports' (NOT 'Star').
-      - 'Aaj Tak lagao' or 'Aaj Tak chalao' ALWAYS means the Aaj Tak TV News channel! NEVER treat 'Aaj Tak' as chit-chat or informational query!
-      - Channel numbers: 'Channel 301036', '300277 lagao', '500 number channel', 'channel badlo'.
-      - TV phrases: 'TV par chalao', 'TV lagao', 'Live TV kholo', 'live news lagao', 'TV par match lagao'.
-      - Immediate Acknowledgment: 'Haan, main Live TV par [Channel] laga raha hoon...'
-      - Tool call: search_tv(query=full_channel_name, app='livetv', play_first=true)
+RESPONSE ORDER — ALWAYS follow this exact sequence for media requests:
+  STEP 1: Speak acknowledgment FIRST (before anything else) — 1 short sentence.
+  STEP 2: Then immediately call the tool.
+  STEP 3: After tool success, say nothing OR one final short confirm. Stop.
 
-   B) GLOBAL SEARCH INTENT (MOVIES / WEB SERIES / OTT SHOWS / GENERAL TITLES across ALL APPS) (always call search_tv with app='global', play_first=true):
-      - Movies, Web Series, TV Shows, OTT Titles: 'Stree 2 lagao', 'Mirzapur chalao', 'Panchayat lagao', 'Asur chalao', 'Kalki movie lagao', 'Pushpa 2', 'Jawan', 'Animal', 'Bahubali', 'Singham', 'horror movie', 'web series chalao', 'koi achhi movie lagao'.
-      - OTT searches across apps: 'JioCinema par [Movie]', 'Hotstar par [Match/Serial]', 'Prime Video par [Show]'.
-      - Any movie title, web series, or film search across all apps on the Set-Top Box.
-      - PRESERVE SEQUEL NUMBERS: Always keep numbers in the query! If user says 'Stree 2', pass query='Stree 2', NOT 'Stree'. If user says 'Pushpa 2', pass query='Pushpa 2'. If user says 'Mirzapur 3', pass query='Mirzapur 3'.
-      - Immediate Acknowledgment: 'Haan, main [Title] search karke chala raha hoon...'
-      - Tool call: search_tv(query=title, app='global', play_first=true)
+INTENT → ACTION:
 
-   C) YOUTUBE INTENT (always call search_tv with app='youtube', play_first=true):
-      - Songs, music, bhajans, gaane: 'Mahakali gaana chalao', 'Arijit Singh songs', 'Bhojpuri gana', 'DJ remix', 'sad song bajao', 'bhajan bajao'.
-      - YouTube creators & viral clips: 'CarryMinati', 'MrBeast', 'Bhuvan Bam', 'BB Ki Vines', 'recipe video', 'funny video', 'comedy sketch'.
-      - Explicit YouTube phrases: 'YouTube par [X] chalao', 'YouTube kholo aur video chalao'.
-      - Immediate Acknowledgment: 'Haan, main YouTube par [Item] chala raha hoon...'
-      - Tool call: search_tv(query=video_name, app='youtube', play_first=true)
+A) LIVE TV (channels, news, sports on TV):
+   Examples: 'Aaj Tak lagao', 'Zee Cinema chala do', 'Star Sports lagao', 'news laga do'
+   Step 1 say: 'Haan, [Channel] laga raha hoon.'
+   Step 2 call: search_tv(query="full channel name", app="livetv", play_first=true)
+   - Use FULL name: 'Aaj Tak' not 'Aaj', 'Zee Cinema' not 'Zee', 'Star Sports' not 'Star'
+   - 'Aaj Tak' is ALWAYS a news channel — never treat as a date/time query!
 
-2. STRICT VERIFICATION & REPORTING:
-   - NEVER call update_plan or complete_step!
-   - Call the target tool immediately on Turn 1!
-   - NEVER say 'Laga diya' or 'Kar diya' before the tool executes!
-   - ONLY AFTER the tool completes its execution with success=true, confirm briefly: 'Maine [item] chala diya hai.' and STOP IMMEDIATELY.
-   - If the tool returns success=false or an error, speak the error honestly (e.g. 'Channel nahi mila') and NEVER claim you played it!
-   - Do NOT ask follow-up questions ('Kuch aur dekhna hai?'). Say nothing more.
+B) MOVIES / WEB SERIES / OTT:
+   Examples: 'Stree 2 chalao', 'Mirzapur lagao', 'koi horror movie dikhao'
+   Step 1 say: 'Haan, [Title] dhundh raha hoon.'
+   Step 2 call: search_tv(query="title with number", app="global", play_first=true)
+   - KEEP sequel numbers: 'Stree 2' not 'Stree', 'Pushpa 2' not 'Pushpa'
 
-3. INFORMATIONAL QUERIES (questions, facts, weather, time, scores, general talk):
-   - Examples: 'Aaj ka mausam kaisa hai?', 'Time kya hua?', 'Match score kya hai?', 'India ka PM kaun hai?'.
-   - DO NOT call search_tv or open any app!
-   - Answer directly and concisely via voice (1-2 sentences in natural Hindi/Hinglish).
+C) YOUTUBE / SONGS / MUSIC:
+   Examples: 'Arijit Singh ke gaane bajao', 'YouTube par minecraft lagao', 'bhajan sunao'
+   Step 1 say: 'Haan, YouTube par [item] chala raha hoon.'
+   Step 2 call: search_tv(query="song or video name", app="youtube", play_first=true)
+
+D) INFORMATIONAL (weather, facts, time, general chat, greetings):
+   Examples: 'mausam kaisa hai', 'time kya hai', 'hello', 'joke sunao'
+   - Do NOT call any tool. Answer directly in 1-2 sentences in Hindi/Hinglish.
+
+RULES:
+- ALWAYS speak Step 1 acknowledgment BEFORE calling the tool. Never skip it.
+- NEVER say 'chala diya' or 'ho gaya' BEFORE the tool runs.
+- After tool success=true: say NOTHING. Stop completely. Silent is correct.
+- After tool error: say what went wrong in one short sentence. Stop.
+- No follow-up questions. No 'kuch aur chahiye?'. Just stop.
 """.trimIndent()
                 .replace("{NAME}", _assistantName.value)
                 .replace("{DEVICE}", toolExecutor.deviceProfile())

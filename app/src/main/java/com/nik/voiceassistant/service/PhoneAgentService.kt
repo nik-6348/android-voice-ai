@@ -251,35 +251,12 @@ class PhoneAgentService : AccessibilityService() {
                 } catch (_: Exception) {}
                 mainHandler.postDelayed({ isJioDismissing = false }, 2000L)
 
-                // Background execution for instant auto-play or voice reply
-                Thread {
-                    try {
-                        val executor = com.nik.voiceassistant.tools.DeviceToolExecutor(this@PhoneAgentService)
-                        if (executor.isConversationalQuery(queryToExecute)) {
-                            Log.i(TAG, "Query is conversational, dispatching to VoiceSession: $queryToExecute")
-                            mainHandler.post {
-                                val session = com.nik.voiceassistant.VoiceSession.get(applicationContext)
-                                session.startNewChat(keepMicMuted = true)
-                                session.sendText(queryToExecute, keepMicMuted = true)
-                            }
-                        } else {
-                            Log.i(TAG, "Executing TV direct action for: $queryToExecute")
-                            val result = executor.executeTvDirect(queryToExecute)
-                            Log.i(TAG, "TV direct execution result: $result")
-
-                            // Double check if Jio Voice Assist is still lingering after launch: dismiss it
-                            mainHandler.postDelayed({
-                                try {
-                                    if (rootInActiveWindow?.packageName == "com.android.app.jio.voiceassist") {
-                                        performGlobalAction(GLOBAL_ACTION_BACK)
-                                    }
-                                } catch (_: Exception) {}
-                            }, 500L)
-                        }
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Error executing TV command: ${e.message}", e)
-                    }
-                }.start()
+                // Send everything to Gemini Live — it decides: answer or call search_tv tool
+                Log.i(TAG, "Sending to Gemini Live: $queryToExecute")
+                mainHandler.post {
+                    val session = com.nik.voiceassistant.VoiceSession.get(applicationContext)
+                    session.sendText(queryToExecute, keepMicMuted = true)
+                }
             }
             // 900ms debounce ensures user has fully finished speaking before dispatching
             mainHandler.postDelayed(pendingJioQueryRunnable!!, 900L)
@@ -341,21 +318,20 @@ class PhoneAgentService : AccessibilityService() {
     }
 
     private fun extractJioVoiceQuery(root: AccessibilityNodeInfo): String? {
-        // 1. Read strictly from voiceStatesView where recognized user speech is typed
-        val nodes = root.findAccessibilityNodeInfosByViewId("com.android.app.jio.voiceassist:id/voiceStatesView")
-        for (node in nodes) {
-            val t = node.text?.toString()?.trim()
-            if (!t.isNullOrBlank() && !isJioPlaceholder(t)) return t
-        }
-        // 2. Fallback: inspect child nodes if view ID differed
-        val queue = java.util.ArrayDeque<AccessibilityNodeInfo>()
-        queue.add(root)
-        while (queue.isNotEmpty()) {
-            val curr = queue.removeFirst()
-            val t = curr.text?.toString()?.trim()
-            if (!t.isNullOrBlank() && !isJioPlaceholder(t)) return t
-            for (i in 0 until curr.childCount) {
-                curr.getChild(i)?.let { queue.add(it) }
+        // Only read from known view IDs that contain the user's actual spoken text.
+        // Never do a full BFS — it picks up "Try Saying" chips, time displays, etc.
+        val knownIds = listOf(
+            "com.android.app.jio.voiceassist:id/voiceStatesView",
+            "com.android.app.jio.voiceassist:id/tvSearchQuery",
+            "com.android.app.jio.voiceassist:id/edit_query",
+            "com.android.app.jio.voiceassist:id/rightMsgView",
+            "com.android.app.jio.voiceassist:id/chatBubble"
+        )
+        for (viewId in knownIds) {
+            val nodes = root.findAccessibilityNodeInfosByViewId(viewId)
+            for (node in nodes) {
+                val t = node.text?.toString()?.trim()
+                if (!t.isNullOrBlank() && !isJioPlaceholder(t)) return t
             }
         }
         return null
