@@ -1711,9 +1711,15 @@ class DeviceToolExecutor(
      * Direct Android TV search intent: opens YouTube TV, Live TV (JioTV+), JioCinema, Hotstar, or Android TV global search.
      * Automatically clicks and plays the top search result without blocking or leaving on the results page.
      */
-    private data class ResolvedYtVideo(val videoId: String, val title: String, val playUri: String)
+    private data class ResolvedYtVideo(
+        val videoId: String,
+        val title: String,
+        val playUri: String,
+        val score: Double = 0.0
+    )
 
-    private fun resolveYouTubeVideo(query: String, cardIndex: Int = 1): ResolvedYtVideo? {
+    private fun resolveYouTubeTopCandidates(query: String, maxCount: Int = 5): List<ResolvedYtVideo> {
+        val results = mutableListOf<ResolvedYtVideo>()
         val candidates = mutableListOf(query.trim())
         val words = query.trim().split("\\s+".toRegex()).filter { it.isNotBlank() }
         if (words.size > 2) {
@@ -1726,37 +1732,42 @@ class DeviceToolExecutor(
                 val uri = Uri.parse("content://com.jio.yt.GLOBALSEARCH/search_suggest_query/$encoded")
                 val cursor = context.contentResolver.query(uri, null, null, null, null)
                 cursor?.use { c ->
-                    val count = c.count
-                    if (count > 0) {
-                        val targetRow = (cardIndex - 1).coerceIn(0, count - 1)
-                        if (c.moveToPosition(targetRow)) {
-                            val videoIdCol = c.getColumnIndex("videoId")
-                            val intentDataCol = c.getColumnIndex("suggest_intent_data")
-                            val text1Col = c.getColumnIndex("suggest_text_1")
+                    val videoIdCol = c.getColumnIndex("videoId")
+                    val intentDataCol = c.getColumnIndex("suggest_intent_data")
+                    val text1Col = c.getColumnIndex("suggest_text_1")
 
-                            val videoId = if (videoIdCol >= 0) c.getString(videoIdCol) else null
-                            val intentData = if (intentDataCol >= 0) c.getString(intentDataCol) else null
-                            val title = if (text1Col >= 0) c.getString(text1Col) ?: q else q
+                    var count = 0
+                    while (c.moveToNext() && count < maxCount) {
+                        val videoId = if (videoIdCol >= 0) c.getString(videoIdCol) else null
+                        val intentData = if (intentDataCol >= 0) c.getString(intentDataCol) else null
+                        val title = if (text1Col >= 0) c.getString(text1Col) ?: q else q
 
-                            val effectiveVideoId = videoId
-                                ?: (if (!intentData.isNullOrBlank()) Uri.parse(intentData).getQueryParameter("videoId") else null)
+                        val effectiveVideoId = videoId
+                            ?: (if (!intentData.isNullOrBlank()) Uri.parse(intentData).getQueryParameter("videoId") else null)
 
-                            if (!effectiveVideoId.isNullOrBlank()) {
-                                Log.i(TAG, "Resolved YouTube video via GLOBALSEARCH: '$title' ($effectiveVideoId) for query '$q'")
-                                return ResolvedYtVideo(
-                                    videoId = effectiveVideoId,
-                                    title = title,
-                                    playUri = "https://www.youtube.com/watch?v=$effectiveVideoId"
-                                )
-                            }
+                        if (!effectiveVideoId.isNullOrBlank() && results.none { it.videoId == effectiveVideoId }) {
+                            val score = calculateMatchScore(query, title)
+                            results.add(ResolvedYtVideo(
+                                videoId = effectiveVideoId,
+                                title = title,
+                                playUri = "https://www.youtube.com/watch?v=$effectiveVideoId",
+                                score = score
+                            ))
+                            count++
                         }
                     }
                 }
             } catch (e: Exception) {
-                Log.w(TAG, "Failed resolving query '$q' in GLOBALSEARCH: ${e.message}")
+                Log.w(TAG, "Failed resolving top YouTube candidates for '$q': ${e.message}")
             }
+            if (results.any { it.score >= 0.85 }) break
         }
-        return null
+        return results.sortedByDescending { it.score }
+    }
+
+    private fun resolveYouTubeVideo(query: String, cardIndex: Int = 1): ResolvedYtVideo? {
+        val candidates = resolveYouTubeTopCandidates(query, maxCount = cardIndex.coerceAtLeast(3))
+        return candidates.getOrNull((cardIndex - 1).coerceIn(0, (candidates.size - 1).coerceAtLeast(0)))
     }
 
     private fun verifyMediaPlayback(expectedPackages: List<String>, timeoutMs: Long = 4000L): Boolean {
@@ -1881,16 +1892,29 @@ class DeviceToolExecutor(
         if (qNorm.isEmpty() || tNorm.isEmpty()) return 0.0
 
         if (qNorm == tNorm) return 1.0
-        if (tNorm.startsWith(qNorm)) return 0.95
-        if (tNorm.contains(qNorm)) return 0.90
-        if (qNorm.contains(tNorm)) return 0.85
 
-        val qTokens = qNorm.split(" ").filter { it.length > 1 }.toSet()
-        val tTokens = tNorm.split(" ").filter { it.length > 1 }.toSet()
-        if (qTokens.isEmpty() || tTokens.isEmpty()) return 0.0
+        val qWords = qNorm.split(" ").filter { it.isNotBlank() }
+        val tWords = tNorm.split(" ").filter { it.isNotBlank() }
+        val tWordSet = tWords.toSet()
 
-        val intersection = qTokens.intersect(tTokens).size
-        val diceScore = (2.0 * intersection) / (qTokens.size + tTokens.size)
+        val isTrailer = tWordSet.contains("trailer") || tWordSet.contains("teaser") || tWordSet.contains("promo")
+        val qWantedTrailer = qWords.contains("trailer") || qWords.contains("teaser") || qWords.contains("promo")
+
+        // Exact whole-word prefix match (e.g. "pk" will NOT match "pkl fm" because "pkl" != "pk")
+        if (tWords.size >= qWords.size && tWords.take(qWords.size) == qWords) {
+            return if (isTrailer && !qWantedTrailer) 0.75 else 0.95
+        }
+
+        // All query words match in title as whole words
+        if (qWords.all { tWordSet.contains(it) }) {
+            return if (isTrailer && !qWantedTrailer) 0.70 else 0.90
+        }
+
+        // Intersection / dice score with whole word boundaries
+        val intersection = qWords.intersect(tWordSet).size
+        if (intersection == 0) return 0.0
+
+        val diceScore = (2.0 * intersection) / (qWords.size + tWords.size)
 
         // Number check: if query has digits (e.g. "2" in "stree 2"), require or boost matching digits
         val qDigits = Regex("\\b\\d+\\b").findAll(qNorm).map { it.value }.toSet()
@@ -1899,7 +1923,7 @@ class DeviceToolExecutor(
             if (qDigits == tDigits) 0.15 else -0.30
         } else 0.0
 
-        return (diceScore + digitMatchBonus).coerceIn(0.0, 1.0)
+        return (diceScore + digitMatchBonus).coerceIn(0.0, 0.85)
     }
 
     private fun searchGlobalStbContent(cleanQuery: String): StbContentCandidate? {
@@ -2061,199 +2085,156 @@ class DeviceToolExecutor(
             return tuneJioTvChannel(channelDigits, channelDisplay)
         }
 
-        // 2. Global STB Search Check (Movies, Web Series, TV Shows, OTT content, or general content)
-        val isGlobalSearchIntent = when (appParam) {
-            "global", "movies", "series", "shows" -> true
-            "youtube" -> false
-            "jiocinema", "hotstar" -> false
-            else -> !isSongOrMusicQuery(cleanQuery)
-        }
+        // 2. Universal Federated Multi-App Search (JioTV+ Movies/Series + YouTube Videos/Songs)
+        com.nik.voiceassistant.service.TvHudOverlay.hide()
 
-        if (isGlobalSearchIntent) {
-            com.nik.voiceassistant.service.TvHudOverlay.hide()
+        val isExplicitYt = (appParam == "youtube" || youtubeExplicit)
+        val isMusicQuery = isSongOrMusicQuery(cleanQuery) || isSongOrMusicQuery(query)
 
-            val bestMatch = searchGlobalStbContent(cleanQuery)
-            // If Jio found something but score is weak (< 0.60), try YouTube as fallback first
-            if (bestMatch != null && bestMatch.score < 0.60 && !bestMatch.isChannel) {
-                Log.i(TAG, "Jio score ${bestMatch.score} < 0.60 for '$cleanQuery' — trying YouTube fallback")
-                val ytResult = resolveYouTubeVideo(cleanQuery, 1)
-                if (ytResult != null) {
-                    Log.i(TAG, "YouTube fallback found: '${ytResult.title}' (${ytResult.videoId})")
-                    com.nik.voiceassistant.service.TvHudOverlay.hide()
-                    val playIntent = Intent(Intent.ACTION_VIEW, Uri.parse(ytResult.playUri)).apply {
-                        component = android.content.ComponentName("com.jio.yt", "dev.cobalt.app.MainActivity")
-                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
-                    }
-                    try {
-                        context.startActivity(playIntent)
-                        com.nik.voiceassistant.service.TvPlaybackStateManager.saveYouTube(context, ytResult.videoId, ytResult.title)
-                        return withScreen(mapOf("success" to true, "opened" to "Playing YouTube: ${ytResult.title}"))
-                    } catch (e: Exception) {
-                        Log.w(TAG, "YouTube fallback play failed: ${e.message}")
-                    }
-                }
-            }
-            if (bestMatch != null) {
-                Log.i(TAG, "Selected Top Matching Global Result: '${bestMatch.title}' (score=${bestMatch.score}, isChannel=${bestMatch.isChannel})")
+        // Query JioTV+ ContentProvider
+        val jioCandidate = if (!isExplicitYt) searchGlobalStbContent(cleanQuery) else null
 
-                if (bestMatch.isChannel) {
-                    return tuneJioTvChannel(bestMatch.contentId, bestMatch.title)
-                }
+        // Query YouTube ContentProvider
+        val ytCandidates = resolveYouTubeTopCandidates(cleanQuery, maxCount = 5)
+        val ytBest = ytCandidates.firstOrNull()
 
-                try {
-                    val uri = Uri.parse("jiotvplus://${bestMatch.contentId}?source=VA")
-                    val intent = Intent(Intent.ACTION_VIEW, uri).apply {
-                        setPackage("com.jio.media.jiotvplus")
-                        putExtra("APP_NAME", "jiotv+")
-                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED)
-                    }
-                    context.startActivity(intent)
-                    com.nik.voiceassistant.service.TvPlaybackStateManager.saveGlobalContent(context, bestMatch.contentId, bestMatch.title)
+        val jioIsTrailer = jioCandidate?.title?.let { t ->
+            val lower = t.lowercase()
+            lower.contains("trailer") || lower.contains("teaser") || lower.contains("promo")
+        } ?: false
 
-                    if (autoPlay) {
-                        Thread {
-                            try {
-                                Thread.sleep(1200L)
-                                com.nik.voiceassistant.service.TvInputBridge.dpadCenter()
-                            } catch (_: Exception) {}
-                        }.start()
-                    }
+        Log.i(TAG, "Federated Search: cleanQuery='$cleanQuery', isExplicitYt=$isExplicitYt, isMusicQuery=$isMusicQuery | " +
+            "JioCandidate='${jioCandidate?.title}' (score=${jioCandidate?.score}, isChannel=${jioCandidate?.isChannel}, isTrailer=$jioIsTrailer), " +
+            "YtBest='${ytBest?.title}' (score=${ytBest?.score})")
 
-                    return withScreen(mapOf(
-                        "success" to true,
-                        "opened" to "${bestMatch.title} (STB Universal Details Card)"
-                    ))
-                } catch (e: Exception) {
-                    Log.w(TAG, "Primary JioTV+ URI launch failed, trying action intent: ${e.message}")
-                    try {
-                        val action = bestMatch.intentAction.ifBlank { "search/${bestMatch.contentId}" }
-                        val fallbackIntent = Intent(action).apply {
-                            component = android.content.ComponentName("com.jio.media.jiotvplus", "com.jio.media.stb.ondemand.patchwall.views.MainActivity")
-                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
-                        }
-                        context.startActivity(fallbackIntent)
-                        if (autoPlay) {
-                            Thread {
-                                try {
-                                    Thread.sleep(1200L)
-                                    com.nik.voiceassistant.service.TvInputBridge.dpadCenter()
-                                } catch (_: Exception) {}
-                            }.start()
-                        }
-                        return withScreen(mapOf(
-                            "success" to true,
-                            "opened" to "${bestMatch.title} (STB Universal Details Card)"
-                        ))
-                    } catch (e2: Exception) {
-                        Log.w(TAG, "Failed launching STB detail card for ${bestMatch.title}: ${e2.message}")
-                    }
-                }
-            }
-
-            // If no specific card matched, launch Jio STB Global Voice Search (searches across all apps)
-            try {
-                val gva = Intent("com.jio.media.stb.ondemand.patchwall.GVA").apply {
-                    putExtra("SEARCH_KEY", cleanQuery)
-                }
-                context.sendBroadcast(gva)
-                return withScreen(mapOf(
-                    "success" to true,
-                    "opened" to "Jio Global Search for \"$cleanQuery\""
-                ))
-            } catch (e: Exception) {
-                Log.w(TAG, "GVA broadcast failed, falling back to YouTube: ${e.message}")
+        // A) If user explicitly requested YouTube or it's a song/music/creator query:
+        if (isExplicitYt || isMusicQuery) {
+            if (ytBest != null) {
+                return playYouTubeDirect(ytBest)
             }
         }
 
-        // 3. YouTube Intent (Songs, music, bhajans, YouTube creators, clips)
-        val app = appParam ?: "youtube"
-        val targetCard = when {
-            lowerQ.contains("second") || lowerQ.contains("dusra") || lowerQ.contains("2nd") || lowerQ.contains("do number") -> 2
-            lowerQ.contains("third") || lowerQ.contains("teesra") || lowerQ.contains("3rd") || lowerQ.contains("teen number") -> 3
-            lowerQ.contains("fourth") || lowerQ.contains("chautha") || lowerQ.contains("4th") -> 4
-            else -> 1
+        // B) If Jio candidate is a Live TV Channel:
+        if (jioCandidate != null && jioCandidate.isChannel) {
+            return tuneJioTvChannel(jioCandidate.contentId, jioCandidate.title)
         }
 
-        if (app == "youtube") {
-            com.nik.voiceassistant.service.TvHudOverlay.hide()
-
-            // Try fast direct video playback via Jio YouTube ContentProvider
-            val resolvedVideo = resolveYouTubeVideo(cleanQuery, targetCard)
-            if (resolvedVideo != null) {
-                Log.i(TAG, "Playing resolved YouTube video: ${resolvedVideo.title} (${resolvedVideo.videoId})")
-                val playIntent = Intent(Intent.ACTION_VIEW, Uri.parse(resolvedVideo.playUri)).apply {
-                    component = android.content.ComponentName("com.jio.yt", "dev.cobalt.app.MainActivity")
-                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
-                }
-                try {
-                    context.startActivity(playIntent)
-                    com.nik.voiceassistant.service.TvPlaybackStateManager.saveYouTube(context, resolvedVideo.videoId, resolvedVideo.title)
-                    val verified = verifyMediaPlayback(listOf("com.jio.yt"), 4000L)
-                    com.nik.voiceassistant.service.TvHudOverlay.hide()
-                    return if (verified) {
-                        withScreen(mapOf(
-                            "success" to true,
-                            "opened" to "Playing YouTube video: ${resolvedVideo.title}"
-                        ))
-                    } else {
-                        withScreen(mapOf(
-                            "success" to false,
-                            "error" to "YouTube video playback start nahi ho paya"
-                        ))
-                    }
-                } catch (e: Exception) {
-                    Log.w(TAG, "Direct YouTube play intent failed, falling back to standard intent: ${e.message}")
-                }
-            }
-
-            // Fallback: standard YouTube intent
-            val hasJioYt = packageManager.getLeanbackLaunchIntentForPackage("com.jio.yt") != null ||
-                packageManager.getLaunchIntentForPackage("com.jio.yt") != null
-            val fallbackIntent = if (hasJioYt) {
-                Intent(Intent.ACTION_VIEW, Uri.parse("https://www.youtube.com/results?search_query=$cleanQuery")).apply {
-                    component = android.content.ComponentName("com.jio.yt", "dev.cobalt.app.MainActivity")
-                }
-            } else {
-                Intent(Intent.ACTION_SEARCH).apply {
-                    setPackage("com.google.android.youtube.tv")
-                    putExtra("query", cleanQuery)
-                }
-            }.apply {
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
-            }
-
-            return try {
-                context.startActivity(fallbackIntent)
-                com.nik.voiceassistant.service.TvHudOverlay.hide()
-                withScreen(mapOf("success" to true, "opened" to "YouTube par \"$cleanQuery\" search kar diya hai, video select kijiye"))
-            } catch (e: Exception) {
-                mapOf("success" to false, "error" to (e.message ?: "Failed to start YouTube"))
-            }
+        // C) If JioTV+ has a strong full movie/show match (score >= 0.85 and NOT just trailer):
+        if (jioCandidate != null && jioCandidate.score >= 0.85 && !jioIsTrailer) {
+            return playJioTvContent(jioCandidate, autoPlay)
         }
 
-        // 4. For specific apps like jiocinema, hotstar
-        val intent = when (app) {
-            "jiocinema" -> Intent(Intent.ACTION_VIEW).apply {
-                data = Uri.parse("https://www.jiocinema.com/search/$cleanQuery")
-                setPackage("com.jio.media.stb")
+        // D) If YouTube has a high quality match (score >= 0.70) AND (Jio has nothing or only trailer/weak score):
+        if (ytBest != null && ytBest.score >= 0.70) {
+            Log.i(TAG, "Choosing YouTube match '${ytBest.title}' (score=${ytBest.score}) over Jio '${jioCandidate?.title}' (score=${jioCandidate?.score}, isTrailer=$jioIsTrailer)")
+            return playYouTubeDirect(ytBest)
+        }
+
+        // E) If JioTV+ has a valid content card (trailer, show, etc., score >= 0.50):
+        if (jioCandidate != null && jioCandidate.score >= 0.50) {
+            return playJioTvContent(jioCandidate, autoPlay)
+        }
+
+        // F) If YouTube has any candidate with score >= 0.40:
+        if (ytBest != null && ytBest.score >= 0.40) {
+            return playYouTubeDirect(ytBest)
+        }
+
+        // G) Fallback: Jio PatchWall Global Search broadcast
+        try {
+            val gva = Intent("com.jio.media.stb.ondemand.patchwall.GVA").apply {
+                setPackage("com.jio.media.jiotvplus")
+                putExtra("SEARCH_KEY", cleanQuery)
             }
-            "hotstar" -> Intent(Intent.ACTION_VIEW).apply {
-                data = Uri.parse("https://www.hotstar.com/in/search?q=$cleanQuery")
-                setPackage("in.startv.hotstar")
-            }
-            else -> Intent(Intent.ACTION_SEARCH).apply {
-                putExtra("query", cleanQuery)
-            }
-        }.apply {
+            context.sendBroadcast(gva)
+            return withScreen(mapOf(
+                "success" to true,
+                "opened" to "Jio Global Search for \"$cleanQuery\""
+            ))
+        } catch (e: Exception) {
+            Log.w(TAG, "GVA broadcast failed, falling back to YouTube: ${e.message}")
+        }
+
+        // Final fallback: Standard YouTube search
+        val fallbackIntent = Intent(Intent.ACTION_VIEW, Uri.parse("https://www.youtube.com/results?search_query=$cleanQuery")).apply {
+            component = android.content.ComponentName("com.jio.yt", "dev.cobalt.app.MainActivity")
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
         }
-
-        com.nik.voiceassistant.service.TvHudOverlay.hide()
         return try {
-            context.startActivity(intent)
-            withScreen(mapOf("success" to true, "opened" to "$app search for \"$cleanQuery\""))
+            context.startActivity(fallbackIntent)
+            withScreen(mapOf("success" to true, "opened" to "YouTube par \"$cleanQuery\" search kar diya hai"))
         } catch (e: Exception) {
-            mapOf("success" to false, "error" to (e.message ?: "Failed to start TV app"))
+            mapOf("success" to false, "error" to (e.message ?: "Failed to start search"))
+        }
+    }
+
+    private fun playYouTubeDirect(video: ResolvedYtVideo): Map<String, Any?> {
+        Log.i(TAG, "Playing YouTube direct: '${video.title}' (${video.videoId})")
+        com.nik.voiceassistant.service.TvHudOverlay.hide()
+        val playIntent = Intent(Intent.ACTION_VIEW, Uri.parse(video.playUri)).apply {
+            component = android.content.ComponentName("com.jio.yt", "dev.cobalt.app.MainActivity")
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+        }
+        return try {
+            context.startActivity(playIntent)
+            com.nik.voiceassistant.service.TvPlaybackStateManager.saveYouTube(context, video.videoId, video.title)
+            withScreen(mapOf("success" to true, "opened" to "Playing YouTube: ${video.title}"))
+        } catch (e: Exception) {
+            Log.w(TAG, "Direct YouTube play failed: ${e.message}")
+            mapOf("success" to false, "error" to "YouTube start nahi ho paya: ${e.message}")
+        }
+    }
+
+    private fun playJioTvContent(candidate: StbContentCandidate, autoPlay: Boolean): Map<String, Any?> {
+        Log.i(TAG, "Playing JioTV+ content: '${candidate.title}' (${candidate.contentId})")
+        com.nik.voiceassistant.service.TvHudOverlay.hide()
+        try {
+            val uri = Uri.parse("jiotvplus://${candidate.contentId}?source=VA")
+            val intent = Intent(Intent.ACTION_VIEW, uri).apply {
+                setPackage("com.jio.media.jiotvplus")
+                putExtra("APP_NAME", "jiotv+")
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED)
+            }
+            context.startActivity(intent)
+            com.nik.voiceassistant.service.TvPlaybackStateManager.saveGlobalContent(context, candidate.contentId, candidate.title)
+
+            if (autoPlay) {
+                Thread {
+                    try {
+                        Thread.sleep(1200L)
+                        com.nik.voiceassistant.service.TvInputBridge.dpadCenter()
+                    } catch (_: Exception) {}
+                }.start()
+            }
+
+            return withScreen(mapOf(
+                "success" to true,
+                "opened" to "${candidate.title} (STB Universal Details Card)"
+            ))
+        } catch (e: Exception) {
+            Log.w(TAG, "Primary JioTV+ URI launch failed, trying action intent: ${e.message}")
+            try {
+                val action = candidate.intentAction.ifBlank { "search/${candidate.contentId}" }
+                val fallbackIntent = Intent(action).apply {
+                    component = android.content.ComponentName("com.jio.media.jiotvplus", "com.jio.media.stb.ondemand.patchwall.views.MainActivity")
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                }
+                context.startActivity(fallbackIntent)
+                if (autoPlay) {
+                    Thread {
+                        try {
+                            Thread.sleep(1200L)
+                            com.nik.voiceassistant.service.TvInputBridge.dpadCenter()
+                        } catch (_: Exception) {}
+                    }.start()
+                }
+                return withScreen(mapOf(
+                    "success" to true,
+                    "opened" to "${candidate.title} (STB Universal Details Card)"
+                ))
+            } catch (e2: Exception) {
+                return mapOf("success" to false, "error" to "STB card open nahi ho paya: ${e2.message}")
+            }
         }
     }
 
