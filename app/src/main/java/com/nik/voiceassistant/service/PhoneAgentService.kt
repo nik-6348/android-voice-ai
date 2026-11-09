@@ -482,7 +482,12 @@ class PhoneAgentService : AccessibilityService() {
                 shot?.let { return jpeg(it, 60) }
             }
         }
-        return screenshotJpeg(hideOverlay = false)
+        // Accessibility screenshot (may fail on FLAG_SECURE apps like YouTube TV Cobalt)
+        screenshotJpeg(hideOverlay = false)?.let { return it }
+        // Shell screencap fallback: runs as shell user which bypasses FLAG_SECURE
+        val isTv = packageManager.hasSystemFeature(android.content.pm.PackageManager.FEATURE_LEANBACK)
+        if (isTv) return TvInputBridge.screencap()
+        return null
     }
 
     private fun jpeg(full: Bitmap, quality: Int): ByteArray {
@@ -605,12 +610,28 @@ class PhoneAgentService : AccessibilityService() {
         var target: AccessibilityNodeInfo? = node
         while (target != null && !(if (longPress) target.isLongClickable else target.isClickable)) target = target.parent
         val count = times.coerceIn(1, 15)
+        val isTv = packageManager.hasSystemFeature(android.content.pm.PackageManager.FEATURE_LEANBACK)
         var ok = true
         repeat(count) { i ->
-            ok = (target?.performAction(action) == true || run {
-                val r = Rect().also { node.getBoundsInScreen(it) }
-                gesture(r.exactCenterX(), r.exactCenterY(), r.exactCenterX(), r.exactCenterY(), if (longPress) 800 else 60)
-            }) && ok
+            ok = if (isTv) {
+                // TV has no touchscreen — gestures always get cancelled. Use accessibility ACTION_CLICK
+                // first, then focus the node and send DPAD_CENTER as a fallback.
+                val clickOk = target?.performAction(action) == true
+                if (clickOk) {
+                    true
+                } else {
+                    (target ?: node).let { n ->
+                        n.performAction(AccessibilityNodeInfo.ACTION_ACCESSIBILITY_FOCUS)
+                        n.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
+                    }
+                    TvInputBridge.dpadCenter()
+                }
+            } else {
+                target?.performAction(action) == true || run {
+                    val r = Rect().also { node.getBoundsInScreen(it) }
+                    gesture(r.exactCenterX(), r.exactCenterY(), r.exactCenterX(), r.exactCenterY(), if (longPress) 800 else 60)
+                }
+            } && ok
             if (i < count - 1) Thread.sleep(180)
         }
         // Toasts from the last taps can take a moment
@@ -1220,16 +1241,14 @@ class PhoneAgentService : AccessibilityService() {
                         next.performAction(AccessibilityNodeInfo.ACTION_ACCESSIBILITY_FOCUS)
                         next.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
                     } else {
-                        // Gesture swipe for TV scroll
-                        val startX = m.widthPixels * 0.5f
-                        val startY = m.heightPixels * 0.5f
-                        val (endX, endY) = when (act) {
-                            "up" -> startX to (startY + 350f)
-                            "down" -> startX to (startY - 350f)
-                            "left" -> (startX + 350f) to startY
-                            else -> (startX - 350f) to startY
+                        // No focusable element found — inject DPAD keycode directly via bridge
+                        val keyCode = when (act) {
+                            "up" -> android.view.KeyEvent.KEYCODE_DPAD_UP
+                            "down" -> android.view.KeyEvent.KEYCODE_DPAD_DOWN
+                            "left" -> android.view.KeyEvent.KEYCODE_DPAD_LEFT
+                            else -> android.view.KeyEvent.KEYCODE_DPAD_RIGHT
                         }
-                        gesture(startX, startY, endX, endY, 150)
+                        TvInputBridge.injectKey(keyCode)
                     }
                     if (times > 1) Thread.sleep(150)
                 }
@@ -1244,14 +1263,11 @@ class PhoneAgentService : AccessibilityService() {
                         val focused = root?.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
                             ?: root?.findFocus(AccessibilityNodeInfo.FOCUS_ACCESSIBILITY)
                         if (focused != null) {
-                            val r = Rect().also { focused.getBoundsInScreen(it) }
                             val clickOk = focused.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                            val gestureOk = gesture(r.exactCenterX(), r.exactCenterY(), r.exactCenterX(), r.exactCenterY(), 60)
-                            clickOk || gestureOk
+                            clickOk
                         } else {
-                            val cx = m.widthPixels * 0.5f
-                            val cy = m.heightPixels * 0.5f
-                            gesture(cx, cy, cx, cy, 60)
+                            // No focused element and no bridge — nothing to click
+                            false
                         }
                     }
                 }
@@ -1339,6 +1355,11 @@ class PhoneAgentService : AccessibilityService() {
      * lets touches through meanwhile, so a gesture under the assistant panel reaches the app.
      */
     private fun gesture(x1: Float, y1: Float, x2: Float, y2: Float, durationMs: Long): Boolean {
+        // TV / STB devices have no touchscreen — dispatchGesture always gets cancelled.
+        if (packageManager.hasSystemFeature(android.content.pm.PackageManager.FEATURE_LEANBACK)) {
+            Log.d(TAG, "gesture() skipped on TV device — no touchscreen")
+            return false
+        }
         val path = Path().apply {
             moveTo(x1, y1)
             if (x1 == x2 && y1 == y2) {

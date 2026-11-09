@@ -89,7 +89,8 @@ class DeviceToolExecutor(
         if (!isTvDevice) rawDeclarations else {
             val tvAllowed = setOf(
                 "search_tv", "dpad", "open_app", "list_apps", "set_volume",
-                "wait", "end_conversation", "get_time", "navigate", "launch_intent"
+                "wait", "end_conversation", "get_time", "navigate", "launch_intent",
+                "read_screen", "tap", "media_control"
             )
             rawDeclarations.filter { it["name"] in tvAllowed }
         }

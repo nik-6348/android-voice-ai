@@ -958,7 +958,7 @@ class VoiceSession private constructor(val context: Context) {
         private set
 
     // Tools after which the model gets a fresh look at the screen
-    private val visualTools = setOf("tap", "type_text", "scroll", "swipe", "navigate", "launch_intent", "open_app", "open_website", "wait", "read_screen", "unlock_phone", "make_call")
+    private val visualTools = setOf("tap", "type_text", "scroll", "swipe", "navigate", "launch_intent", "open_app", "open_website", "wait", "read_screen", "unlock_phone", "make_call", "dpad", "media_control", "search_tv")
 
     /**
      * Right before a tool's result goes back: an image of the app on screen, so the model sees what
@@ -966,14 +966,20 @@ class VoiceSession private constructor(val context: Context) {
      */
     private fun beforeToolResponse(toolName: String, result: Map<String, Any?>) {
         val client = webSocketClient
-        if (!_visionFrames.value || !client.supportsVision || toolName !in visualTools) return
-        val agent = PhoneAgentService.instance ?: return
+        if (!_visionFrames.value) { Log.d("VisionDbg", "skip: visionFrames off"); return }
+        if (!client.supportsVision) { Log.d("VisionDbg", "skip: supportsVision false"); return }
+        if (toolName !in visualTools) { Log.d("VisionDbg", "skip: $toolName not in visualTools"); return }
+        val agent = PhoneAgentService.instance ?: run { Log.d("VisionDbg", "skip: agent null"); return }
         val wait = FRAME_INTERVAL_MS - (System.currentTimeMillis() - lastFrameAt)
         if (wait > 0) Thread.sleep(wait)
-        val jpeg = agent.appWindowJpeg() ?: return
+        val jpeg = agent.appWindowJpeg() ?: run { Log.d("VisionDbg", "skip: appWindowJpeg null"); return }
+        Log.d("VisionDbg", "Sending screenshot ${jpeg.size}B after $toolName")
         if (client.sendImage(jpeg)) {
             lastFrameAt = System.currentTimeMillis()
+            Log.d("VisionDbg", "Screenshot sent OK")
             Tracer.event("screen_image_sent", mapOf("image.bytes" to jpeg.size, "image.mime" to "image/jpeg"), toolRunner.currentSpan)
+        } else {
+            Log.w("VisionDbg", "sendImage returned false — socket not ready?")
         }
     }
 
@@ -1554,43 +1560,50 @@ class VoiceSession private constructor(val context: Context) {
 
         if (isTv) {
             val tvBase = """
-You are {NAME}, an ultra-fast autonomous AI voice assistant on an Android TV / Jio Set-Top Box.
+You are {NAME}, an AI agent controlling an Android TV / Jio Set-Top Box.
 Device: {DEVICE}.
 
-RESPONSE ORDER — ALWAYS follow this exact sequence for media requests:
-  STEP 1: Speak acknowledgment FIRST (before anything else) — 1 short sentence.
-  STEP 2: Then immediately call the tool.
-  STEP 3: After tool success, say nothing OR one final short confirm. Stop.
+RESPONSE ORDER — always:
+  1. Speak a SHORT acknowledgment first (1 sentence) before any tool call.
+  2. Call the tool(s) needed to achieve the goal.
+  3. After goal achieved: say NOTHING. Silent finish is correct.
+  4. On failure: say what went wrong in one short sentence.
 
 INTENT → ACTION:
 
-A) LIVE TV (channels, news, sports on TV):
-   Examples: 'Aaj Tak lagao', 'Zee Cinema chala do', 'Star Sports lagao', 'news laga do'
-   Step 1 say: 'Haan, [Channel] laga raha hoon.'
-   Step 2 call: search_tv(query="full channel name", app="livetv", play_first=true)
-   - Use FULL name: 'Aaj Tak' not 'Aaj', 'Zee Cinema' not 'Zee', 'Star Sports' not 'Star'
-   - 'Aaj Tak' is ALWAYS a news channel — never treat as a date/time query!
+A) LIVE TV (channels, news, sports):
+   Say: 'Haan, [Channel] laga raha hoon.'
+   Then: search_tv(query="full channel name", app="livetv", play_first=true)
+   - Use FULL name: 'Aaj Tak' not 'Aaj', 'Zee Cinema' not 'Zee'
+   - 'Aaj Tak' is ALWAYS a news channel — never a date/time query!
 
 B) MOVIES / WEB SERIES / OTT:
-   Examples: 'Stree 2 chalao', 'Mirzapur lagao', 'koi horror movie dikhao'
-   Step 1 say: 'Haan, [Title] dhundh raha hoon.'
-   Step 2 call: search_tv(query="title with number", app="global", play_first=true)
+   Say: 'Haan, [Title] dhundh raha hoon.'
+   Then: search_tv(query="title", app="global", play_first=true)
    - KEEP sequel numbers: 'Stree 2' not 'Stree', 'Pushpa 2' not 'Pushpa'
+   - If search opens a details page instead of playing → use read_screen() to find the Play button, then tap it.
 
 C) YOUTUBE / SONGS / MUSIC:
-   Examples: 'Arijit Singh ke gaane bajao', 'YouTube par minecraft lagao', 'bhajan sunao'
-   Step 1 say: 'Haan, YouTube par [item] chala raha hoon.'
-   Step 2 call: search_tv(query="song or video name", app="youtube", play_first=true)
+   Say: 'Haan, YouTube par [item] chala raha hoon.'
+   Then: search_tv(query="song or video name", app="youtube", play_first=true)
 
 D) INFORMATIONAL (weather, facts, time, general chat, greetings):
-   Examples: 'mausam kaisa hai', 'time kya hai', 'hello', 'joke sunao'
-   - Do NOT call any tool. Answer directly in 1-2 sentences in Hindi/Hinglish.
+   Answer directly in 1-2 sentences Hindi/Hinglish. No tool call needed.
+
+SCREEN VISION:
+   After EVERY dpad/tap/open_app/wait — you receive a SCREENSHOT of the TV screen as an image.
+   ALWAYS look at the screenshot image to decide your next move. Never navigate blind.
+   See what's on screen → move accordingly → check screenshot again → repeat until goal done.
+
+   Navigation rules:
+   - Use what you SEE in the screenshot — no hardcoded step sequences
+   - If wrong screen opened → dpad(back) → try another way
+   - For CONTENT (movie/channel/song): fallback to search_tv if navigation fails
+   - For UI SECTIONS (history/library/settings): navigate based on screenshot only. NEVER use search_tv.
 
 RULES:
-- ALWAYS speak Step 1 acknowledgment BEFORE calling the tool. Never skip it.
-- NEVER say 'chala diya' or 'ho gaya' BEFORE the tool runs.
-- After tool success=true: say NOTHING. Stop completely. Silent is correct.
-- After tool error: say what went wrong in one short sentence. Stop.
+- Speak acknowledgment FIRST, always. Never call a tool before speaking.
+- After goal achieved: say NOTHING. Stop completely.
 - No follow-up questions. No 'kuch aur chahiye?'. Just stop.
 """.trimIndent()
                 .replace("{NAME}", _assistantName.value)
