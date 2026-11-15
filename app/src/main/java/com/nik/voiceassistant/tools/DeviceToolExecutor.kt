@@ -2121,7 +2121,7 @@ class DeviceToolExecutor(
 
         // C) If JioTV+ has a strong full movie/show match (score >= 0.85 and NOT just trailer):
         if (jioCandidate != null && jioCandidate.score >= 0.85 && !jioIsTrailer) {
-            return playJioTvContent(jioCandidate, autoPlay)
+            return playJioTvContent(jioCandidate, autoPlay, cleanQuery)
         }
 
         // D) If YouTube has a high quality match (score >= 0.70) AND (Jio has nothing or only trailer/weak score):
@@ -2132,7 +2132,7 @@ class DeviceToolExecutor(
 
         // E) If JioTV+ has a valid content card (trailer, show, etc., score >= 0.50):
         if (jioCandidate != null && jioCandidate.score >= 0.50) {
-            return playJioTvContent(jioCandidate, autoPlay)
+            return playJioTvContent(jioCandidate, autoPlay, cleanQuery)
         }
 
         // F) If YouTube has any candidate with score >= 0.40:
@@ -2140,19 +2140,32 @@ class DeviceToolExecutor(
             return playYouTubeDirect(ytBest)
         }
 
-        // G) Fallback: Jio PatchWall Global Search broadcast
+        // G) Global Search Page (PatchWall Tray): opens search results across all apps
         try {
-            val gva = Intent("com.jio.media.stb.ondemand.patchwall.GVA").apply {
+            val searchIntent = Intent(Intent.ACTION_VIEW, Uri.parse("jiotvplus://voice_search/${Uri.encode(cleanQuery)}")).apply {
                 setPackage("com.jio.media.jiotvplus")
-                putExtra("SEARCH_KEY", cleanQuery)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
             }
-            context.sendBroadcast(gva)
+            context.startActivity(searchIntent)
             return withScreen(mapOf(
                 "success" to true,
-                "opened" to "Jio Global Search for \"$cleanQuery\""
+                "opened" to "Jio Global Search Results for \"$cleanQuery\""
             ))
         } catch (e: Exception) {
-            Log.w(TAG, "GVA broadcast failed, falling back to YouTube: ${e.message}")
+            Log.w(TAG, "Direct voice_search intent failed, trying GVA broadcast: ${e.message}")
+            try {
+                val gva = Intent("com.jio.media.stb.ondemand.patchwall.GVA").apply {
+                    setPackage("com.jio.media.jiotvplus")
+                    putExtra("SEARCH_KEY", cleanQuery)
+                }
+                context.sendBroadcast(gva)
+                return withScreen(mapOf(
+                    "success" to true,
+                    "opened" to "Jio Global Search for \"$cleanQuery\""
+                ))
+            } catch (e2: Exception) {
+                Log.w(TAG, "GVA broadcast failed, falling back to YouTube: ${e2.message}")
+            }
         }
 
         // Final fallback: Standard YouTube search
@@ -2185,15 +2198,29 @@ class DeviceToolExecutor(
         }
     }
 
-    private fun playJioTvContent(candidate: StbContentCandidate, autoPlay: Boolean): Map<String, Any?> {
+    private fun playJioTvContent(candidate: StbContentCandidate, autoPlay: Boolean, searchQuery: String? = null): Map<String, Any?> {
         Log.i(TAG, "Playing JioTV+ content: '${candidate.title}' (${candidate.contentId})")
         com.nik.voiceassistant.service.TvHudOverlay.hide()
         try {
+            // Pre-seed Global Search results page in the task backstack so that pressing
+            // BACK from the player / details card returns the user directly to the search results!
+            val queryForBackstack = searchQuery?.takeIf { it.isNotBlank() } ?: candidate.title
+            try {
+                val searchIntent = Intent(Intent.ACTION_VIEW, Uri.parse("jiotvplus://voice_search/${Uri.encode(queryForBackstack)}")).apply {
+                    setPackage("com.jio.media.jiotvplus")
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                context.startActivity(searchIntent)
+                Thread.sleep(200L)
+            } catch (se: Exception) {
+                Log.w(TAG, "Could not pre-open search backstack: ${se.message}")
+            }
+
             val uri = Uri.parse("jiotvplus://${candidate.contentId}?source=VA")
             val intent = Intent(Intent.ACTION_VIEW, uri).apply {
                 setPackage("com.jio.media.jiotvplus")
                 putExtra("APP_NAME", "jiotv+")
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
             context.startActivity(intent)
             com.nik.voiceassistant.service.TvPlaybackStateManager.saveGlobalContent(context, candidate.contentId, candidate.title)

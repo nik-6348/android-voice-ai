@@ -48,10 +48,9 @@ class PhoneAgentService : AccessibilityService() {
             private set
 
         // Master switch for Shiv on Android TV / STB.
-        // Default FALSE: Completely shuts down Shiv voice interception on TV,
-        // restoring native Jio Voice Assistant and its built-in multi-app search carousel.
+        // True: Option A active (Fast Local Global Search Mode with zero cloud latency)
         @Volatile
-        var isShivTvEnabled = false
+        var isShivTvEnabled = true
 
         // Set by the assistant overlay: true = let touches through it while a gesture plays in this
         // area of the screen (it only changes itself when the gesture actually crosses it)
@@ -197,29 +196,59 @@ class PhoneAgentService : AccessibilityService() {
     override fun onKeyEvent(event: KeyEvent?): Boolean {
         event ?: return false
         val isTv = packageManager.hasSystemFeature(android.content.pm.PackageManager.FEATURE_LEANBACK)
-        if (isTv && !isShivTvEnabled) {
-            return super.onKeyEvent(event)
-        }
-        if (event.action == KeyEvent.ACTION_DOWN) {
+        if (isTv && isShivTvEnabled) {
             val code = event.keyCode
-            if (code == KeyEvent.KEYCODE_BACK || code == KeyEvent.KEYCODE_ESCAPE) {
-                if (TvHudOverlay.isListeningOrActive()) {
-                    Log.i(TAG, "Remote BACK pressed while Shiv HUD active -> dismissing")
-                    TvHudOverlay.hide()
-                    val session = com.nik.voiceassistant.VoiceSession.get(applicationContext)
-                    session.stop()
-                    return true
+            if (event.action == KeyEvent.ACTION_DOWN) {
+                // If user pressed Remote Mic/Voice key while YouTube is foreground:
+                // Override YouTube's internal in-app search and launch Global Voice Search across all apps
+                if (code == KeyEvent.KEYCODE_VOICE_ASSIST || code == KeyEvent.KEYCODE_SEARCH || code == KeyEvent.KEYCODE_ASSIST) {
+                    val activeApp = rootInActiveWindow?.packageName?.toString()
+                    if (activeApp == "com.jio.yt" || activeApp == "com.google.android.youtube.tv") {
+                        Log.i(TAG, "Remote MIC pressed inside YouTube! Overriding internal search to launch Global Voice Search...")
+                        launchJioGlobalVoiceAssist()
+                        return true // consume key so YouTube doesn't open its internal voice search
+                    }
                 }
-            } else if (code == KeyEvent.KEYCODE_MEDIA_STOP || code == KeyEvent.KEYCODE_MEDIA_PAUSE) {
-                val session = com.nik.voiceassistant.VoiceSession.get(applicationContext)
-                if (session.isRecording.value) {
-                    session.stop()
-                    TvHudOverlay.hide()
-                    return true
+                if (code == KeyEvent.KEYCODE_BACK || code == KeyEvent.KEYCODE_ESCAPE) {
+                    if (TvHudOverlay.isListeningOrActive()) {
+                        Log.i(TAG, "Remote BACK pressed while Shiv HUD active -> dismissing")
+                        TvHudOverlay.hide()
+                        val session = com.nik.voiceassistant.VoiceSession.get(applicationContext)
+                        session.stop()
+                        return true
+                    }
+                } else if (code == KeyEvent.KEYCODE_MEDIA_STOP || code == KeyEvent.KEYCODE_MEDIA_PAUSE) {
+                    val session = com.nik.voiceassistant.VoiceSession.get(applicationContext)
+                    if (session.isRecording.value) {
+                        session.stop()
+                        TvHudOverlay.hide()
+                        return true
+                    }
                 }
             }
         }
         return super.onKeyEvent(event)
+    }
+
+    private fun launchJioGlobalVoiceAssist() {
+        try {
+            val intent = Intent("android.intent.action.ASSIST").apply {
+                component = ComponentName("com.android.app.jio.voiceassist", "com.android.app.jio.voiceassist.search.modified.ui.MainActivity")
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+            }
+            startActivity(intent)
+            Log.i(TAG, "Launched Jio Global Voice Assist over YouTube")
+        } catch (e: Exception) {
+            Log.w(TAG, "Direct launch failed, trying launch intent: ${e.message}")
+            try {
+                val launchIntent = packageManager.getLaunchIntentForPackage("com.android.app.jio.voiceassist")?.apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+                }
+                if (launchIntent != null) startActivity(launchIntent)
+            } catch (e2: Exception) {
+                Log.e(TAG, "Fallback launch failed: ${e2.message}")
+            }
+        }
     }
 
     private fun handleJioVoiceAssistEvent(event: AccessibilityEvent) {
@@ -258,24 +287,48 @@ class PhoneAgentService : AccessibilityService() {
                 lastDispatchedAt = System.currentTimeMillis()
                 Log.i(TAG, "Dispatching captured Jio speech to direct TV executor: $queryToExecute")
 
-                // Cleanly dismiss Jio Voice Assist UI
-                isJioDismissing = true
-                try {
-                    if (rootInActiveWindow?.packageName == "com.android.app.jio.voiceassist") {
-                        performGlobalAction(GLOBAL_ACTION_BACK)
-                    }
-                } catch (_: Exception) {}
-                mainHandler.postDelayed({ isJioDismissing = false }, 2000L)
+                // Option A: Fast Local Global Search Mode (no cloud LLM roundtrip lag for TV commands)
+                Thread {
+                    try {
+                        val executor = com.nik.voiceassistant.tools.DeviceToolExecutor(this@PhoneAgentService)
+                        if (executor.isConversationalQuery(queryToExecute)) {
+                            Log.i(TAG, "Query is conversational, dispatching to VoiceSession: $queryToExecute")
+                            mainHandler.post {
+                                isJioDismissing = true
+                                try {
+                                    if (rootInActiveWindow?.packageName == "com.android.app.jio.voiceassist") {
+                                        performGlobalAction(GLOBAL_ACTION_BACK)
+                                    }
+                                } catch (_: Exception) {}
+                                mainHandler.postDelayed({ isJioDismissing = false }, 2000L)
 
-                // Send everything to Gemini Live — it decides: answer or call search_tv tool
-                Log.i(TAG, "Sending to Gemini Live: $queryToExecute")
-                mainHandler.post {
-                    val session = com.nik.voiceassistant.VoiceSession.get(applicationContext)
-                    session.sendText(queryToExecute, keepMicMuted = true)
-                }
+                                val session = com.nik.voiceassistant.VoiceSession.get(applicationContext)
+                                session.startNewChat(keepMicMuted = true)
+                                session.sendText(queryToExecute, keepMicMuted = true)
+                            }
+                        } else {
+                            Log.i(TAG, "Executing TV direct action locally: $queryToExecute")
+                            val result = executor.executeTvDirect(queryToExecute)
+                            Log.i(TAG, "TV direct execution result: $result")
+
+                            // Cleanly dismiss Jio Voice Assist UI after local execution has started
+                            mainHandler.postDelayed({
+                                isJioDismissing = true
+                                try {
+                                    if (rootInActiveWindow?.packageName == "com.android.app.jio.voiceassist") {
+                                        performGlobalAction(GLOBAL_ACTION_BACK)
+                                    }
+                                } catch (_: Exception) {}
+                                mainHandler.postDelayed({ isJioDismissing = false }, 1000L)
+                            }, 400L)
+                        }
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Error executing direct TV command: ${e.message}", e)
+                    }
+                }.start()
             }
-            // 900ms debounce ensures user has fully finished speaking before dispatching
-            mainHandler.postDelayed(pendingJioQueryRunnable!!, 900L)
+            // 750ms debounce ensures user has fully finished speaking before dispatching
+            mainHandler.postDelayed(pendingJioQueryRunnable!!, 750L)
         } catch (e: Exception) {
             Log.w(TAG, "Error in Jio voice bridge: ${e.message}")
         }
