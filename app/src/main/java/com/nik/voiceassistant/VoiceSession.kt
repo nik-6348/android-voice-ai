@@ -957,8 +957,8 @@ class VoiceSession private constructor(val context: Context) {
     @Volatile var webSocketClient: LiveClient = if (_connectionMode.value == MODE_DIRECT) directClient else relayClient
         private set
 
-    // Tools after which the model gets a fresh look at the screen
-    private val visualTools = setOf("tap", "type_text", "scroll", "swipe", "navigate", "launch_intent", "open_app", "open_website", "wait", "read_screen", "unlock_phone", "make_call", "dpad", "media_control", "search_tv")
+    // Tools after which the model gets a fresh look at the screen (exclude media/search to avoid jarring screenshot feedback during playback)
+    private val visualTools = setOf("tap", "type_text", "scroll", "swipe", "navigate", "launch_intent", "open_app", "open_website", "wait", "read_screen", "unlock_phone", "make_call", "dpad")
 
     /**
      * Right before a tool's result goes back: an image of the app on screen, so the model sees what

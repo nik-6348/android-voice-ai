@@ -47,6 +47,12 @@ class PhoneAgentService : AccessibilityService() {
         var instance: PhoneAgentService? = null
             private set
 
+        // Master switch for Shiv on Android TV / STB.
+        // Default FALSE: Completely shuts down Shiv voice interception on TV,
+        // restoring native Jio Voice Assistant and its built-in multi-app search carousel.
+        @Volatile
+        var isShivTvEnabled = false
+
         // Set by the assistant overlay: true = let touches through it while a gesture plays in this
         // area of the screen (it only changes itself when the gesture actually crosses it)
         @Volatile
@@ -159,6 +165,12 @@ class PhoneAgentService : AccessibilityService() {
         event ?: return
         val pkg = event.packageName?.toString()
         if (pkg == "com.android.app.jio.voiceassist") {
+            if (!isShivTvEnabled) {
+                // Completely disabled per user request:
+                // Do NOT touch Jio Voice Assist. Let Jio's native assistant handle voice queries,
+                // full multi-app search carousels, and UI undisturbed.
+                return
+            }
             handleJioVoiceAssistEvent(event)
             return
         }
@@ -184,6 +196,10 @@ class PhoneAgentService : AccessibilityService() {
 
     override fun onKeyEvent(event: KeyEvent?): Boolean {
         event ?: return false
+        val isTv = packageManager.hasSystemFeature(android.content.pm.PackageManager.FEATURE_LEANBACK)
+        if (isTv && !isShivTvEnabled) {
+            return super.onKeyEvent(event)
+        }
         if (event.action == KeyEvent.ACTION_DOWN) {
             val code = event.keyCode
             if (code == KeyEvent.KEYCODE_BACK || code == KeyEvent.KEYCODE_ESCAPE) {
